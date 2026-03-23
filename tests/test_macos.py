@@ -5,27 +5,33 @@ Requires: brew install mtools dosfstools gptfdisk xorriso on the Mac.
 """
 from __future__ import annotations
 
+import subprocess
+from pathlib import Path
+
 import pytest
 
-from conftest import MACOS_HOST, MKIMAGE_PY, MKIMAGE_GUI, macos_scp_to, macos_ssh
+from conftest import MACOS_HOST, macos_ssh
 
 pytestmark = pytest.mark.macos
 
 REMOTE_DIR = "~/mkimage"
+PACKAGE_DIR = str(Path(__file__).parent.parent / "mkimage")
 
 
-@pytest.fixture(autouse=True)
-def sync_files() -> None:
-    """Ensure mkimage files are synced to the Mac before each test."""
-    r1 = macos_scp_to(MKIMAGE_PY, f"{REMOTE_DIR}/mkimage.py")
-    r2 = macos_scp_to(MKIMAGE_GUI, f"{REMOTE_DIR}/mkimage_gui.py")
-    assert r1.returncode == 0, f"Failed to SCP mkimage.py: {r1.stderr}"
-    assert r2.returncode == 0, f"Failed to SCP mkimage_gui.py: {r2.stderr}"
+@pytest.fixture(autouse=True, scope="session")
+def sync_package() -> None:
+    """Sync the mkimage package to the Mac once per session."""
+    r = subprocess.run(
+        ["scp", "-r", "-o", "BatchMode=yes",
+         PACKAGE_DIR, f"{MACOS_HOST}:{REMOTE_DIR}/mkimage"],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert r.returncode == 0, f"Failed to SCP package: {r.stderr}"
 
 
 def _mkimage(args: str, timeout: int = 30) -> tuple[int, str, str]:
     """Run mkimage.py on the Mac. Returns (exit_code, stdout, stderr)."""
-    r = macos_ssh(f"cd {REMOTE_DIR} && python3 mkimage.py {args}", timeout=timeout)
+    r = macos_ssh(f"cd {REMOTE_DIR} && python3 -m mkimage {args}", timeout=timeout)
     return r.returncode, r.stdout, r.stderr
 
 
