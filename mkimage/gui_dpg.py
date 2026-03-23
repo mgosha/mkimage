@@ -279,17 +279,51 @@ def _check_drive(sender: object = None, app_data: object = None) -> None:
     threading.Thread(target=run, daemon=True).start()
 
 
+def _on_source_mode_change(sender: int) -> None:
+    mode = dpg.get_value(sender)
+    if mode == "USB":
+        dpg.hide_item("source_file_group")
+        dpg.hide_item("source_includes_group")
+        dpg.show_item("source_usb_group")
+        _refresh_source_drives()
+    else:
+        dpg.show_item("source_file_group")
+        dpg.show_item("source_includes_group")
+        dpg.hide_item("source_usb_group")
+    _update_action_label()
+
+
+def _refresh_source_drives() -> None:
+    drives = _list_removable_drives()
+    items = [f"{d['path']}  {d['size']}  {d['model']}" for d in drives] or ["(no USB drives)"]
+    dpg.configure_item("source_drive_combo", items=items)
+    dpg.set_value("source_drive_combo", items[0])
+
+
 def _on_target_mode_change(sender: int) -> None:
     mode = dpg.get_value(sender)
-    if mode == "USB Drive":
-        dpg.hide_item("file_target_group")
-        dpg.show_item("usb_target_group")
-        dpg.configure_item("action_btn", label="Write to USB")
+    if mode == "USB":
+        dpg.hide_item("target_file_group")
+        dpg.show_item("target_usb_group")
         _refresh_drives()
     else:
-        dpg.show_item("file_target_group")
-        dpg.hide_item("usb_target_group")
-        dpg.configure_item("action_btn", label="Create Image")
+        dpg.show_item("target_file_group")
+        dpg.hide_item("target_usb_group")
+    _update_action_label()
+
+
+def _update_action_label() -> None:
+    src = dpg.get_value("source_mode")
+    tgt = dpg.get_value("target_mode")
+    if src == "File" and tgt == "File":
+        label = "Create Image"
+    elif src == "File" and tgt == "USB":
+        label = "Write to USB"
+    elif src == "USB" and tgt == "File":
+        label = "Clone to Image"
+    else:
+        label = "Clone to USB"
+    dpg.configure_item("action_btn", label=label)
 
 def _get_includes() -> list[str]:
     includes: list[str] = []
@@ -331,12 +365,20 @@ def _section(label: str) -> None:
 # ---------------------------------------------------------------------------
 
 def _do_create() -> None:
-    source = dpg.get_value("source_path").strip()
-    if not source:
-        _log("Error: Source directory is required.")
-        return
+    source_mode = dpg.get_value("source_mode")
+    if source_mode == "USB":
+        sel = dpg.get_value("source_drive_combo")
+        if not sel or "no USB" in sel:
+            _log("Error: No source USB drive selected.")
+            return
+        source = sel.split()[0]
+    else:
+        source = dpg.get_value("source_path").strip()
+        if not source:
+            _log("Error: Source directory is required.")
+            return
 
-    includes = _get_includes()
+    includes = _get_includes() if source_mode == "File" else []
     label = dpg.get_value("vol_label").strip() or "UEFITOOLS"
     target_mode = dpg.get_value("target_mode")
 
@@ -347,6 +389,8 @@ def _do_create() -> None:
             return
     else:
         output = ""
+
+    to_usb = target_mode == "USB"
 
     # Read options from Options tab
     partition_scheme = dpg.get_value("partition_radio")
@@ -377,7 +421,7 @@ def _do_create() -> None:
         )
         try:
             if not Path(source).is_dir() and Path(source).is_file():
-                if target_mode != "USB Drive":
+                if not to_usb:
                     _log("Error: Image source can only target USB.")
                     _set_building(False, "error")
                     return
@@ -398,7 +442,7 @@ def _do_create() -> None:
                 return
             _log(f"  {len(files)} files")
 
-            if target_mode == "USB Drive":
+            if to_usb:
                 _set_status("Writing to USB...")
                 _write_usb_from_dir(cfg, files, "usb")
             else:
@@ -461,7 +505,7 @@ def _animate_progress() -> None:
 def gui_main() -> None:
     dpg.create_context()
     dpg.create_viewport(title="mkimage \u2014 Bootable Media Creator",
-                        width=720, height=620)
+                        width=800, height=620)
     _create_themes()
 
     # --- File dialogs ---
@@ -489,86 +533,123 @@ def gui_main() -> None:
 
             # ===================== BUILD TAB =====================
             with dpg.tab(label="Build", tag="build_tab"):
-                _section("Source")
                 with dpg.group(horizontal=True):
-                    b = dpg.add_button(label="Browse...", width=85,
-                                       callback=lambda: dpg.show_item("source_dialog"))
-                    with dpg.tooltip(b):
-                        dpg.add_text("Select source directory or image file")
-                    usb_btn = dpg.add_button(label="USB", width=40,
-                                             callback=lambda: dpg.set_value("source_path", "usb"))
-                    with dpg.tooltip(usb_btn):
-                        dpg.add_text("Auto-detect USB drive (for cloning)")
-                    src_inp = dpg.add_input_text(tag="source_path", width=-1,
-                                                hint="Dir, .img, .iso, /dev/sdX, or 'usb'")
-                    with dpg.tooltip(src_inp):
-                        dpg.add_text("Directory, image file, /dev/sdX device,\nor 'usb' to auto-detect a USB drive")
+                    # === SOURCE PANEL ===
+                    with dpg.child_window(width=345, height=210, border=True):
+                        t = dpg.add_text("Source")
+                        dpg.bind_item_theme(t, "header_theme")
 
-                # Extra includes
-                dpg.add_spacer(height=2)
-                with dpg.group(horizontal=True):
-                    dpg.add_button(label="Add File", width=70,
-                                   callback=lambda: dpg.show_item("include_file_dialog"))
-                    dpg.add_button(label="Add Dir", width=70,
-                                   callback=lambda: dpg.show_item("include_dir_dialog"))
-                    dpg.add_button(label="Clear", width=50,
-                                   callback=lambda: dpg.delete_item("includes_list", children_only=True))
-                inc_cw = dpg.add_child_window(tag="includes_list", height=40, border=True)
-                with dpg.tooltip(inc_cw):
-                    dpg.add_text("Extra files/directories added to the image")
+                        dpg.add_radio_button(
+                            ["File", "USB"], tag="source_mode",
+                            horizontal=True, default_value="File",
+                            callback=_on_source_mode_change)
 
-                _section("Output")
+                        # File mode widgets
+                        with dpg.group(tag="source_file_group"):
+                            with dpg.group(horizontal=True):
+                                dpg.add_button(
+                                    label="Browse...", width=75,
+                                    callback=lambda: dpg.show_item("source_dialog"))
+                                dpg.add_button(
+                                    label="USB", width=35,
+                                    callback=lambda: dpg.set_value("source_path", "usb"))
+                            dpg.add_input_text(
+                                tag="source_path", width=-1,
+                                hint="Dir, .img, .iso, /dev/sdX")
+
+                        # USB mode widgets (hidden)
+                        with dpg.group(tag="source_usb_group", show=False):
+                            with dpg.group(horizontal=True):
+                                dpg.add_combo(
+                                    tag="source_drive_combo",
+                                    items=["(click Refresh)"], width=-80)
+                                dpg.add_button(
+                                    label="Refresh",
+                                    callback=_refresh_source_drives, width=70)
+
+                        # Extra includes (File mode only)
+                        with dpg.group(tag="source_includes_group"):
+                            dpg.add_spacer(height=2)
+                            with dpg.group(horizontal=True):
+                                dpg.add_button(
+                                    label="Add File", width=60,
+                                    callback=lambda: dpg.show_item("include_file_dialog"))
+                                dpg.add_button(
+                                    label="Add Dir", width=60,
+                                    callback=lambda: dpg.show_item("include_dir_dialog"))
+                                dpg.add_button(
+                                    label="Clear", width=45,
+                                    callback=lambda: dpg.delete_item(
+                                        "includes_list", children_only=True))
+                            with dpg.child_window(tag="includes_list", height=55,
+                                                  border=True):
+                                pass
+
+                    # === ARROW ===
+                    dpg.add_spacer(width=5)
+                    arrow = dpg.add_text("\u25ba")
+                    dpg.bind_item_theme(arrow, "header_theme")
+                    dpg.add_spacer(width=5)
+
+                    # === TARGET PANEL ===
+                    with dpg.child_window(width=345, height=210, border=True):
+                        t = dpg.add_text("Target")
+                        dpg.bind_item_theme(t, "header_theme")
+
+                        dpg.add_radio_button(
+                            ["File", "USB"], tag="target_mode",
+                            horizontal=True, default_value="File",
+                            callback=_on_target_mode_change)
+
+                        # File mode
+                        with dpg.group(tag="target_file_group"):
+                            with dpg.group(horizontal=True):
+                                dpg.add_button(
+                                    label="Browse...", width=75,
+                                    callback=lambda: dpg.show_item("output_dialog"))
+                                dpg.add_button(
+                                    label="USB", width=35,
+                                    callback=lambda: dpg.set_value("output_path", "usb"))
+                            dpg.add_input_text(
+                                tag="output_path", width=-1,
+                                hint="Output .img, .iso, .img.gz")
+
+                        # USB mode (hidden)
+                        with dpg.group(tag="target_usb_group", show=False):
+                            with dpg.group(horizontal=True):
+                                dpg.add_combo(
+                                    tag="drive_combo",
+                                    items=["(click Refresh)"], width=-170)
+                                dpg.add_button(
+                                    label="Refresh",
+                                    callback=_refresh_drives, width=70)
+                                dpg.add_button(
+                                    label="Check",
+                                    callback=_check_drive, width=55)
+                            with dpg.group(horizontal=True):
+                                dpg.add_checkbox(
+                                    label="Persistent", tag="persistent_check")
+                                dpg.add_input_text(
+                                    tag="persistent_size",
+                                    default_value="4G", width=45)
+
+                # Format + Label + Extra below both panels
+                dpg.add_spacer(height=3)
                 with dpg.group(horizontal=True):
                     dpg.add_text("Format:")
-                    fmt_rb = dpg.add_radio_button(["Image (.img)", "ISO (.iso)"],
-                                                  tag="fmt_radio", horizontal=True,
-                                                  default_value="Image (.img)")
-                    with dpg.tooltip(fmt_rb):
-                        dpg.add_text("Image (.img) for disk images, ISO (.iso) for optical/hybrid")
+                    dpg.add_radio_button(
+                        ["Image (.img)", "ISO (.iso)"], tag="fmt_radio",
+                        horizontal=True, default_value="Image (.img)")
                 with dpg.group(horizontal=True):
                     dpg.add_text("Label:")
-                    lbl_inp = dpg.add_input_text(tag="vol_label", default_value="UEFITOOLS", width=110)
-                    with dpg.tooltip(lbl_inp):
-                        dpg.add_text("Volume label (11 chars max for FAT32)")
+                    dpg.add_input_text(
+                        tag="vol_label", default_value="UEFITOOLS", width=100)
                     dpg.add_spacer(width=10)
                     dpg.add_text("Extra (MB):")
-                    extra_inp = dpg.add_input_text(tag="extra_space", default_value="32",
-                                                   width=55, decimal=True)
-                    with dpg.tooltip(extra_inp):
-                        dpg.add_text("Free space added beyond content size")
+                    dpg.add_input_text(
+                        tag="extra_space", default_value="32", width=50)
 
-                _section("Target")
-                tgt_rb = dpg.add_radio_button(["File", "USB Drive"], tag="target_mode",
-                                              horizontal=True, default_value="File",
-                                              callback=_on_target_mode_change)
-                with dpg.tooltip(tgt_rb):
-                    dpg.add_text("File saves to disk, USB Drive writes directly")
-                with dpg.group(tag="file_target_group", horizontal=True):
-                    b = dpg.add_button(label="Browse...", width=85,
-                                       callback=lambda: dpg.show_item("output_dialog"))
-                    with dpg.tooltip(b):
-                        dpg.add_text("Save as .img, .iso, .img.gz, etc.")
-                    out_inp = dpg.add_input_text(tag="output_path", width=-1,
-                                                 hint="Output file (.img, .iso, .img.gz)")
-                    with dpg.tooltip(out_inp):
-                        dpg.add_text("Use .img.gz for compressed output")
-                with dpg.group(tag="usb_target_group", show=False):
-                    with dpg.group(horizontal=True):
-                        drv_cb = dpg.add_combo(tag="drive_combo", items=["(click Refresh)"], width=-180)
-                        with dpg.tooltip(drv_cb):
-                            dpg.add_text("Select a removable USB drive")
-                        dpg.add_button(label="Refresh", callback=_refresh_drives, width=80)
-                        chk_btn = dpg.add_button(label="Check Drive", callback=_check_drive, width=85)
-                        with dpg.tooltip(chk_btn):
-                            dpg.add_text("Test USB drive for bad blocks (destructive)")
-                    with dpg.group(horizontal=True):
-                        dpg.add_checkbox(label="Persistent storage", tag="persistent_check")
-                        dpg.add_input_text(tag="persistent_size", default_value="4G",
-                                           width=55, hint="Size")
-                        with dpg.tooltip(dpg.last_item()):
-                            dpg.add_text("Add ext4 casper-rw partition for Linux live USBs")
-
-                dpg.add_spacer(height=8)
+                dpg.add_spacer(height=5)
                 btn = dpg.add_button(label="Create Image", tag="action_btn",
                                      callback=_do_create, width=-1, height=36)
                 dpg.bind_item_theme(btn, "action_theme")

@@ -105,7 +105,7 @@ def gui_main() -> None:
     def _check_drive_tk() -> None:
         """Run bad block check on selected USB drive."""
         from mkimage.usb.safety import _check_bad_blocks, _unmount_device
-        sel = drive_var.get().strip()
+        sel = target_drive_var.get().strip()
         if not sel:
             messagebox.showerror("Error", "No USB drive selected.")
             return
@@ -130,40 +130,95 @@ def gui_main() -> None:
 
         threading.Thread(target=run, daemon=True).start()
 
-    def refresh_usb_drives() -> None:
+    def refresh_source_drives() -> None:
         drives = _list_removable_drives()
-        usb_drives.clear()
-        usb_drives.extend(drives)
-        menu = drive_combo["menu"]
+        source_usb_drives.clear()
+        source_usb_drives.extend(drives)
+        menu = source_drive_combo["menu"]
         menu.delete(0, tk.END)
         if not drives:
             menu.add_command(label="(no USB drives found)",
-                             command=lambda: drive_var.set(""))
-            drive_var.set("")
+                             command=lambda: source_drive_var.set(""))
+            source_drive_var.set("")
         else:
             for d in drives:
                 model = f"  {d['model']}" if d['model'] else ""
                 lbl = f"{d['path']}  {d['size']}{model}"
-                menu.add_command(label=lbl, command=lambda v=lbl: drive_var.set(v))
-            drive_var.set(f"{drives[0]['path']}  {drives[0]['size']}"
-                         f"{'  ' + drives[0]['model'] if drives[0]['model'] else ''}")
+                menu.add_command(label=lbl,
+                                 command=lambda v=lbl: source_drive_var.set(v))
+            source_drive_var.set(
+                f"{drives[0]['path']}  {drives[0]['size']}"
+                f"{'  ' + drives[0]['model'] if drives[0]['model'] else ''}")
+
+    def refresh_target_drives() -> None:
+        drives = _list_removable_drives()
+        target_usb_drives.clear()
+        target_usb_drives.extend(drives)
+        menu = target_drive_combo["menu"]
+        menu.delete(0, tk.END)
+        if not drives:
+            menu.add_command(label="(no USB drives found)",
+                             command=lambda: target_drive_var.set(""))
+            target_drive_var.set("")
+        else:
+            for d in drives:
+                model = f"  {d['model']}" if d['model'] else ""
+                lbl = f"{d['path']}  {d['size']}{model}"
+                menu.add_command(label=lbl,
+                                 command=lambda v=lbl: target_drive_var.set(v))
+            target_drive_var.set(
+                f"{drives[0]['path']}  {drives[0]['size']}"
+                f"{'  ' + drives[0]['model'] if drives[0]['model'] else ''}")
+
+    def _update_action_label_tk() -> None:
+        src = source_mode_var.get()
+        tgt = target_mode_var.get()
+        if src == "file" and tgt == "file":
+            label = "Create Image"
+        elif src == "file" and tgt == "usb":
+            label = "Write to USB"
+        elif src == "usb" and tgt == "file":
+            label = "Clone to Image"
+        else:
+            label = "Clone to USB"
+        create_btn.config(text=label)
+
+    def on_source_mode_change(*_args: object) -> None:
+        if source_mode_var.get() == "usb":
+            source_file_frame.pack_forget()
+            source_includes_frame.pack_forget()
+            source_usb_frame.pack(fill=tk.X, pady=(2, 0))
+            refresh_source_drives()
+        else:
+            source_usb_frame.pack_forget()
+            source_file_frame.pack(fill=tk.X)
+            source_includes_frame.pack(fill=tk.X, pady=(2, 0))
+        _update_action_label_tk()
 
     def on_target_mode_change(*_args: object) -> None:
         if target_mode_var.get() == "usb":
-            output_frame.grid_remove()
-            usb_frame.grid(row=4, column=0, columnspan=4, sticky=tk.EW, padx=10, pady=2)
-            create_btn.config(text="Write to USB")
-            refresh_usb_drives()
+            target_file_frame.pack_forget()
+            target_usb_frame.pack(fill=tk.X)
+            refresh_target_drives()
         else:
-            usb_frame.grid_remove()
-            output_frame.grid(row=4, column=0, columnspan=4, sticky=tk.EW, padx=10, pady=2)
-            create_btn.config(text="Create Image")
+            target_usb_frame.pack_forget()
+            target_file_frame.pack(fill=tk.X)
+        _update_action_label_tk()
 
     def do_create() -> None:
-        src = source_var.get().strip()
-        if not src:
-            messagebox.showerror("Error", "Source directory is required.")
-            return
+        if source_mode_var.get() == "usb":
+            sel = source_drive_var.get().strip()
+            if not sel:
+                messagebox.showerror("Error", "No source USB drive selected.")
+                return
+            src = sel.split()[0]
+            includes: list[str] = []
+        else:
+            src = source_var.get().strip()
+            if not src:
+                messagebox.showerror("Error", "Source directory is required.")
+                return
+            includes = list(includes_list.get(0, tk.END))
 
         to_usb = target_mode_var.get() == "usb"
         if not to_usb:
@@ -174,7 +229,6 @@ def gui_main() -> None:
         else:
             out = ""
 
-        includes = list(includes_list.get(0, tk.END))
         gui_label = label_var.get().strip() or "UEFITOOLS"
 
         # Read partition scheme and rows from Options tab
@@ -257,10 +311,12 @@ def gui_main() -> None:
     # --- Build the window ---
     root = tk.Tk()
     root.title("mkimage \u2014 Bootable Media Creator")
+    root.geometry("800x520")
     root.resizable(False, False)
 
     pad = {"padx": 10, "pady": 2}
-    usb_drives: list[dict[str, str]] = []
+    source_usb_drives: list[dict[str, str]] = []
+    target_usb_drives: list[dict[str, str]] = []
 
     notebook = ttk.Notebook(root)
     notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
@@ -269,97 +325,142 @@ def gui_main() -> None:
     build_tab = ttk.Frame(notebook)
     notebook.add(build_tab, text="Build")
 
-    # Source
-    tk.Label(build_tab, text="Source:").grid(row=0, column=0, sticky=tk.W, **pad)
-    source_var = tk.StringVar()
-    src_frame = tk.Frame(build_tab)
-    src_frame.grid(row=0, column=1, columnspan=2, sticky=tk.EW, **pad)
-    source_entry = tk.Entry(src_frame, textvariable=source_var, width=45)
-    source_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
-    ToolTip(source_entry, "Directory, image file, /dev/sdX device, or 'usb' to auto-detect")
-    usb_src_btn = tk.Button(src_frame, text="USB", width=4,
-                            command=lambda: source_var.set("usb"))
-    usb_src_btn.pack(side=tk.LEFT, padx=(3, 0))
-    ToolTip(usb_src_btn, "Auto-detect USB drive (for cloning)")
-    tk.Button(build_tab, text="Browse...", command=browse_source).grid(row=0, column=3, **pad)
+    # --- Side-by-side Source / Target ---
+    io_frame = tk.Frame(build_tab)
+    io_frame.pack(fill=tk.X, padx=5, pady=5)
 
-    # Includes
-    tk.Label(build_tab, text="Extra Includes:").grid(row=1, column=0, sticky=tk.NW, **pad)
-    inc_frame = tk.Frame(build_tab)
-    inc_frame.grid(row=1, column=1, columnspan=2, sticky=tk.W, **pad)
-    tk.Button(inc_frame, text="Add File", command=add_include_file).pack(side=tk.LEFT, padx=(0, 5))
-    tk.Button(inc_frame, text="Add Dir", command=add_include_dir).pack(side=tk.LEFT, padx=(0, 5))
-    tk.Button(inc_frame, text="Clear", command=lambda: includes_list.delete(0, tk.END)).pack(side=tk.LEFT)
-    includes_list = tk.Listbox(build_tab, height=3, width=60)
-    includes_list.grid(row=2, column=0, columnspan=4, sticky=tk.EW, padx=10, pady=2)
+    # === SOURCE PANEL ===
+    src_lf = tk.LabelFrame(io_frame, text="Source", padx=5, pady=5)
+    src_lf.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+    source_mode_var = tk.StringVar(value="file")
+    src_mode_frame = tk.Frame(src_lf)
+    src_mode_frame.pack(fill=tk.X)
+    tk.Radiobutton(src_mode_frame, text="File", variable=source_mode_var,
+                   value="file", command=on_source_mode_change).pack(side=tk.LEFT)
+    tk.Radiobutton(src_mode_frame, text="USB", variable=source_mode_var,
+                   value="usb", command=on_source_mode_change).pack(side=tk.LEFT, padx=5)
+
+    # Source File mode
+    source_file_frame = tk.Frame(src_lf)
+    source_file_frame.pack(fill=tk.X)
+    src_btn_row = tk.Frame(source_file_frame)
+    src_btn_row.pack(fill=tk.X)
+    tk.Button(src_btn_row, text="Browse...", width=9,
+              command=browse_source).pack(side=tk.LEFT, padx=(0, 3))
+    tk.Button(src_btn_row, text="USB", width=4,
+              command=lambda: source_var.set("usb")).pack(side=tk.LEFT)
+    source_var = tk.StringVar()
+    source_entry = tk.Entry(source_file_frame, textvariable=source_var)
+    source_entry.pack(fill=tk.X, pady=(2, 0))
+    ToolTip(source_entry, "Directory, image file, /dev/sdX device, or 'usb'")
+
+    # Source USB mode (hidden)
+    source_usb_frame = tk.Frame(src_lf)
+    src_usb_row = tk.Frame(source_usb_frame)
+    src_usb_row.pack(fill=tk.X)
+    source_drive_var = tk.StringVar(value="")
+    source_drive_combo = tk.OptionMenu(src_usb_row, source_drive_var, "")
+    source_drive_combo.config(width=25, anchor=tk.W)
+    source_drive_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
+    tk.Button(src_usb_row, text="Refresh",
+              command=refresh_source_drives).pack(side=tk.LEFT, padx=(3, 0))
+
+    # Extra includes (File mode only)
+    source_includes_frame = tk.Frame(src_lf)
+    source_includes_frame.pack(fill=tk.X, pady=(2, 0))
+    inc_btn_row = tk.Frame(source_includes_frame)
+    inc_btn_row.pack(fill=tk.X)
+    tk.Button(inc_btn_row, text="Add File", width=7,
+              command=add_include_file).pack(side=tk.LEFT, padx=(0, 3))
+    tk.Button(inc_btn_row, text="Add Dir", width=7,
+              command=add_include_dir).pack(side=tk.LEFT, padx=(0, 3))
+    tk.Button(inc_btn_row, text="Clear", width=5,
+              command=lambda: includes_list.delete(0, tk.END)).pack(side=tk.LEFT)
+    includes_list = tk.Listbox(source_includes_frame, height=3)
+    includes_list.pack(fill=tk.X, pady=(2, 0))
     ToolTip(includes_list, "Extra files/directories added to the image")
 
-    # Format + label
-    tk.Label(build_tab, text="Format:").grid(row=3, column=0, sticky=tk.W, **pad)
-    fmt_frame = tk.Frame(build_tab)
-    fmt_frame.grid(row=3, column=1, columnspan=2, sticky=tk.W, **pad)
-    fmt_var = tk.StringVar(value="img")
-    tk.Radiobutton(fmt_frame, text="Image (.img)", variable=fmt_var, value="img").pack(side=tk.LEFT)
-    tk.Radiobutton(fmt_frame, text="ISO (.iso)", variable=fmt_var, value="iso").pack(side=tk.LEFT, padx=10)
-    ToolTip(fmt_frame, "Image (.img) for disk images, ISO (.iso) for optical/hybrid")
+    # === ARROW ===
+    tk.Label(io_frame, text=" \u2192 ", font=("Segoe UI", 16, "bold")).pack(
+        side=tk.LEFT, padx=5)
 
-    tk.Label(build_tab, text="Label:").grid(row=4, column=0, sticky=tk.W, **pad)
-    label_var = tk.StringVar(value="UEFITOOLS")
-    label_entry = tk.Entry(build_tab, textvariable=label_var, width=15)
-    label_entry.grid(row=4, column=1, sticky=tk.W, **pad)
-    ToolTip(label_entry, "Volume label (11 chars max for FAT32)")
-    tk.Label(build_tab, text="Extra (MB):").grid(row=4, column=2, sticky=tk.E, **pad)
-    size_var = tk.StringVar(value="32")
-    extra_entry = tk.Entry(build_tab, textvariable=size_var, width=6)
-    extra_entry.grid(row=4, column=3, sticky=tk.W, **pad)
-    ToolTip(extra_entry, "Free space added beyond content size")
+    # === TARGET PANEL ===
+    tgt_lf = tk.LabelFrame(io_frame, text="Target", padx=5, pady=5)
+    tgt_lf.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-    # Target mode
-    tk.Label(build_tab, text="Target:").grid(row=5, column=0, sticky=tk.W, **pad)
-    target_frame = tk.Frame(build_tab)
-    target_frame.grid(row=5, column=1, columnspan=2, sticky=tk.W, **pad)
     target_mode_var = tk.StringVar(value="file")
-    tk.Radiobutton(target_frame, text="File", variable=target_mode_var, value="file",
-                   command=on_target_mode_change).pack(side=tk.LEFT)
-    tk.Radiobutton(target_frame, text="USB Drive", variable=target_mode_var, value="usb",
-                   command=on_target_mode_change).pack(side=tk.LEFT, padx=10)
-    ToolTip(target_frame, "File saves to disk, USB Drive writes directly")
+    tgt_mode_frame = tk.Frame(tgt_lf)
+    tgt_mode_frame.pack(fill=tk.X)
+    tk.Radiobutton(tgt_mode_frame, text="File", variable=target_mode_var,
+                   value="file", command=on_target_mode_change).pack(side=tk.LEFT)
+    tk.Radiobutton(tgt_mode_frame, text="USB", variable=target_mode_var,
+                   value="usb", command=on_target_mode_change).pack(side=tk.LEFT, padx=5)
 
-    # File output
-    output_frame = tk.Frame(build_tab)
-    output_frame.grid(row=6, column=0, columnspan=4, sticky=tk.EW, padx=10, pady=2)
+    # Target File mode
+    target_file_frame = tk.Frame(tgt_lf)
+    target_file_frame.pack(fill=tk.X)
+    tgt_btn_row = tk.Frame(target_file_frame)
+    tgt_btn_row.pack(fill=tk.X)
+    tk.Button(tgt_btn_row, text="Browse...", width=9,
+              command=browse_output).pack(side=tk.LEFT, padx=(0, 3))
+    tk.Button(tgt_btn_row, text="USB", width=4,
+              command=lambda: output_var.set("usb")).pack(side=tk.LEFT)
     output_var = tk.StringVar()
-    tk.Button(output_frame, text="Browse...", command=browse_output).pack(side=tk.LEFT, padx=(0, 5))
-    output_entry = tk.Entry(output_frame, textvariable=output_var, width=50)
-    output_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
-    ToolTip(output_entry, "Use .img.gz for compressed output")
+    output_entry = tk.Entry(target_file_frame, textvariable=output_var)
+    output_entry.pack(fill=tk.X, pady=(2, 0))
+    ToolTip(output_entry, "Output .img, .iso, .img.gz")
 
-    # USB output (hidden)
-    usb_frame = tk.Frame(build_tab)
-    # Drive row
-    usb_drive_row = tk.Frame(usb_frame)
-    usb_drive_row.pack(fill=tk.X)
-    drive_var = tk.StringVar(value="")
-    drive_combo = tk.OptionMenu(usb_drive_row, drive_var, "")
-    drive_combo.config(width=35, anchor=tk.W)
-    drive_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
-    ToolTip(drive_combo, "Select a removable USB drive")
-    tk.Button(usb_drive_row, text="Refresh", command=refresh_usb_drives).pack(side=tk.LEFT, padx=(5, 0))
-    tk.Button(usb_drive_row, text="Check Drive", command=lambda: _check_drive_tk()).pack(side=tk.LEFT, padx=(5, 0))
+    # Target USB mode (hidden)
+    target_usb_frame = tk.Frame(tgt_lf)
+    tgt_usb_row = tk.Frame(target_usb_frame)
+    tgt_usb_row.pack(fill=tk.X)
+    target_drive_var = tk.StringVar(value="")
+    target_drive_combo = tk.OptionMenu(tgt_usb_row, target_drive_var, "")
+    target_drive_combo.config(width=20, anchor=tk.W)
+    target_drive_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
+    tk.Button(tgt_usb_row, text="Refresh",
+              command=refresh_target_drives).pack(side=tk.LEFT, padx=(3, 0))
+    tk.Button(tgt_usb_row, text="Check",
+              command=lambda: _check_drive_tk()).pack(side=tk.LEFT, padx=(3, 0))
     # Persistent row
-    usb_persist_row = tk.Frame(usb_frame)
-    usb_persist_row.pack(fill=tk.X, pady=(2, 0))
+    tgt_persist_row = tk.Frame(target_usb_frame)
+    tgt_persist_row.pack(fill=tk.X, pady=(2, 0))
     persistent_var = tk.BooleanVar(value=False)
-    tk.Checkbutton(usb_persist_row, text="Persistent storage",
+    tk.Checkbutton(tgt_persist_row, text="Persistent",
                    variable=persistent_var).pack(side=tk.LEFT)
     persistent_size_var = tk.StringVar(value="4G")
-    tk.Entry(usb_persist_row, textvariable=persistent_size_var,
+    tk.Entry(tgt_persist_row, textvariable=persistent_size_var,
              width=6).pack(side=tk.LEFT, padx=2)
-    ToolTip(usb_persist_row, "Add ext4 casper-rw partition for Linux live USBs")
+    ToolTip(tgt_persist_row, "Add ext4 casper-rw partition for Linux live USBs")
+
+    # --- Format + Label + Extra below both panels ---
+    fmt_row = tk.Frame(build_tab)
+    fmt_row.pack(fill=tk.X, padx=10, pady=(5, 2))
+    tk.Label(fmt_row, text="Format:").pack(side=tk.LEFT)
+    fmt_var = tk.StringVar(value="img")
+    tk.Radiobutton(fmt_row, text="Image (.img)", variable=fmt_var,
+                   value="img").pack(side=tk.LEFT, padx=(5, 0))
+    tk.Radiobutton(fmt_row, text="ISO (.iso)", variable=fmt_var,
+                   value="iso").pack(side=tk.LEFT, padx=(10, 0))
+
+    label_row = tk.Frame(build_tab)
+    label_row.pack(fill=tk.X, padx=10, pady=2)
+    tk.Label(label_row, text="Label:").pack(side=tk.LEFT)
+    label_var = tk.StringVar(value="UEFITOOLS")
+    label_entry = tk.Entry(label_row, textvariable=label_var, width=12)
+    label_entry.pack(side=tk.LEFT, padx=(5, 0))
+    ToolTip(label_entry, "Volume label (11 chars max for FAT32)")
+    tk.Label(label_row, text="Extra (MB):").pack(side=tk.LEFT, padx=(15, 0))
+    size_var = tk.StringVar(value="32")
+    extra_entry = tk.Entry(label_row, textvariable=size_var, width=6)
+    extra_entry.pack(side=tk.LEFT, padx=(5, 0))
+    ToolTip(extra_entry, "Free space added beyond content size")
 
     # Action button
-    create_btn = tk.Button(build_tab, text="Create Image", width=25, command=do_create)
-    create_btn.grid(row=7, column=0, columnspan=4, pady=10)
+    create_btn = tk.Button(build_tab, text="Create Image", width=25,
+                           command=do_create)
+    create_btn.pack(pady=10)
 
     # ===================== OPTIONS TAB =====================
     options_tab = ttk.Frame(notebook)
