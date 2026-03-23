@@ -196,7 +196,7 @@ def _add_partition_row(sender: object = None, app_data: object = None,
                        parent=row_id)
     dpg.add_input_text(default_value=label, width=75, hint="Label",
                        parent=row_id)
-    dpg.add_input_text(default_value=cluster, width=50, hint="Cluster",
+    dpg.add_input_text(default_value=cluster, width=55, hint="Clust.",
                        parent=row_id)
     dpg.add_input_text(default_value=src, width=-1, hint="Source dir",
                        parent=row_id)
@@ -585,13 +585,6 @@ def gui_main() -> None:
                                    callback=_add_partition_row)
                     dpg.add_button(label="Remove Last",
                                    callback=_remove_partition_row)
-
-                with dpg.group(horizontal=True):
-                    dpg.add_text("Type", indent=5)
-                    dpg.add_text("Size", indent=80)
-                    dpg.add_text("Label", indent=140)
-                    dpg.add_text("Cluster", indent=220)
-                    dpg.add_text("Source Dir", indent=275)
 
                 with dpg.child_window(tag="partition_list", height=120,
                                       border=True):
