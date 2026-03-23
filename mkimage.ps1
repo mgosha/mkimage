@@ -23,7 +23,7 @@ param(
     Can also write directly to USB flash drives (including unformatted ones).
 
     All operations use native Windows APIs:
-    - FAT32 .img: VHD create/mount/format/robocopy, then strip VHD footer
+    - FAT32 .img: diskpart VHD create/attach/format/robocopy, strip footer (no Hyper-V needed)
     - ISO: oscdimg.exe (Windows ADK) or IMAPI2 COM fallback
     - USB: Clear-Disk/Initialize-Disk/New-Partition/Format-Volume/robocopy
 
@@ -170,28 +170,42 @@ function New-Fat32Image {
         Write-Log "Creating VHD ($SizeMB MB)..."
         Refresh-Log
 
-        # Create fixed-size VHD
-        New-VHD -Path $vhdPath -SizeBytes ($SizeMB * 1MB) -Fixed | Out-Null
-
-        # Mount it
-        Write-Log "Mounting VHD..."
-        Mount-VHD -Path $vhdPath
-        $disk = Get-VHD -Path $vhdPath | Get-Disk
-
-        # Initialize, partition, format
-        Write-Log "Initializing and formatting FAT32..."
-        Initialize-Disk -Number $disk.Number -PartitionStyle MBR -ErrorAction SilentlyContinue
-        $part = New-Partition -DiskNumber $disk.Number -UseMaximumSize -AssignDriveLetter -IsActive
-        $driveLetter = $part.DriveLetter
-        Start-Sleep -Seconds 2
-
-        # Format with format.com /X (force dismount)
-        $fmtOut = cmd.exe /c "echo Y | format ${driveLetter}: /FS:FAT32 /Q /V:$labelTrim /X 2>&1"
-        $fmtText = ($fmtOut | Out-String).Trim()
-        if ($fmtText -notmatch "Format complete") {
-            throw "format.com failed: $fmtText"
+        # Create fixed-size VHD via diskpart (works on all Windows editions,
+        # no Hyper-V required — unlike New-VHD which needs Hyper-V)
+        $dpCreate = @"
+create vdisk file="$vhdPath" maximum=$SizeMB type=fixed
+select vdisk file="$vhdPath"
+attach vdisk
+create partition primary
+active
+format fs=fat32 quick label=$labelTrim
+assign
+"@
+        Write-Log "  diskpart: create + attach + format..."
+        $dpOut = ($dpCreate | diskpart 2>&1) | Out-String
+        if ($dpOut -notmatch "successfully formatted" -and $dpOut -notmatch "DiskPart successfully") {
+            throw "diskpart failed: $($dpOut.Trim() -replace '[\r\n]+', ' | ')"
         }
-        Write-Log "  Format complete"
+        Start-Sleep -Seconds 1
+
+        # Find the assigned drive letter from the attached VHD
+        $driveLetter = $null
+        $vhdDisks = Get-Disk | Where-Object { $_.Location -eq $vhdPath -or $_.FriendlyName -match 'Msft Virtual Disk' }
+        foreach ($vd in $vhdDisks) {
+            $parts = Get-Partition -DiskNumber $vd.Number -ErrorAction SilentlyContinue
+            foreach ($p in $parts) {
+                if ($p.DriveLetter -and $p.DriveLetter -ne "`0") {
+                    $driveLetter = $p.DriveLetter
+                    break
+                }
+            }
+            if ($driveLetter) { break }
+        }
+
+        if (-not $driveLetter) {
+            throw "Could not find drive letter for attached VHD"
+        }
+        Write-Log "  Mounted as ${driveLetter}:"
 
         $destRoot = "${driveLetter}:\"
         Write-Log "Copying files to ${driveLetter}:..."
@@ -236,9 +250,14 @@ function New-Fat32Image {
         $copiedCount = (Get-ChildItem $destRoot -Recurse -File).Count
         Write-Log "Copied $copiedCount files to image"
 
-        # Dismount VHD
-        Write-Log "Dismounting VHD..."
-        Dismount-VHD -Path $vhdPath
+        # Detach VHD via diskpart
+        Write-Log "Detaching VHD..."
+        $dpDetach = @"
+select vdisk file="$vhdPath"
+detach vdisk
+"@
+        ($dpDetach | diskpart 2>&1) | Out-Null
+        Start-Sleep -Seconds 1
 
         # Strip the 512-byte VHD footer to produce a raw FAT32 image
         Write-Log "Converting to raw image..."
@@ -263,8 +282,12 @@ function New-Fat32Image {
 
     } catch {
         Write-Log "[ERROR] $_"
-        # Cleanup: dismount if still mounted
-        Dismount-VHD -Path $vhdPath -ErrorAction SilentlyContinue
+        # Cleanup: detach if still attached
+        $dpCleanup = @"
+select vdisk file="$vhdPath"
+detach vdisk
+"@
+        ($dpCleanup | diskpart 2>&1) | Out-Null
         return $false
     } finally {
         Remove-Item $vhdPath -ErrorAction SilentlyContinue
