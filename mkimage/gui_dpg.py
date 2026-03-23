@@ -142,29 +142,46 @@ def _create_themes() -> None:
 
 
 # ---------------------------------------------------------------------------
-# File dialog callbacks
+# Native file dialog helper
 # ---------------------------------------------------------------------------
 
-def _on_source_selected(_s: int, app_data: dict) -> None:
-    sel = app_data.get("selections", {})
-    path = list(sel.values())[0] if sel else app_data.get("file_path_name", "")
-    if path:
-        dpg.set_value("source_path", path)
+def _open_native_dialog(
+    mode: str, title: str, callback: object,
+    filetypes: list[tuple[str, str]] | None = None,
+    multiple: bool = False,
+) -> None:
+    """Open a native OS file dialog in a background thread."""
+    def run() -> None:
+        from mkimage.native_dialog import native_file_dialog
+        results = native_file_dialog(
+            mode=mode, title=title, filetypes=filetypes, multiple=multiple)
+        if results:
+            callback(results)
+    threading.Thread(target=run, daemon=True).start()
 
-def _on_include_file_selected(_s: int, app_data: dict) -> None:
-    for path in app_data.get("selections", {}).values():
-        dpg.add_selectable(label=path, parent="includes_list")
 
-def _on_include_dir_selected(_s: int, app_data: dict) -> None:
-    sel = app_data.get("selections", {})
-    path = list(sel.values())[0] if sel else app_data.get("file_path_name", "")
-    if path:
-        dpg.add_selectable(label=path, parent="includes_list")
+def _browse_source() -> None:
+    _open_native_dialog("open_dir", "Select Source Directory",
+                        lambda r: dpg.set_value("source_path", r[0]))
 
-def _on_output_selected(_s: int, app_data: dict) -> None:
-    path = app_data.get("file_path_name", "")
-    if path:
-        dpg.set_value("output_path", path)
+def _browse_include_file() -> None:
+    _open_native_dialog(
+        "open_file", "Select File to Include",
+        lambda r: [dpg.add_selectable(label=p, parent="includes_list") for p in r],
+        filetypes=[("EFI Applications", "*.efi"), ("UEFI Shell Scripts", "*.nsh"),
+                   ("All Files", "*.*")],
+        multiple=True)
+
+def _browse_include_dir() -> None:
+    _open_native_dialog("open_dir", "Select Directory to Include",
+                        lambda r: dpg.add_selectable(label=r[0], parent="includes_list"))
+
+def _browse_output() -> None:
+    _open_native_dialog(
+        "save_file", "Save Image As",
+        lambda r: dpg.set_value("output_path", r[0]),
+        filetypes=[("FAT32 Image", "*.img"), ("ISO Image", "*.iso"),
+                   ("Compressed Image", "*.img.gz"), ("All Files", "*.*")])
 
 # ---------------------------------------------------------------------------
 # UI callbacks
@@ -508,25 +525,6 @@ def gui_main() -> None:
                         width=800, height=620)
     _create_themes()
 
-    # --- File dialogs ---
-    for tag, label, dir_sel, cb in [
-        ("source_dialog", "Select Source", True, _on_source_selected),
-        ("include_file_dialog", "Select File", False, _on_include_file_selected),
-        ("include_dir_dialog", "Select Directory", True, _on_include_dir_selected),
-    ]:
-        with dpg.file_dialog(label=label, callback=cb, directory_selector=dir_sel,
-                             show=False, tag=tag, width=600, height=400):
-            dpg.add_file_extension(".*")
-            if not dir_sel:
-                dpg.add_file_extension(".efi", color=(0, 255, 0))
-                dpg.add_file_extension(".nsh", color=(0, 200, 255))
-
-    with dpg.file_dialog(label="Save Image As", callback=_on_output_selected,
-                         show=False, tag="output_dialog", width=600, height=400):
-        dpg.add_file_extension(".img", color=(0, 255, 0))
-        dpg.add_file_extension(".iso", color=(0, 200, 255))
-        dpg.add_file_extension(".img.gz", color=(200, 200, 0))
-
     # --- Main window with tabs ---
     with dpg.window(tag="main"):
         with dpg.tab_bar(tag="tab_bar"):
@@ -549,7 +547,7 @@ def gui_main() -> None:
                             with dpg.group(horizontal=True):
                                 dpg.add_button(
                                     label="Browse...", width=75,
-                                    callback=lambda: dpg.show_item("source_dialog"))
+                                    callback=_browse_source)
                                 dpg.add_button(
                                     label="USB", width=35,
                                     callback=lambda: dpg.set_value("source_path", "usb"))
@@ -574,10 +572,10 @@ def gui_main() -> None:
                             with dpg.group(horizontal=True):
                                 dpg.add_button(
                                     label="File", width=40,
-                                    callback=lambda: dpg.show_item("include_file_dialog"))
+                                    callback=_browse_include_file)
                                 dpg.add_button(
                                     label="Dir", width=40,
-                                    callback=lambda: dpg.show_item("include_dir_dialog"))
+                                    callback=_browse_include_dir)
                                 dpg.add_button(
                                     label="Clear", width=40,
                                     callback=lambda: dpg.delete_item(
@@ -611,7 +609,7 @@ def gui_main() -> None:
                             with dpg.group(horizontal=True):
                                 dpg.add_button(
                                     label="Browse...", width=75,
-                                    callback=lambda: dpg.show_item("output_dialog"))
+                                    callback=_browse_output)
                                 dpg.add_button(
                                     label="USB", width=35,
                                     callback=lambda: dpg.set_value("output_path", "usb"))
