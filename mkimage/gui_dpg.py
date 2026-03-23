@@ -26,6 +26,7 @@ from mkimage import (
     build_img,
     build_iso,
     collect_files,
+    get_available_filesystems,
 )
 
 # ---------------------------------------------------------------------------
@@ -207,8 +208,10 @@ def _add_partition_row(sender: object = None, app_data: object = None,
                        cluster: str = "") -> None:
     """Add a partition row to the list."""
     row_id = dpg.add_group(horizontal=True, parent="partition_list")
-    dpg.add_combo(["esp", "fat32", "exfat", "ntfs", "ext4"],
-                  default_value=fs, width=70, parent=row_id)
+    all_types = ["esp", "fat32", "exfat", "ntfs", "ext4", "udf"]
+    avail = get_available_filesystems()
+    items = [t if t in avail else f"{t} (n/a)" for t in all_types]
+    dpg.add_combo(items, default_value=fs, width=80, parent=row_id)
     dpg.add_input_text(default_value=size, width=55, hint="Size",
                        parent=row_id)
     dpg.add_input_text(default_value=label, width=75, hint="Label",
@@ -256,8 +259,9 @@ def _get_partitions() -> list[PartitionSpec]:
         if len(children) >= 5:
             cs_str = dpg.get_value(children[3]).strip()
             cs = int(cs_str) if cs_str.isdigit() else 0
+            fs_raw = dpg.get_value(children[0]).split(" ")[0]  # strip " (n/a)"
             partitions.append(PartitionSpec(
-                fs_type=dpg.get_value(children[0]),
+                fs_type=fs_raw,
                 size=dpg.get_value(children[1]),
                 label=dpg.get_value(children[2]) or "UEFITOOLS",
                 cluster_size=cs,

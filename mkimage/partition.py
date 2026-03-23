@@ -16,20 +16,27 @@ def _format_partition(cfg: Config, device: str, fs_type: str,
     """Format a partition with the specified filesystem.
 
     Args:
-        fs_type: 'fat32', 'exfat', 'ext4', or 'ntfs'.
+        fs_type: 'fat32', 'exfat', 'ext4', 'ntfs', or 'udf'.
         cluster_size: Cluster/block size in bytes (0 = auto/default).
     """
     label = label[:11]  # FAT32/exFAT label limit
+    mac = _is_macos()
     if fs_type == "fat32":
-        cmd = [_find_tool("mkfs.vfat"), "-F", "32", "-n", label]
-        if cluster_size > 0:
-            cmd.extend(["-s", str(cluster_size // 512)])
+        if mac:
+            cmd = ["newfs_msdos", "-F", "32", "-v", label]
+        else:
+            cmd = [_find_tool("mkfs.vfat"), "-F", "32", "-n", label]
+            if cluster_size > 0:
+                cmd.extend(["-s", str(cluster_size // 512)])
         cmd.append(device)
         _run(cfg, cmd, verbose=True, as_root=True)
     elif fs_type == "exfat":
-        cmd = [_find_tool("mkfs.exfat"), "-n", label]
-        if cluster_size > 0:
-            cmd.extend(["-s", str(cluster_size)])
+        if mac:
+            cmd = ["newfs_exfat", "-v", label]
+        else:
+            cmd = [_find_tool("mkfs.exfat"), "-n", label]
+            if cluster_size > 0:
+                cmd.extend(["-s", str(cluster_size)])
         cmd.append(device)
         _run(cfg, cmd, verbose=True, as_root=True)
     elif fs_type == "ext4":
@@ -43,6 +50,12 @@ def _format_partition(cfg: Config, device: str, fs_type: str,
         if cluster_size > 0:
             cmd.extend(["-c", str(cluster_size)])
         cmd.append(device)
+        _run(cfg, cmd, verbose=True, as_root=True)
+    elif fs_type == "udf":
+        if _is_macos():
+            cmd = ["newfs_udf", "-v", label, device]
+        else:
+            cmd = [_find_tool("mkudffs"), "--label", label, "--vid", label, device]
         _run(cfg, cmd, verbose=True, as_root=True)
     else:
         raise ValueError(f"Unknown filesystem type: {fs_type}")

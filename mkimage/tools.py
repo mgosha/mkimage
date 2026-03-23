@@ -17,6 +17,10 @@ _TOOL_PACKAGES: dict[str, dict[str, str]] = {
     "xorriso":   {"apt": "xorriso",     "dnf": "xorriso",     "pacman": "libisoburn",  "brew": "xorriso"},
     "genisoimage": {"apt": "genisoimage", "dnf": "genisoimage", "pacman": "cdrtools",  "brew": "cdrtools"},
     "sgdisk":      {"apt": "gdisk",       "dnf": "gdisk",       "pacman": "gptfdisk",  "brew": "gptfdisk"},
+    "mkfs.exfat":  {"apt": "exfatprogs",  "dnf": "exfatprogs",  "pacman": "exfatprogs", "brew": "exfatprogs"},
+    "mkfs.ntfs":   {"apt": "ntfs-3g",     "dnf": "ntfs-3g",     "pacman": "ntfsprogs",  "brew": "ntfs-3g-mac"},
+    "mkfs.ext4":   {"apt": "e2fsprogs",   "dnf": "e2fsprogs",   "pacman": "e2fsprogs"},
+    "mkudffs":     {"apt": "udftools",    "dnf": "udftools",    "pacman": "udftools"},
 }
 
 
@@ -136,17 +140,50 @@ def check_tools_mbr() -> list[str]:
     return missing
 
 
+def _fs_tool(fs_type: str) -> str:
+    """Return the mkfs tool name for a filesystem type."""
+    mac = _is_macos()
+    tools: dict[str, str] = {
+        "fat32": "mkfs.vfat" if not mac else "newfs_msdos",
+        "exfat": "mkfs.exfat" if not mac else "newfs_exfat",
+        "ntfs": "mkfs.ntfs",
+        "ext4": "mkfs.ext4",  # Linux only — no macOS equivalent
+        "udf": "mkudffs" if not mac else "newfs_udf",
+        "esp": "mkfs.vfat" if not mac else "newfs_msdos",
+    }
+    return tools.get(fs_type, "")
+
+
 def check_tools_fs(fs_type: str) -> list[str]:
     """Check tools needed for a specific filesystem. Returns missing tools."""
-    tools: dict[str, str] = {
-        "fat32": "mkfs.vfat",
-        "exfat": "mkfs.exfat",
-        "ntfs": "mkfs.ntfs",
-    }
-    tool = tools.get(fs_type)
+    tool = _fs_tool(fs_type)
     if tool and not _which(tool):
         return [tool]
     return []
+
+
+_available_fs_cache: list[str] | None = None
+
+
+def get_available_filesystems() -> list[str]:
+    """Return list of filesystem types whose tools are available.
+
+    Results are cached after first call. Always includes 'esp' (uses fat32 tools).
+    """
+    global _available_fs_cache
+    if _available_fs_cache is not None:
+        return _available_fs_cache
+
+    all_types = ["esp", "fat32", "exfat", "ntfs", "ext4", "udf"]
+    available = [fs for fs in all_types if not check_tools_fs(fs)]
+    _available_fs_cache = available
+    return available
+
+
+def reset_fs_cache() -> None:
+    """Reset the available filesystem cache (e.g. after installing tools)."""
+    global _available_fs_cache
+    _available_fs_cache = None
 
 
 def ensure_tools(cfg: Config, fmt: str) -> None:

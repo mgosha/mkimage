@@ -15,7 +15,10 @@ from mkimage.files import collect_files
 from mkimage.modify import modify_img
 from mkimage.platform import _is_windows
 from mkimage.tools import (
+    _fs_tool,
     _resolve_packages,
+    _suggest_install,
+    check_tools_fs,
     check_tools_gpt,
     check_tools_img,
     check_tools_iso,
@@ -146,7 +149,7 @@ tips:
     part_group = parser.add_argument_group("Partition Scheme")
     part_group.add_argument(
         "--partition", action="append", default=[], metavar="TYPE:SIZE:LABEL[:DIR]",
-        help="Partition spec (repeatable). TYPE: esp/fat32/exfat/ntfs, "
+        help="Partition spec (repeatable). TYPE: esp/fat32/exfat/ntfs/ext4/udf, "
              "SIZE: 64M/4G/+32M/0/auto, LABEL: volume label, "
              "DIR: optional source directory",
     )
@@ -367,6 +370,20 @@ tips:
         print(f"ISO   (.iso): {'OK' if not iso_missing else 'MISSING: ' + ', '.join(iso_missing)}")
         print(f"MBR   (.img): {'OK' if not mbr_missing else 'MISSING: ' + ', '.join(mbr_missing)}")
         print(f"GPT   (.img): {'OK' if not gpt_missing else 'MISSING: ' + ', '.join(gpt_missing)}")
+        print(f"\nFilesystems:")
+        for fs_name in ["fat32", "exfat", "ntfs", "ext4", "udf"]:
+            fs_missing = check_tools_fs(fs_name)
+            tool = _fs_tool(fs_name)
+            if not fs_missing:
+                print(f"  {fs_name:8s} OK ({tool})")
+            else:
+                pkgs = _resolve_packages(fs_missing)
+                # If the "package" is just the raw tool name, there's no real package
+                if pkgs == fs_missing:
+                    print(f"  {fs_name:8s} N/A (not available on this platform)")
+                else:
+                    hint = _suggest_install(fs_missing[0])
+                    print(f"  {fs_name:8s} MISSING ({fs_missing[0]} -- {hint})")
         all_missing = sorted(set(img_missing + iso_missing + mbr_missing + gpt_missing))
         if all_missing:
             packages = _resolve_packages(all_missing)

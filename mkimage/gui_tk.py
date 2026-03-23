@@ -25,6 +25,7 @@ from mkimage import (
     build_img,
     build_iso,
     collect_files,
+    get_available_filesystems,
 )
 
 
@@ -491,9 +492,12 @@ def gui_main() -> None:
         cluster_var = tk.StringVar(value=cluster)
         dir_var = tk.StringVar(value=src)
 
+        all_types = ["esp", "fat32", "exfat", "ntfs", "ext4", "udf"]
+        avail = get_available_filesystems()
+        combo_vals = [t if t in avail else f"{t} (n/a)" for t in all_types]
         ttk.Combobox(row, textvariable=type_var,
-                     values=["esp", "fat32", "exfat", "ntfs", "ext4"],
-                     width=7).pack(side=tk.LEFT, padx=2)
+                     values=combo_vals,
+                     width=9).pack(side=tk.LEFT, padx=2)
         tk.Entry(row, textvariable=size_var_p, width=7).pack(
             side=tk.LEFT, padx=2)
         tk.Entry(row, textvariable=label_var_p, width=9).pack(
@@ -535,7 +539,7 @@ def gui_main() -> None:
         for _, t, s, l, c, d in partition_rows:
             cs_str = c.get().strip()
             cs = int(cs_str) if cs_str.isdigit() else 0
-            result.append(PartitionSpec(t.get(), s.get(),
+            result.append(PartitionSpec(t.get().split(" ")[0], s.get(),
                                         l.get() or "UEFITOOLS", d.get(), cs))
         return result
 

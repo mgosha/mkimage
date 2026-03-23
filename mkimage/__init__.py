@@ -16,7 +16,7 @@ from typing import Callable
 @dataclass
 class PartitionSpec:
     """Specification for a single partition."""
-    fs_type: str = "fat32"    # fat32, exfat, ntfs, esp (= fat32 with EF00 type)
+    fs_type: str = "fat32"    # fat32, exfat, ntfs, ext4, udf, esp (= fat32 + EF00)
     size: str = ""            # 64M, 4G, +32M (extra), 0 (rest), "" (auto)
     label: str = "UEFITOOLS"
     source_dir: str = ""      # "" = use main --source
@@ -65,6 +65,7 @@ from mkimage.tools import (  # noqa: E402
     check_tools_gpt,
     check_tools_mbr,
     check_tools_fs,
+    get_available_filesystems,
     ensure_tools,
     _suggest_install,
     _resolve_packages,
