@@ -312,6 +312,31 @@ def _check_drive(sender: object = None, app_data: object = None) -> None:
     threading.Thread(target=run, daemon=True).start()
 
 
+def _wipe_drive(sender: object = None, app_data: object = None) -> None:
+    """Wipe all partition signatures from the selected target USB drive."""
+    from mkimage.usb.safety import _wipe_device, _unmount_device
+    sel = dpg.get_value("drive_combo")
+    if not sel or "no USB" in sel:
+        _log("No USB drive selected.")
+        return
+    device = sel.split()[0]
+    _log(f"Wiping all signatures from {device}...")
+    _set_building(True)
+
+    def run() -> None:
+        cfg = Config(log=_log, verbose=True)
+        try:
+            _unmount_device(cfg, device)
+            _wipe_device(cfg, device)
+            _log(f"[OK] {device} wiped — all partition signatures removed.")
+            _set_building(False, "success")
+        except Exception as e:
+            _log(f"Error: {e}")
+            _set_building(False, "error")
+
+    threading.Thread(target=run, daemon=True).start()
+
+
 def _on_source_mode_change(sender: int) -> None:
     mode = dpg.get_value(sender)
     if mode == "USB":
@@ -656,6 +681,9 @@ def gui_main() -> None:
                                 dpg.add_button(
                                     label="Check",
                                     callback=_check_drive, width=55)
+                                dpg.add_button(
+                                    label="Wipe",
+                                    callback=_wipe_drive, width=45)
                             with dpg.group(horizontal=True):
                                 dpg.add_checkbox(
                                     label="Persistent", tag="persistent_check")

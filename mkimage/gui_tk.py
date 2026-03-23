@@ -131,6 +131,33 @@ def gui_main() -> None:
 
         threading.Thread(target=run, daemon=True).start()
 
+    def _wipe_drive_tk() -> None:
+        """Wipe all partition signatures from selected target USB drive."""
+        from mkimage.usb.safety import _wipe_device, _unmount_device
+        sel = target_drive_var.get().strip()
+        if not sel:
+            messagebox.showerror("Error", "No USB drive selected.")
+            return
+        device = sel.split()[0]
+        if not messagebox.askyesno("Confirm Wipe",
+                                   f"This will ERASE ALL partition signatures on {device}.\n\nProceed?"):
+            return
+        notebook.select(log_tab)
+        create_btn.config(state=tk.DISABLED)
+
+        def run() -> None:
+            cfg_w = Config(log=log, verbose=True)
+            try:
+                _unmount_device(cfg_w, device)
+                _wipe_device(cfg_w, device)
+                log(f"[OK] {device} wiped — all partition signatures removed.")
+            except Exception as e:
+                log(f"Error: {e}")
+            finally:
+                create_btn.config(state=tk.NORMAL)
+
+        threading.Thread(target=run, daemon=True).start()
+
     def refresh_source_drives() -> None:
         drives = _list_removable_drives()
         source_usb_drives.clear()
@@ -449,6 +476,8 @@ def gui_main() -> None:
               command=refresh_target_drives).pack(side=tk.LEFT, padx=(3, 0))
     tk.Button(tgt_usb_row, text="Check",
               command=lambda: _check_drive_tk()).pack(side=tk.LEFT, padx=(3, 0))
+    tk.Button(tgt_usb_row, text="Wipe",
+              command=lambda: _wipe_drive_tk()).pack(side=tk.LEFT, padx=(3, 0))
     tgt_persist_row = tk.Frame(target_usb_frame)
     tgt_persist_row.pack(fill=tk.X, pady=(2, 0))
     persistent_var = tk.BooleanVar(value=False)
