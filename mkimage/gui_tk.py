@@ -369,6 +369,8 @@ def gui_main() -> None:
     # Extra includes (File mode only)
     source_includes_frame = tk.Frame(src_lf)
     source_includes_frame.pack(fill=tk.X, pady=(2, 0))
+    tk.Label(source_includes_frame, text="Includes:",
+             font=("Segoe UI", 8)).pack(anchor=tk.W)
     inc_btn_row = tk.Frame(source_includes_frame)
     inc_btn_row.pack(fill=tk.X)
     tk.Button(inc_btn_row, text="File", width=4,
@@ -682,6 +684,12 @@ def gui_main() -> None:
                      "https://github.com/mgosha/mkimage\n", "body")
 
     help_text.config(state=tk.DISABLED)
+
+    # Exit button at bottom-right
+    bottom_frame = tk.Frame(root)
+    bottom_frame.pack(fill=tk.X, padx=10, pady=(0, 5))
+    tk.Button(bottom_frame, text="Exit", width=6,
+              command=root.destroy).pack(side=tk.RIGHT)
 
     root.after(100, poll_log)
     root.mainloop()

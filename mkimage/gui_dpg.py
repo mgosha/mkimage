@@ -570,6 +570,7 @@ def gui_main() -> None:
                         # Extra includes (File mode only)
                         with dpg.group(tag="source_includes_group"):
                             dpg.add_spacer(height=2)
+                            dpg.add_text("Includes:")
                             with dpg.group(horizontal=True):
                                 dpg.add_button(
                                     label="File", width=40,
@@ -765,8 +766,12 @@ def gui_main() -> None:
         pb = dpg.add_progress_bar(tag="progress_bar", default_value=0.0,
                                   width=-1, show=False)
         dpg.bind_item_theme(pb, "progress_theme")
-        st = dpg.add_text("Ready", tag="status_text")
-        dpg.bind_item_theme(st, "status_theme")
+        with dpg.group(horizontal=True):
+            st = dpg.add_text("Ready", tag="status_text")
+            dpg.bind_item_theme(st, "status_theme")
+            dpg.add_spacer(width=-80)
+            dpg.add_button(label="Exit", width=60,
+                           callback=lambda: dpg.stop_dearpygui())
 
     # Populate default partition row (None scheme = one fat32 row)
     _on_partition_scheme_change()
