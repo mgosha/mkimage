@@ -508,7 +508,20 @@ def _do_create() -> None:
                 compressed = _is_compressed_path(output)
                 build_target = _strip_compression_ext(output) if compressed else output
                 ext = Path(build_target).suffix.lower()
-                is_img = ext == ".img"
+                # Use Format radio when extension is ambiguous
+                if ext not in (".img", ".iso"):
+                    fmt = dpg.get_value("fmt_radio")
+                    is_img = "img" in fmt.lower() if fmt else True
+                    # Auto-append extension if missing
+                    new_ext = ".img" if is_img else ".iso"
+                    build_target += new_ext
+                    if compressed:
+                        output = build_target + Path(output).suffix
+                    else:
+                        output = build_target
+                    dpg.set_value("output_path", output)
+                else:
+                    is_img = ext == ".img"
 
                 if is_img and cfg.gpt:
                     _set_status("Building GPT image...")

@@ -310,7 +310,17 @@ def gui_main() -> None:
                     compressed = _is_compressed_path(out)
                     build_target = _strip_compression_ext(out) if compressed else out
                     ext = Path(build_target).suffix.lower()
-                    is_img = ext == ".img"
+                    if ext not in (".img", ".iso"):
+                        is_img = fmt_var.get() == "img"
+                        new_ext = ".img" if is_img else ".iso"
+                        build_target += new_ext
+                        if compressed:
+                            out = build_target + Path(out).suffix
+                        else:
+                            out = build_target
+                        output_var.set(out)
+                    else:
+                        is_img = ext == ".img"
 
                     if is_img and cfg.gpt:
                         log("Building GPT image...")
