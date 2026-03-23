@@ -119,6 +119,51 @@ class TestPs1GetUsbDrives:
             assert "DRIVES:" in stdout
 
 
+class TestPs1ImgCreation:
+    def test_img_cli(self) -> None:
+        """Create a FAT32 .img via -Action CreateImg on Windows (diskpart, no Hyper-V)."""
+        setup_cmds = [
+            "if (Test-Path C:\\temp\\mkimage_img_test) { Remove-Item C:\\temp\\mkimage_img_test -Recurse -Force }",
+            "New-Item -ItemType Directory -Path C:\\temp\\mkimage_img_test\\source -Force | Out-Null",
+            "'test content' | Out-File C:\\temp\\mkimage_img_test\\source\\hello.txt",
+            "'echo Hello' | Out-File C:\\temp\\mkimage_img_test\\source\\startup.nsh",
+        ]
+        for cmd in setup_cmds:
+            winvm_ssh(f'powershell -NoProfile -Command "{cmd}"')
+
+        try:
+            rc, stdout, stderr = _ps_file(
+                VM_MKIMAGE_PS1,
+                "-Action", "CreateImg",
+                "-SourceDir", "C:\\temp\\mkimage_img_test\\source",
+                "-OutputFile", "C:\\temp\\mkimage_img_test\\output.img",
+                "-Label", "TESTIMG",
+                "-SizeMB", "40",
+                timeout=120,
+            )
+            combined = stdout + stderr
+            assert rc == 0, f"CreateImg failed (rc={rc}):\n{combined}"
+            assert "[OK]" in combined
+
+            # Verify the file was created and has content
+            check_r = winvm_ssh(
+                'powershell -NoProfile -Command "'
+                "if (Test-Path 'C:\\temp\\mkimage_img_test\\output.img') {"
+                "  $s = (Get-Item 'C:\\temp\\mkimage_img_test\\output.img').Length;"
+                "  Write-Host SIZE:$s"
+                '}"',
+                timeout=10,
+            )
+            assert "SIZE:" in check_r.stdout
+            size_str = check_r.stdout.split("SIZE:")[1].strip()
+            size = int(size_str)
+            assert size > 0, f"Image created but 0 bytes"
+            # Should be ~40MB (raw FAT32, VHD footer stripped)
+            assert size >= 40 * 1024 * 1024, f"Image too small: {size} bytes"
+        finally:
+            winvm_ssh('powershell -NoProfile -Command "Remove-Item C:\\temp\\mkimage_img_test -Recurse -Force -ErrorAction SilentlyContinue"')
+
+
 class TestPs1IsoCreation:
     def test_iso_cli(self) -> None:
         """Create an ISO via -Action CreateIso on Windows."""
