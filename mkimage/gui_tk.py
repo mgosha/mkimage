@@ -371,19 +371,25 @@ def gui_main() -> None:
     source_includes_frame.pack(fill=tk.X, pady=(2, 0))
     inc_btn_row = tk.Frame(source_includes_frame)
     inc_btn_row.pack(fill=tk.X)
-    tk.Button(inc_btn_row, text="Add File", width=7,
+    tk.Button(inc_btn_row, text="File", width=4,
               command=add_include_file).pack(side=tk.LEFT, padx=(0, 3))
-    tk.Button(inc_btn_row, text="Add Dir", width=7,
+    tk.Button(inc_btn_row, text="Dir", width=4,
               command=add_include_dir).pack(side=tk.LEFT, padx=(0, 3))
-    tk.Button(inc_btn_row, text="Clear", width=5,
+    tk.Button(inc_btn_row, text="Clear", width=4,
               command=lambda: includes_list.delete(0, tk.END)).pack(side=tk.LEFT)
-    includes_list = tk.Listbox(source_includes_frame, height=3)
+    includes_list = tk.Listbox(source_includes_frame, height=2)
     includes_list.pack(fill=tk.X, pady=(2, 0))
     ToolTip(includes_list, "Extra files/directories added to the image")
 
-    # === ARROW ===
-    tk.Label(io_frame, text=" \u2192 ", font=("Segoe UI", 16, "bold")).pack(
-        side=tk.LEFT, padx=5)
+    # === ARROW (drawn) ===
+    arrow_canvas = tk.Canvas(io_frame, width=36, height=180,
+                             bg=root.cget("bg"), highlightthickness=0)
+    arrow_canvas.pack(side=tk.LEFT, padx=2)
+    # Shaft
+    arrow_canvas.create_line(5, 90, 18, 90, fill="#4182D7", width=3)
+    # Arrowhead
+    arrow_canvas.create_polygon(18, 78, 18, 102, 33, 90,
+                                fill="#4182D7", outline="#4182D7")
 
     # === TARGET PANEL ===
     tgt_lf = tk.LabelFrame(io_frame, text="Target", padx=5, pady=5)

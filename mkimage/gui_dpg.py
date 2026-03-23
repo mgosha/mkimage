@@ -535,7 +535,7 @@ def gui_main() -> None:
             with dpg.tab(label="Build", tag="build_tab"):
                 with dpg.group(horizontal=True):
                     # === SOURCE PANEL ===
-                    with dpg.child_window(width=345, height=210, border=True):
+                    with dpg.child_window(width=350, height=220, border=True):
                         t = dpg.add_text("Source")
                         dpg.bind_item_theme(t, "header_theme")
 
@@ -572,27 +572,31 @@ def gui_main() -> None:
                             dpg.add_spacer(height=2)
                             with dpg.group(horizontal=True):
                                 dpg.add_button(
-                                    label="Add File", width=60,
+                                    label="File", width=40,
                                     callback=lambda: dpg.show_item("include_file_dialog"))
                                 dpg.add_button(
-                                    label="Add Dir", width=60,
+                                    label="Dir", width=40,
                                     callback=lambda: dpg.show_item("include_dir_dialog"))
                                 dpg.add_button(
-                                    label="Clear", width=45,
+                                    label="Clear", width=40,
                                     callback=lambda: dpg.delete_item(
                                         "includes_list", children_only=True))
-                            with dpg.child_window(tag="includes_list", height=55,
+                            with dpg.child_window(tag="includes_list", height=40,
                                                   border=True):
                                 pass
 
-                    # === ARROW ===
-                    dpg.add_spacer(width=5)
-                    arrow = dpg.add_text("\u25ba")
-                    dpg.bind_item_theme(arrow, "header_theme")
-                    dpg.add_spacer(width=5)
+                    # === ARROW (drawn) ===
+                    with dpg.drawlist(width=36, height=220):
+                        # Shaft
+                        dpg.draw_line([5, 110], [18, 110],
+                                      color=_ACCENT, thickness=3)
+                        # Arrowhead
+                        dpg.draw_triangle(
+                            [18, 98], [18, 122], [33, 110],
+                            color=_ACCENT, fill=_ACCENT)
 
                     # === TARGET PANEL ===
-                    with dpg.child_window(width=345, height=210, border=True):
+                    with dpg.child_window(width=350, height=220, border=True):
                         t = dpg.add_text("Target")
                         dpg.bind_item_theme(t, "header_theme")
 
