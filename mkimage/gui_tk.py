@@ -382,13 +382,13 @@ def gui_main() -> None:
     ToolTip(includes_list, "Extra files/directories added to the image")
 
     # === ARROW (drawn) ===
-    arrow_canvas = tk.Canvas(io_frame, width=36, height=180,
+    arrow_canvas = tk.Canvas(io_frame, width=36, height=220,
                              bg=root.cget("bg"), highlightthickness=0)
     arrow_canvas.pack(side=tk.LEFT, padx=2)
     # Shaft
-    arrow_canvas.create_line(5, 90, 18, 90, fill="#4182D7", width=3)
+    arrow_canvas.create_line(5, 110, 18, 110, fill="#4182D7", width=3)
     # Arrowhead
-    arrow_canvas.create_polygon(18, 78, 18, 102, 33, 90,
+    arrow_canvas.create_polygon(18, 98, 18, 122, 33, 110,
                                 fill="#4182D7", outline="#4182D7")
 
     # === TARGET PANEL ===
@@ -416,6 +416,26 @@ def gui_main() -> None:
     output_entry = tk.Entry(target_file_frame, textvariable=output_var)
     output_entry.pack(fill=tk.X, pady=(2, 0))
     ToolTip(output_entry, "Output .img, .iso, .img.gz")
+    # Format + Label + Extra (inside target file mode)
+    tgt_fmt_row = tk.Frame(target_file_frame)
+    tgt_fmt_row.pack(fill=tk.X, pady=(3, 0))
+    fmt_var = tk.StringVar(value="img")
+    tk.Radiobutton(tgt_fmt_row, text="Image", variable=fmt_var,
+                   value="img").pack(side=tk.LEFT)
+    tk.Radiobutton(tgt_fmt_row, text="ISO", variable=fmt_var,
+                   value="iso").pack(side=tk.LEFT, padx=(5, 0))
+    tgt_lbl_row = tk.Frame(target_file_frame)
+    tgt_lbl_row.pack(fill=tk.X, pady=(2, 0))
+    tk.Label(tgt_lbl_row, text="Label:").pack(side=tk.LEFT)
+    label_var = tk.StringVar(value="UEFITOOLS")
+    label_entry = tk.Entry(tgt_lbl_row, textvariable=label_var, width=10)
+    label_entry.pack(side=tk.LEFT, padx=(3, 0))
+    ToolTip(label_entry, "Volume label (11 chars max)")
+    tk.Label(tgt_lbl_row, text="Extra:").pack(side=tk.LEFT, padx=(8, 0))
+    size_var = tk.StringVar(value="32")
+    extra_entry = tk.Entry(tgt_lbl_row, textvariable=size_var, width=4)
+    extra_entry.pack(side=tk.LEFT, padx=(3, 0))
+    ToolTip(extra_entry, "Extra free space in MB")
 
     # Target USB mode (hidden)
     target_usb_frame = tk.Frame(tgt_lf)
@@ -429,7 +449,6 @@ def gui_main() -> None:
               command=refresh_target_drives).pack(side=tk.LEFT, padx=(3, 0))
     tk.Button(tgt_usb_row, text="Check",
               command=lambda: _check_drive_tk()).pack(side=tk.LEFT, padx=(3, 0))
-    # Persistent row
     tgt_persist_row = tk.Frame(target_usb_frame)
     tgt_persist_row.pack(fill=tk.X, pady=(2, 0))
     persistent_var = tk.BooleanVar(value=False)
@@ -439,29 +458,6 @@ def gui_main() -> None:
     tk.Entry(tgt_persist_row, textvariable=persistent_size_var,
              width=6).pack(side=tk.LEFT, padx=2)
     ToolTip(tgt_persist_row, "Add ext4 casper-rw partition for Linux live USBs")
-
-    # --- Format + Label + Extra below both panels ---
-    fmt_row = tk.Frame(build_tab)
-    fmt_row.pack(fill=tk.X, padx=10, pady=(5, 2))
-    tk.Label(fmt_row, text="Format:").pack(side=tk.LEFT)
-    fmt_var = tk.StringVar(value="img")
-    tk.Radiobutton(fmt_row, text="Image (.img)", variable=fmt_var,
-                   value="img").pack(side=tk.LEFT, padx=(5, 0))
-    tk.Radiobutton(fmt_row, text="ISO (.iso)", variable=fmt_var,
-                   value="iso").pack(side=tk.LEFT, padx=(10, 0))
-
-    label_row = tk.Frame(build_tab)
-    label_row.pack(fill=tk.X, padx=10, pady=2)
-    tk.Label(label_row, text="Label:").pack(side=tk.LEFT)
-    label_var = tk.StringVar(value="UEFITOOLS")
-    label_entry = tk.Entry(label_row, textvariable=label_var, width=12)
-    label_entry.pack(side=tk.LEFT, padx=(5, 0))
-    ToolTip(label_entry, "Volume label (11 chars max for FAT32)")
-    tk.Label(label_row, text="Extra (MB):").pack(side=tk.LEFT, padx=(15, 0))
-    size_var = tk.StringVar(value="32")
-    extra_entry = tk.Entry(label_row, textvariable=size_var, width=6)
-    extra_entry.pack(side=tk.LEFT, padx=(5, 0))
-    ToolTip(extra_entry, "Free space added beyond content size")
 
     # Action button
     create_btn = tk.Button(build_tab, text="Create Image", width=25,

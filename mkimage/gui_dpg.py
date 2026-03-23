@@ -535,7 +535,7 @@ def gui_main() -> None:
             with dpg.tab(label="Build", tag="build_tab"):
                 with dpg.group(horizontal=True):
                     # === SOURCE PANEL ===
-                    with dpg.child_window(width=350, height=220, border=True):
+                    with dpg.child_window(width=350, height=250, border=True):
                         t = dpg.add_text("Source")
                         dpg.bind_item_theme(t, "header_theme")
 
@@ -586,17 +586,17 @@ def gui_main() -> None:
                                 pass
 
                     # === ARROW (drawn) ===
-                    with dpg.drawlist(width=36, height=220):
+                    with dpg.drawlist(width=36, height=250):
                         # Shaft
-                        dpg.draw_line([5, 110], [18, 110],
+                        dpg.draw_line([5, 125], [18, 125],
                                       color=_ACCENT, thickness=3)
                         # Arrowhead
                         dpg.draw_triangle(
-                            [18, 98], [18, 122], [33, 110],
+                            [18, 113], [18, 137], [33, 125],
                             color=_ACCENT, fill=_ACCENT)
 
                     # === TARGET PANEL ===
-                    with dpg.child_window(width=350, height=220, border=True):
+                    with dpg.child_window(width=350, height=250, border=True):
                         t = dpg.add_text("Target")
                         dpg.bind_item_theme(t, "header_theme")
 
@@ -617,6 +617,22 @@ def gui_main() -> None:
                             dpg.add_input_text(
                                 tag="output_path", width=-1,
                                 hint="Output .img, .iso, .img.gz")
+                            dpg.add_spacer(height=2)
+                            with dpg.group(horizontal=True):
+                                dpg.add_text("Format:")
+                                dpg.add_radio_button(
+                                    ["Image (.img)", "ISO (.iso)"],
+                                    tag="fmt_radio", horizontal=True,
+                                    default_value="Image (.img)")
+                            with dpg.group(horizontal=True):
+                                dpg.add_text("Label:")
+                                dpg.add_input_text(
+                                    tag="vol_label",
+                                    default_value="UEFITOOLS", width=90)
+                                dpg.add_text("Extra:")
+                                dpg.add_input_text(
+                                    tag="extra_space",
+                                    default_value="32", width=40)
 
                         # USB mode (hidden)
                         with dpg.group(tag="target_usb_group", show=False):
@@ -636,22 +652,6 @@ def gui_main() -> None:
                                 dpg.add_input_text(
                                     tag="persistent_size",
                                     default_value="4G", width=45)
-
-                # Format + Label + Extra below both panels
-                dpg.add_spacer(height=3)
-                with dpg.group(horizontal=True):
-                    dpg.add_text("Format:")
-                    dpg.add_radio_button(
-                        ["Image (.img)", "ISO (.iso)"], tag="fmt_radio",
-                        horizontal=True, default_value="Image (.img)")
-                with dpg.group(horizontal=True):
-                    dpg.add_text("Label:")
-                    dpg.add_input_text(
-                        tag="vol_label", default_value="UEFITOOLS", width=100)
-                    dpg.add_spacer(width=10)
-                    dpg.add_text("Extra (MB):")
-                    dpg.add_input_text(
-                        tag="extra_space", default_value="32", width=50)
 
                 dpg.add_spacer(height=5)
                 btn = dpg.add_button(label="Create Image", tag="action_btn",
