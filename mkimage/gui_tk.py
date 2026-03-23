@@ -39,6 +39,28 @@ def gui_main() -> None:
         print("  Windows: tkinter is included with Python", file=sys.stderr)
         sys.exit(1)
 
+    class ToolTip:
+        def __init__(self, widget: tk.Widget, text: str) -> None:
+            self.widget = widget
+            self.text = text
+            widget.bind("<Enter>", self._show)
+            widget.bind("<Leave>", self._hide)
+            self.tip: tk.Toplevel | None = None
+
+        def _show(self, event: tk.Event) -> None:  # type: ignore[type-arg]
+            x, y = event.x_root + 15, event.y_root + 10
+            self.tip = tk.Toplevel(self.widget)
+            self.tip.wm_overrideredirect(True)
+            self.tip.wm_geometry(f"+{x}+{y}")
+            label = tk.Label(self.tip, text=self.text, background="#ffffe0",
+                             relief="solid", borderwidth=1, font=("Segoe UI", 9))
+            label.pack()
+
+        def _hide(self, event: tk.Event) -> None:  # type: ignore[type-arg]
+            if self.tip:
+                self.tip.destroy()
+                self.tip = None
+
     log_queue: queue.Queue[str] = queue.Queue()
 
     def log(msg: str) -> None:
@@ -234,7 +256,9 @@ def gui_main() -> None:
     # Source
     tk.Label(build_tab, text="Source Directory:").grid(row=0, column=0, sticky=tk.W, **pad)
     source_var = tk.StringVar()
-    tk.Entry(build_tab, textvariable=source_var, width=50).grid(row=0, column=1, columnspan=2, sticky=tk.EW, **pad)
+    source_entry = tk.Entry(build_tab, textvariable=source_var, width=50)
+    source_entry.grid(row=0, column=1, columnspan=2, sticky=tk.EW, **pad)
+    ToolTip(source_entry, "Path to directory with files, or existing .img/.iso")
     tk.Button(build_tab, text="Browse...", command=browse_source).grid(row=0, column=3, **pad)
 
     # Includes
@@ -246,6 +270,7 @@ def gui_main() -> None:
     tk.Button(inc_frame, text="Clear", command=lambda: includes_list.delete(0, tk.END)).pack(side=tk.LEFT)
     includes_list = tk.Listbox(build_tab, height=3, width=60)
     includes_list.grid(row=2, column=0, columnspan=4, sticky=tk.EW, padx=10, pady=2)
+    ToolTip(includes_list, "Extra files/directories added to the image")
 
     # Format + label
     tk.Label(build_tab, text="Format:").grid(row=3, column=0, sticky=tk.W, **pad)
@@ -254,13 +279,18 @@ def gui_main() -> None:
     fmt_var = tk.StringVar(value="img")
     tk.Radiobutton(fmt_frame, text="Image (.img)", variable=fmt_var, value="img").pack(side=tk.LEFT)
     tk.Radiobutton(fmt_frame, text="ISO (.iso)", variable=fmt_var, value="iso").pack(side=tk.LEFT, padx=10)
+    ToolTip(fmt_frame, "Image (.img) for disk images, ISO (.iso) for optical/hybrid")
 
     tk.Label(build_tab, text="Label:").grid(row=4, column=0, sticky=tk.W, **pad)
     label_var = tk.StringVar(value="UEFITOOLS")
-    tk.Entry(build_tab, textvariable=label_var, width=15).grid(row=4, column=1, sticky=tk.W, **pad)
+    label_entry = tk.Entry(build_tab, textvariable=label_var, width=15)
+    label_entry.grid(row=4, column=1, sticky=tk.W, **pad)
+    ToolTip(label_entry, "Volume label (11 chars max for FAT32)")
     tk.Label(build_tab, text="Extra (MB):").grid(row=4, column=2, sticky=tk.E, **pad)
     size_var = tk.StringVar(value="32")
-    tk.Entry(build_tab, textvariable=size_var, width=6).grid(row=4, column=3, sticky=tk.W, **pad)
+    extra_entry = tk.Entry(build_tab, textvariable=size_var, width=6)
+    extra_entry.grid(row=4, column=3, sticky=tk.W, **pad)
+    ToolTip(extra_entry, "Free space added beyond content size")
 
     # Target mode
     tk.Label(build_tab, text="Target:").grid(row=5, column=0, sticky=tk.W, **pad)
@@ -271,13 +301,16 @@ def gui_main() -> None:
                    command=on_target_mode_change).pack(side=tk.LEFT)
     tk.Radiobutton(target_frame, text="USB Drive", variable=target_mode_var, value="usb",
                    command=on_target_mode_change).pack(side=tk.LEFT, padx=10)
+    ToolTip(target_frame, "File saves to disk, USB Drive writes directly")
 
     # File output
     output_frame = tk.Frame(build_tab)
     output_frame.grid(row=6, column=0, columnspan=4, sticky=tk.EW, padx=10, pady=2)
     output_var = tk.StringVar()
     tk.Button(output_frame, text="Browse...", command=browse_output).pack(side=tk.LEFT, padx=(0, 5))
-    tk.Entry(output_frame, textvariable=output_var, width=50).pack(side=tk.LEFT, fill=tk.X, expand=True)
+    output_entry = tk.Entry(output_frame, textvariable=output_var, width=50)
+    output_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+    ToolTip(output_entry, "Use .img.gz for compressed output")
 
     # USB output (hidden)
     usb_frame = tk.Frame(build_tab)
@@ -285,6 +318,7 @@ def gui_main() -> None:
     drive_combo = tk.OptionMenu(usb_frame, drive_var, "")
     drive_combo.config(width=42, anchor=tk.W)
     drive_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
+    ToolTip(drive_combo, "Select a removable USB drive")
     tk.Button(usb_frame, text="Refresh", command=refresh_usb_drives).pack(side=tk.LEFT, padx=(5, 0))
 
     # Action button
@@ -303,6 +337,7 @@ def gui_main() -> None:
     tk.Radiobutton(fs_frame, text="FAT32", variable=fs_var, value="fat32").pack(side=tk.LEFT)
     tk.Radiobutton(fs_frame, text="exFAT", variable=fs_var, value="exfat").pack(side=tk.LEFT, padx=10)
     tk.Radiobutton(fs_frame, text="NTFS", variable=fs_var, value="ntfs").pack(side=tk.LEFT, padx=10)
+    ToolTip(fs_frame, "FAT32 is universal, exFAT for >4GB files, NTFS for Windows")
 
     # Partition scheme
     tk.Label(options_tab, text="Partition:").grid(row=1, column=0, sticky=tk.W, **pad)
@@ -324,6 +359,7 @@ def gui_main() -> None:
                    value="mbr", command=on_partition_change).pack(side=tk.LEFT, padx=10)
     tk.Radiobutton(part_frame, text="GPT", variable=partition_var,
                    value="gpt", command=on_partition_change).pack(side=tk.LEFT, padx=10)
+    ToolTip(part_frame, "None=raw filesystem, MBR=legacy boot, GPT=UEFI boot")
 
     gpt_frame = tk.LabelFrame(options_tab, text="GPT Options", padx=5, pady=5)
     data_dir_var = tk.StringVar()
@@ -373,6 +409,61 @@ def gui_main() -> None:
 
     status_label = tk.Label(log_tab, text="Ready", anchor=tk.W, fg="gray")
     status_label.pack(fill=tk.X, padx=5, pady=(0, 5))
+
+    # ===================== HELP TAB =====================
+    help_tab = ttk.Frame(notebook)
+    notebook.add(help_tab, text="Help")
+
+    help_text = tk.Text(help_tab, wrap=tk.WORD, font=("Segoe UI", 10),
+                        padx=10, pady=10, state=tk.NORMAL)
+    help_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+    help_text.tag_configure("header", font=("Segoe UI", 11, "bold"),
+                            foreground="#2878d0", spacing1=8, spacing3=4)
+    help_text.tag_configure("body", font=("Segoe UI", 10),
+                            lmargin1=10, lmargin2=10)
+    help_text.tag_configure("sep", font=("Segoe UI", 4))
+
+    help_text.insert(tk.END, "Quick Start\n", "header")
+    help_text.insert(tk.END,
+                     "1. Select a source directory containing your files\n"
+                     "2. Choose output format (Image or ISO)\n"
+                     "3. Set a target file path or select USB Drive\n"
+                     '4. Click "Create Image" or "Write to USB"\n', "body")
+    help_text.insert(tk.END, "\n", "sep")
+
+    help_text.insert(tk.END, "Options Reference\n", "header")
+    help_text.insert(tk.END,
+                     "Filesystem    FAT32 (default), exFAT (>4GB files), NTFS\n"
+                     "Partition     None (raw), MBR (legacy BIOS), GPT (UEFI boot)\n"
+                     "ISO Hybrid    Makes ISO dd-writable to USB\n"
+                     "Verify        SHA256 check after build\n"
+                     "Verbose       Show per-file output\n"
+                     "Force         Skip USB confirmation prompt\n"
+                     "\n"
+                     "GPT Options (when GPT selected):\n"
+                     "  Data Dir      Second partition with separate files\n"
+                     "  Data Size     Fixed size (e.g. 512M, 4G) or auto\n"
+                     "  ESP/Data Label  Volume labels for partitions\n", "body")
+    help_text.insert(tk.END, "\n", "sep")
+
+    help_text.insert(tk.END, "Tips\n", "header")
+    help_text.insert(tk.END,
+                     "- Use .img.gz extension for compressed output\n"
+                     "- FAT32 images don't need root; GPT/MBR do\n"
+                     "- --modify flag (CLI only) edits images without rebuild\n"
+                     "- Volume labels are limited to 11 characters for FAT32\n", "body")
+    help_text.insert(tk.END, "\n", "sep")
+
+    help_text.insert(tk.END, "About\n", "header")
+    help_text.insert(tk.END,
+                     "mkimage - Bootable Media Creator\n"
+                     "Cross-platform tool for creating UEFI boot images,\n"
+                     "ISOs, and USB drives.\n"
+                     "\n"
+                     "https://github.com/mgosha/mkimage\n", "body")
+
+    help_text.config(state=tk.DISABLED)
 
     root.after(100, poll_log)
     root.mainloop()

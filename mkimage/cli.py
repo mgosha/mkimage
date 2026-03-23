@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from pathlib import Path
 
 from mkimage import Config
 from mkimage.builders import build_gpt_data_img, build_gpt_img, build_img, build_iso
@@ -27,127 +28,168 @@ from mkimage.usb.write import _write_usb_from_dir, _write_usb_from_image
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Create bootable UEFI media images from a directory.",
+        description="mkimage — Create bootable UEFI media images, ISOs, and USB drives.",
         epilog="""\
 examples:
+  # Create a FAT32 image from a directory:
   %(prog)s --source build/ --target boot.img
+
+  # Create a GPT image with EFI System Partition:
   %(prog)s --source build/ --target boot.img --gpt
-  %(prog)s --source build/ --target boot.iso
-  %(prog)s --source build/ --target /dev/sdb
+
+  # GPT with ESP + data partition:
+  %(prog)s --source build/ --target boot.img --gpt --data-dir ./data/
+
+  # MBR-partitioned image:
+  %(prog)s --source build/ --target boot.img --mbr
+
+  # ISO image (hybrid for USB boot):
+  %(prog)s --source build/ --target boot.iso --iso-hybrid
+
+  # Compressed output:
+  %(prog)s --source build/ --target boot.img.gz
+
+  # exFAT filesystem (for files >4GB):
+  %(prog)s --source build/ --target boot.img --fs exfat
+
+  # Write directly to USB (auto-detect drive):
   %(prog)s --source build/ --target usb
+
+  # Write existing image to USB:
   %(prog)s --source boot.img --target usb
+
+  # Modify existing image without rebuild:
+  %(prog)s --modify boot.img --add newfile.txt --remove old.txt
+
+  # Verify after build:
+  %(prog)s --source build/ --target boot.img --verify
+
+  # List USB drives:
   %(prog)s --list-drives
+
+  # Check tool availability:
   %(prog)s --check
 
-  # Backward-compatible syntax:
-  %(prog)s build/ -o boot.img
+tips:
+  - FAT32 images (.img) don't need root; GPT/MBR images do
+  - Use .img.gz or .img.xz extension for automatic compression
+  - ISO hybrid (--iso-hybrid) makes ISOs dd-writable to USB
+  - Volume labels are 11 chars max for FAT32/exFAT
+  - The GUI launches with --gui or when run with no arguments
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    # New --source/--target interface
-    parser.add_argument(
+
+    # --- Source and Target ---
+    io_group = parser.add_argument_group("Source and Target")
+    io_group.add_argument(
         "--source",
         help="Source directory or image file",
     )
-    parser.add_argument(
+    io_group.add_argument(
         "--target",
-        help="Target: .img file, .iso file, /dev/sdX device, or 'usb' for auto-detect",
+        help="Target: .img, .iso, .img.gz, /dev/sdX, or 'usb' for auto-detect",
     )
-    # Backward-compatible positional and -o
-    parser.add_argument(
-        "source_dir", nargs="?",
-        help=argparse.SUPPRESS,  # hidden, use --source instead
-    )
-    parser.add_argument(
-        "-o", "--output",
-        help=argparse.SUPPRESS,  # hidden, use --target instead
-    )
-    # Common options
-    parser.add_argument(
+    io_group.add_argument(
         "--include", action="append", default=[],
         help="Additional file or directory to include (repeatable)",
     )
-    parser.add_argument(
+
+    # --- Image Options ---
+    img_group = parser.add_argument_group("Image Options")
+    img_group.add_argument(
         "--label", default="UEFITOOLS",
-        help="Volume label (default: UEFITOOLS)",
+        help="Volume label (default: UEFITOOLS, 11 chars max for FAT32)",
     )
-    parser.add_argument(
+    img_group.add_argument(
         "--extra", type=int, default=32, dest="extra_mb",
-        help="Extra free space in MB beyond content size (default: 32)",
+        help="Extra free space in MB beyond content (default: 32)",
     )
-    parser.add_argument(
-        "--mbr", action="store_true",
-        help="Create MBR-partitioned image",
-    )
-    parser.add_argument(
-        "--gpt", action="store_true",
-        help="Create GPT image with EFI System Partition",
-    )
-    parser.add_argument(
-        "--data-dir",
-        help="Directory for second data partition (implies --gpt)",
-    )
-    parser.add_argument(
-        "--data-size", default="",
-        help="Fixed size for data partition (e.g. 512M, 4G). Default: auto",
-    )
-    parser.add_argument(
-        "--esp-label", default="ESP",
-        help="ESP volume label (default: ESP)",
-    )
-    parser.add_argument(
-        "--data-label", default="DATA",
-        help="Data partition volume label (default: DATA)",
-    )
-    parser.add_argument(
+    img_group.add_argument(
         "--fs", default="fat32", choices=["fat32", "exfat", "ntfs"],
         help="Filesystem type (default: fat32)",
     )
-    parser.add_argument(
-        "--verify", action="store_true",
-        help="Verify files after writing (SHA256 comparison)",
-    )
-    parser.add_argument(
+    img_group.add_argument(
         "--iso-hybrid", action="store_true",
-        help="Create hybrid ISO that can be dd'd to USB",
+        help="Create hybrid ISO (dd-writable to USB)",
     )
-    parser.add_argument(
+    img_group.add_argument(
+        "--verify", action="store_true",
+        help="SHA256 verification after build",
+    )
+
+    # --- Partition Scheme ---
+    part_group = parser.add_argument_group("Partition Scheme")
+    part_group.add_argument(
+        "--mbr", action="store_true",
+        help="MBR partition table (legacy BIOS boot)",
+    )
+    part_group.add_argument(
+        "--gpt", action="store_true",
+        help="GPT partition table with EFI System Partition (UEFI boot)",
+    )
+    part_group.add_argument(
+        "--data-dir",
+        help="Directory for second data partition (implies --gpt)",
+    )
+    part_group.add_argument(
+        "--data-size", default="",
+        help="Fixed data partition size (e.g. 512M, 4G). Default: auto",
+    )
+    part_group.add_argument(
+        "--esp-label", default="ESP",
+        help="ESP volume label (default: ESP)",
+    )
+    part_group.add_argument(
+        "--data-label", default="DATA",
+        help="Data partition volume label (default: DATA)",
+    )
+
+    # --- USB Options ---
+    usb_group = parser.add_argument_group("USB Options")
+    usb_group.add_argument(
         "--force", action="store_true",
-        help="Skip USB write confirmation prompt",
+        help="Skip USB write confirmation (safety checks still run)",
     )
-    parser.add_argument(
+    usb_group.add_argument(
         "--list-drives", action="store_true",
         help="List removable USB drives and exit",
     )
-    parser.add_argument(
+
+    # --- Modify ---
+    mod_group = parser.add_argument_group("Image Modification")
+    mod_group.add_argument(
         "--modify", metavar="IMAGE",
-        help="Modify existing FAT32 image (add/remove files)",
+        help="Modify existing FAT32 image (no rebuild)",
     )
-    parser.add_argument(
+    mod_group.add_argument(
         "--add", action="append", default=[],
-        help="File or directory to add (with --modify, repeatable)",
+        help="File/directory to add (with --modify, repeatable)",
     )
-    parser.add_argument(
+    mod_group.add_argument(
         "--remove", action="append", default=[],
-        help="File to remove from image (with --modify, repeatable)",
+        help="File to remove (with --modify, repeatable)",
     )
-    parser.add_argument(
+
+    # --- General ---
+    gen_group = parser.add_argument_group("General")
+    gen_group.add_argument(
         "-v", "--verbose", action="store_true",
         help="Show per-file output and transfer progress",
     )
-    parser.add_argument(
+    gen_group.add_argument(
         "--gui", action="store_true",
-        help="Launch graphical interface",
+        help="Launch graphical interface (Dear PyGui or Tkinter)",
     )
-    # Backward compat: --write-usb IMAGE (old syntax)
-    parser.add_argument(
-        "--write-usb", metavar="IMAGE",
-        help=argparse.SUPPRESS,
-    )
-    parser.add_argument(
+    gen_group.add_argument(
         "--check", action="store_true",
         help="Check tool availability and exit",
     )
+
+    # --- Hidden backward compat ---
+    parser.add_argument("source_dir", nargs="?", help=argparse.SUPPRESS)
+    parser.add_argument("-o", "--output", help=argparse.SUPPRESS)
+    parser.add_argument("--write-usb", metavar="IMAGE", help=argparse.SUPPRESS)
 
     args = parser.parse_args()
 

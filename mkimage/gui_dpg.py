@@ -424,8 +424,10 @@ def gui_main() -> None:
                                        callback=lambda: dpg.show_item("source_dialog"))
                     with dpg.tooltip(b):
                         dpg.add_text("Select source directory or image file")
-                    dpg.add_input_text(tag="source_path", width=-1,
-                                       hint="Directory or existing .img/.iso")
+                    src_inp = dpg.add_input_text(tag="source_path", width=-1,
+                                                hint="Directory or existing .img/.iso")
+                    with dpg.tooltip(src_inp):
+                        dpg.add_text("Path to directory with files, or existing .img/.iso")
 
                 # Extra includes
                 dpg.add_spacer(height=2)
@@ -436,36 +438,49 @@ def gui_main() -> None:
                                    callback=lambda: dpg.show_item("include_dir_dialog"))
                     dpg.add_button(label="Clear", width=50,
                                    callback=lambda: dpg.delete_item("includes_list", children_only=True))
-                with dpg.child_window(tag="includes_list", height=40, border=True):
-                    pass
+                inc_cw = dpg.add_child_window(tag="includes_list", height=40, border=True)
+                with dpg.tooltip(inc_cw):
+                    dpg.add_text("Extra files/directories added to the image")
 
                 _section("Output")
                 with dpg.group(horizontal=True):
                     dpg.add_text("Format:")
-                    dpg.add_radio_button(["Image (.img)", "ISO (.iso)"],
-                                         tag="fmt_radio", horizontal=True,
-                                         default_value="Image (.img)")
+                    fmt_rb = dpg.add_radio_button(["Image (.img)", "ISO (.iso)"],
+                                                  tag="fmt_radio", horizontal=True,
+                                                  default_value="Image (.img)")
+                    with dpg.tooltip(fmt_rb):
+                        dpg.add_text("Image (.img) for disk images, ISO (.iso) for optical/hybrid")
                 with dpg.group(horizontal=True):
                     dpg.add_text("Label:")
-                    dpg.add_input_text(tag="vol_label", default_value="UEFITOOLS", width=110)
+                    lbl_inp = dpg.add_input_text(tag="vol_label", default_value="UEFITOOLS", width=110)
+                    with dpg.tooltip(lbl_inp):
+                        dpg.add_text("Volume label (11 chars max for FAT32)")
                     dpg.add_spacer(width=10)
                     dpg.add_text("Extra (MB):")
-                    dpg.add_input_text(tag="extra_space", default_value="32",
-                                       width=55, decimal=True)
+                    extra_inp = dpg.add_input_text(tag="extra_space", default_value="32",
+                                                   width=55, decimal=True)
+                    with dpg.tooltip(extra_inp):
+                        dpg.add_text("Free space added beyond content size")
 
                 _section("Target")
-                dpg.add_radio_button(["File", "USB Drive"], tag="target_mode",
-                                     horizontal=True, default_value="File",
-                                     callback=_on_target_mode_change)
+                tgt_rb = dpg.add_radio_button(["File", "USB Drive"], tag="target_mode",
+                                              horizontal=True, default_value="File",
+                                              callback=_on_target_mode_change)
+                with dpg.tooltip(tgt_rb):
+                    dpg.add_text("File saves to disk, USB Drive writes directly")
                 with dpg.group(tag="file_target_group", horizontal=True):
                     b = dpg.add_button(label="Browse...", width=85,
                                        callback=lambda: dpg.show_item("output_dialog"))
                     with dpg.tooltip(b):
                         dpg.add_text("Save as .img, .iso, .img.gz, etc.")
-                    dpg.add_input_text(tag="output_path", width=-1,
-                                       hint="Output file (.img, .iso, .img.gz)")
+                    out_inp = dpg.add_input_text(tag="output_path", width=-1,
+                                                 hint="Output file (.img, .iso, .img.gz)")
+                    with dpg.tooltip(out_inp):
+                        dpg.add_text("Use .img.gz for compressed output")
                 with dpg.group(tag="usb_target_group", show=False, horizontal=True):
-                    dpg.add_combo(tag="drive_combo", items=["(click Refresh)"], width=-100)
+                    drv_cb = dpg.add_combo(tag="drive_combo", items=["(click Refresh)"], width=-100)
+                    with dpg.tooltip(drv_cb):
+                        dpg.add_text("Select a removable USB drive")
                     dpg.add_button(label="Refresh", callback=_refresh_drives, width=85)
 
                 dpg.add_spacer(height=8)
@@ -476,13 +491,17 @@ def gui_main() -> None:
             # ===================== OPTIONS TAB =====================
             with dpg.tab(label="Options", tag="options_tab"):
                 _section("Filesystem")
-                dpg.add_radio_button(["FAT32", "exFAT", "NTFS"], tag="fs_radio",
-                                     horizontal=True, default_value="FAT32")
+                fs_rb = dpg.add_radio_button(["FAT32", "exFAT", "NTFS"], tag="fs_radio",
+                                             horizontal=True, default_value="FAT32")
+                with dpg.tooltip(fs_rb):
+                    dpg.add_text("FAT32 is universal, exFAT for >4GB files, NTFS for Windows")
 
                 _section("Partition Scheme")
-                dpg.add_radio_button(["None", "MBR", "GPT"], tag="partition_radio",
-                                     horizontal=True, default_value="None",
-                                     callback=_on_partition_change)
+                part_rb = dpg.add_radio_button(["None", "MBR", "GPT"], tag="partition_radio",
+                                               horizontal=True, default_value="None",
+                                               callback=_on_partition_change)
+                with dpg.tooltip(part_rb):
+                    dpg.add_text("None=raw filesystem, MBR=legacy boot, GPT=UEFI boot")
                 dpg.add_checkbox(tag="gpt_check", default_value=False, show=False)
 
                 with dpg.group(tag="gpt_options", show=False):
@@ -531,6 +550,58 @@ def gui_main() -> None:
 
                 st = dpg.add_text("Ready", tag="status_text")
                 dpg.bind_item_theme(st, "status_theme")
+
+            # ===================== HELP TAB =====================
+            with dpg.tab(label="Help", tag="help_tab"):
+                with dpg.child_window(height=-1, border=False):
+                    # Quick Start
+                    t = dpg.add_text("Quick Start")
+                    dpg.bind_item_theme(t, "header_theme")
+                    dpg.add_text("1. Select a source directory containing your files")
+                    dpg.add_text("2. Choose output format (Image or ISO)")
+                    dpg.add_text("3. Set a target file path or select USB Drive")
+                    dpg.add_text('4. Click "Create Image" or "Write to USB"')
+
+                    dpg.add_spacer(height=1)
+                    dpg.add_separator()
+
+                    # Options Reference
+                    t = dpg.add_text("Options Reference")
+                    dpg.bind_item_theme(t, "header_theme")
+                    dpg.add_text("Filesystem    FAT32 (default), exFAT (>4GB files), NTFS")
+                    dpg.add_text("Partition     None (raw), MBR (legacy BIOS), GPT (UEFI boot)")
+                    dpg.add_text("ISO Hybrid    Makes ISO dd-writable to USB")
+                    dpg.add_text("Verify        SHA256 check after build")
+                    dpg.add_text("Verbose       Show per-file output")
+                    dpg.add_text("Force         Skip USB confirmation prompt")
+                    dpg.add_spacer(height=4)
+                    dpg.add_text("GPT Options (when GPT selected):")
+                    dpg.add_text("  Data Dir      Second partition with separate files")
+                    dpg.add_text("  Data Size     Fixed size (e.g. 512M, 4G) or auto")
+                    dpg.add_text("  ESP/Data Label  Volume labels for partitions")
+
+                    dpg.add_spacer(height=1)
+                    dpg.add_separator()
+
+                    # Tips
+                    t = dpg.add_text("Tips")
+                    dpg.bind_item_theme(t, "header_theme")
+                    dpg.add_text("- Use .img.gz extension for compressed output")
+                    dpg.add_text("- FAT32 images don't need root; GPT/MBR do")
+                    dpg.add_text("- --modify flag (CLI only) edits images without rebuild")
+                    dpg.add_text("- Volume labels are limited to 11 characters for FAT32")
+
+                    dpg.add_spacer(height=1)
+                    dpg.add_separator()
+
+                    # About
+                    t = dpg.add_text("About")
+                    dpg.bind_item_theme(t, "header_theme")
+                    dpg.add_text("mkimage - Bootable Media Creator")
+                    dpg.add_text("Cross-platform tool for creating UEFI boot images,")
+                    dpg.add_text("ISOs, and USB drives.")
+                    dpg.add_spacer(height=4)
+                    dpg.add_text("https://github.com/mgosha/mkimage")
 
     dpg.bind_theme("main_theme")
     dpg.setup_dearpygui()
