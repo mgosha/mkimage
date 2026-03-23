@@ -3,5 +3,4 @@ __pycache__/
 build/
 dist/
 *.egg-info/
-mkimage.pyz
 .pytest_cache/
