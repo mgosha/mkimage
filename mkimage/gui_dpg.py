@@ -495,10 +495,14 @@ def gui_main() -> None:
                                        callback=lambda: dpg.show_item("source_dialog"))
                     with dpg.tooltip(b):
                         dpg.add_text("Select source directory or image file")
+                    usb_btn = dpg.add_button(label="USB", width=40,
+                                             callback=lambda: dpg.set_value("source_path", "usb"))
+                    with dpg.tooltip(usb_btn):
+                        dpg.add_text("Auto-detect USB drive (for cloning)")
                     src_inp = dpg.add_input_text(tag="source_path", width=-1,
-                                                hint="Directory or existing .img/.iso")
+                                                hint="Dir, .img, .iso, /dev/sdX, or 'usb'")
                     with dpg.tooltip(src_inp):
-                        dpg.add_text("Directory, image file, /dev/sdX device, or 'usb' to auto-detect")
+                        dpg.add_text("Directory, image file, /dev/sdX device,\nor 'usb' to auto-detect a USB drive")
 
                 # Extra includes
                 dpg.add_spacer(height=2)

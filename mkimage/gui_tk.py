@@ -270,11 +270,17 @@ def gui_main() -> None:
     notebook.add(build_tab, text="Build")
 
     # Source
-    tk.Label(build_tab, text="Source Directory:").grid(row=0, column=0, sticky=tk.W, **pad)
+    tk.Label(build_tab, text="Source:").grid(row=0, column=0, sticky=tk.W, **pad)
     source_var = tk.StringVar()
-    source_entry = tk.Entry(build_tab, textvariable=source_var, width=50)
-    source_entry.grid(row=0, column=1, columnspan=2, sticky=tk.EW, **pad)
+    src_frame = tk.Frame(build_tab)
+    src_frame.grid(row=0, column=1, columnspan=2, sticky=tk.EW, **pad)
+    source_entry = tk.Entry(src_frame, textvariable=source_var, width=45)
+    source_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
     ToolTip(source_entry, "Directory, image file, /dev/sdX device, or 'usb' to auto-detect")
+    usb_src_btn = tk.Button(src_frame, text="USB", width=4,
+                            command=lambda: source_var.set("usb"))
+    usb_src_btn.pack(side=tk.LEFT, padx=(3, 0))
+    ToolTip(usb_src_btn, "Auto-detect USB drive (for cloning)")
     tk.Button(build_tab, text="Browse...", command=browse_source).grid(row=0, column=3, **pad)
 
     # Includes
