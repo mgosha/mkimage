@@ -201,7 +201,22 @@ tips:
         try:
             from mkimage.gui_dpg import gui_main
         except ImportError:
-            from mkimage.gui_tk import gui_main
+            # Try to install dearpygui automatically
+            import subprocess as _sp
+            print("Dear PyGui not found. Attempting install...")
+            r = _sp.run([sys.executable, "-m", "pip", "install",
+                         "dearpygui", "--quiet"],
+                        capture_output=True, text=True)
+            if r.returncode == 0:
+                try:
+                    from mkimage.gui_dpg import gui_main
+                    print("Dear PyGui installed successfully.")
+                except ImportError:
+                    print("Install succeeded but import failed. Using Tkinter.")
+                    from mkimage.gui_tk import gui_main
+            else:
+                print("Could not install Dear PyGui. Using Tkinter.")
+                from mkimage.gui_tk import gui_main
         gui_main()
         return
 
