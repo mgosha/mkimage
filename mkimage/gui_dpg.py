@@ -548,9 +548,6 @@ def gui_main() -> None:
                                 dpg.add_button(
                                     label="Browse...", width=75,
                                     callback=_browse_source)
-                                dpg.add_button(
-                                    label="USB", width=35,
-                                    callback=lambda: dpg.set_value("source_path", "usb"))
                             dpg.add_input_text(
                                 tag="source_path", width=-1,
                                 hint="Dir, .img, .iso, /dev/sdX")
@@ -610,9 +607,6 @@ def gui_main() -> None:
                                 dpg.add_button(
                                     label="Browse...", width=75,
                                     callback=_browse_output)
-                                dpg.add_button(
-                                    label="USB", width=35,
-                                    callback=lambda: dpg.set_value("output_path", "usb"))
                             dpg.add_input_text(
                                 tag="output_path", width=-1,
                                 hint="Output .img, .iso, .img.gz")

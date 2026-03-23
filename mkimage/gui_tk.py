@@ -348,8 +348,6 @@ def gui_main() -> None:
     src_btn_row.pack(fill=tk.X)
     tk.Button(src_btn_row, text="Browse...", width=9,
               command=browse_source).pack(side=tk.LEFT, padx=(0, 3))
-    tk.Button(src_btn_row, text="USB", width=4,
-              command=lambda: source_var.set("usb")).pack(side=tk.LEFT)
     source_var = tk.StringVar()
     source_entry = tk.Entry(source_file_frame, textvariable=source_var)
     source_entry.pack(fill=tk.X, pady=(2, 0))
@@ -412,8 +410,6 @@ def gui_main() -> None:
     tgt_btn_row.pack(fill=tk.X)
     tk.Button(tgt_btn_row, text="Browse...", width=9,
               command=browse_output).pack(side=tk.LEFT, padx=(0, 3))
-    tk.Button(tgt_btn_row, text="USB", width=4,
-              command=lambda: output_var.set("usb")).pack(side=tk.LEFT)
     output_var = tk.StringVar()
     output_entry = tk.Entry(target_file_frame, textvariable=output_var)
     output_entry.pack(fill=tk.X, pady=(2, 0))
