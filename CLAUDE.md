@@ -38,25 +38,34 @@ layouts, and USB safety features from `softbmc/scripts/deploy.sh`.
 
 ```bash
 # Simple FAT32 image from a directory
-mkimage.py <dir> -o output.img
+mkimage.py --source <dir> --target output.img
 
 # GPT with EFI System Partition
-mkimage.py <dir> -o output.img --gpt
+mkimage.py --source <dir> --target output.img --gpt
 
 # GPT with ESP + data partition
-mkimage.py <dir> -o output.img --gpt --data-dir ./data/
+mkimage.py --source <dir> --target output.img --gpt --data-dir ./data/
 
 # ISO image
-mkimage.py <dir> -o output.iso
+mkimage.py --source <dir> --target output.iso
 
-# Direct USB write
-mkimage.py <dir> --write-usb /dev/sdb
+# Write to USB (auto-detect drive)
+mkimage.py --source <dir> --target usb
+
+# Write to specific USB device
+mkimage.py --source <dir> --target /dev/sdb
+
+# Write existing image to USB
+mkimage.py --source output.img --target usb
+
+# List removable drives
+mkimage.py --list-drives
 
 # Check tool availability
 mkimage.py --check
 
-# Windows (runs through WSL automatically)
-python mkimage.py staging\ -o bootkit.img
+# Backward-compatible syntax still works
+mkimage.py <dir> -o output.img
 ```
 
 ## Coding Style

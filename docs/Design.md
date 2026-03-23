@@ -343,6 +343,21 @@ On macOS, install via Homebrew: `brew install dosfstools gdisk xorriso`
 | GUI GPT panel | Done | Toggleable panel with data dir, size, labels |
 | Tests | Done | Structure tests (no root) + integration tests (root) |
 
-### Phase 3: USB safety and auto-sizing — TODO
+### Phase 3: USB safety and CLI redesign — DONE
+
+| Feature | Status | Description |
+|---------|--------|-------------|
+| `--source` / `--target` | Done | Auto-detecting CLI (dir/image → file/device/usb) |
+| Backward compat | Done | Positional source_dir and -o still work |
+| `--list-drives` | Done | List removable USB drives |
+| `--force` | Done | Skip USB confirmation (safety checks still run) |
+| udevadm bus verification | Done | Rejects non-USB devices (SATA, NVMe) |
+| MAX_USB_SIZE_GB | Done | Updated to 300GB (was 256GB) |
+| Improved unmount | Done | Uses findmnt for reliable partition detection |
+| USB write from dir | Done | Build temp image + dd, or GPT direct to device |
+| USB write from image | Done | dd existing .img to USB |
+| GPT direct to device | Done | sgdisk + mkfs.vfat directly on USB device |
+| USB auto-detect | Done | `--target usb` auto-selects single drive |
+
 ### Phase 4: Polish — TODO
 ### Phase 5: Integration — TODO

@@ -103,3 +103,56 @@ class TestCliGptFlags:
         assert "--data-size" in r.stdout
         assert "--esp-label" in r.stdout
         assert "--data-label" in r.stdout
+
+
+class TestCliSourceTarget:
+    def test_source_target_img(self, sample_dir: Path, tmp_path: Path) -> None:
+        out = str(tmp_path / "out.img")
+        r = run_mkimage("--source", str(sample_dir), "--target", out)
+        assert r.returncode == 0
+        assert os.path.exists(out)
+        assert "Done" in r.stdout
+
+    def test_source_target_iso(self, sample_dir: Path, tmp_path: Path) -> None:
+        out = str(tmp_path / "out.iso")
+        r = run_mkimage("--source", str(sample_dir), "--target", out)
+        assert r.returncode == 0
+        assert os.path.exists(out)
+
+    def test_backward_compat_positional(self, sample_dir: Path, tmp_path: Path) -> None:
+        """Old syntax: source_dir -o output still works."""
+        out = str(tmp_path / "compat.img")
+        r = run_mkimage(str(sample_dir), "-o", out)
+        assert r.returncode == 0
+        assert os.path.exists(out)
+
+    def test_missing_source_and_target(self) -> None:
+        r = run_mkimage("--target", "/tmp/x.img")
+        assert r.returncode != 0
+
+    def test_missing_target(self, sample_dir: Path) -> None:
+        r = run_mkimage("--source", str(sample_dir))
+        assert r.returncode != 0
+
+    def test_image_to_file_rejects(self, sample_dir: Path, tmp_path: Path) -> None:
+        """Cannot write an image source to a file target."""
+        img = str(tmp_path / "src.img")
+        Path(img).write_bytes(b"\x00" * 1024)
+        r = run_mkimage("--source", img, "--target", str(tmp_path / "out.img"))
+        assert r.returncode != 0
+        assert "cannot" in r.stderr.lower() or "error" in r.stderr.lower()
+
+
+class TestCliPhase3Flags:
+    def test_list_drives(self) -> None:
+        r = run_mkimage("--list-drives")
+        assert r.returncode == 0
+
+    def test_force_flag_recognized(self) -> None:
+        r = run_mkimage("--help")
+        assert "--force" in r.stdout
+
+    def test_source_flag_recognized(self) -> None:
+        r = run_mkimage("--help")
+        assert "--source" in r.stdout
+        assert "--target" in r.stdout

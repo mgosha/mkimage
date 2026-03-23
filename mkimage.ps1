@@ -35,7 +35,7 @@ param(
     powershell -ExecutionPolicy Bypass -File mkimage.ps1
 #>
 
-$MAX_USB_SIZE_GB = 256
+$MAX_USB_SIZE_GB = 300
 
 # ---------------------------------------------------------------------------
 # Helper functions

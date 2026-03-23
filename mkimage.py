@@ -721,7 +721,7 @@ def build_gpt_data_img(cfg: Config, esp_files: dict[str, str],
 # USB write
 # ---------------------------------------------------------------------------
 
-MAX_USB_SIZE_GB = 256
+MAX_USB_SIZE_GB = 300
 
 
 def _list_removable_drives_linux() -> list[dict[str, str]]:
@@ -825,6 +825,147 @@ def _list_removable_drives() -> list[dict[str, str]]:
     if _is_windows():
         return _list_removable_drives_windows()
     return _list_removable_drives_linux()
+
+
+def _verify_usb_bus(cfg: Config, device: str) -> bool:
+    """Verify a device is on the USB bus via udevadm.
+
+    Returns True if USB (or if udevadm is unavailable). Returns False
+    if the device is on a non-USB bus (SATA, NVMe, etc.).
+    """
+    if _is_windows():
+        return True  # Windows checks bus type via Get-Disk
+    if not _which("udevadm"):
+        cfg.log("  Warning: udevadm not found, skipping bus verification")
+        return True
+    r = _run(cfg, ["udevadm", "info", "--query=property", f"--name={device}"],
+             check=False)
+    if r.returncode != 0:
+        return True  # can't determine, allow
+    return "ID_BUS=usb" in r.stdout
+
+
+def _unmount_device(cfg: Config, device: str) -> None:
+    """Unmount all mounted partitions on a device."""
+    cfg.log(f"  Unmounting {device} partitions...")
+    if _which("findmnt"):
+        r = _run(cfg, ["findmnt", "--list", "--noheadings", "-o", "TARGET",
+                       "--source", device], check=False)
+        # Also check partitions
+        for suffix in [str(i) for i in range(1, 10)] + [f"p{i}" for i in range(1, 10)]:
+            rp = _run(cfg, ["findmnt", "--list", "--noheadings", "-o", "TARGET",
+                            "--source", f"{device}{suffix}"], check=False)
+            if rp.stdout.strip():
+                for mnt in rp.stdout.strip().splitlines():
+                    _run(cfg, ["umount", mnt.strip()], check=False, as_root=True)
+        if r.stdout.strip():
+            for mnt in r.stdout.strip().splitlines():
+                _run(cfg, ["umount", mnt.strip()], check=False, as_root=True)
+    else:
+        # Fallback: try unmounting common partition patterns
+        _run(cfg, ["umount", device], check=False, as_root=True)
+        for i in range(1, 10):
+            _run(cfg, ["umount", f"{device}{i}"], check=False, as_root=True)
+            _run(cfg, ["umount", f"{device}p{i}"], check=False, as_root=True)
+
+
+def _resolve_usb_target(cfg: Config, target: str,
+                        select_drive: Optional[Callable[..., Optional[dict[str, str]]]] = None,
+                        ) -> Optional[dict[str, str]]:
+    """Resolve a USB target to a drive dict.
+
+    If target is 'usb', auto-detect. If target is /dev/sdX, find it in
+    the drive list. Returns drive dict or None if aborted.
+    """
+    if select_drive is None:
+        select_drive = _cli_select_drive
+
+    drives = _list_removable_drives()
+
+    if target.lower() == "usb":
+        if not drives:
+            cfg.log("No removable USB drives found.")
+            cfg.log("  - On Windows/WSL, USB passthrough may need usbipd")
+            cfg.log(f"  - Drive must be removable and under {MAX_USB_SIZE_GB}GB")
+            return None
+        if len(drives) == 1:
+            cfg.log(f"  Auto-detected: {drives[0]['path']} "
+                    f"({drives[0]['size']} {drives[0]['model']})")
+            return drives[0]
+        cfg.log(f"Found {len(drives)} removable drives")
+        return select_drive(drives)
+
+    # Explicit device path — find it in drives list or create entry
+    for d in drives:
+        if d["path"] == target:
+            return d
+
+    # Device not in removable list — might be valid but not detected as removable
+    cfg.log(f"Warning: {target} not found in removable drives list")
+    return {"name": Path(target).name, "path": target, "size": "?",
+            "size_bytes": "0", "model": ""}
+
+
+def _usb_safety_checks(cfg: Config, drive: dict[str, str]) -> bool:
+    """Run USB safety checks. Returns True if safe to proceed."""
+    device = drive["path"]
+    size_bytes = int(drive["size_bytes"])
+
+    # Bus verification
+    if not _verify_usb_bus(cfg, device):
+        cfg.log(f"Error: {device} is not on the USB bus. Refusing to write.")
+        cfg.log("  Use a USB-connected drive, not SATA/NVMe.")
+        return False
+
+    # System partition check
+    if not _is_windows() and "sda" in drive["name"]:
+        mr = _run(cfg, ["lsblk", "-n", "-o", "MOUNTPOINT", device], check=False)
+        mounts = mr.stdout.strip() if mr.returncode == 0 else ""
+        if "/" in mounts or "/boot" in mounts or "/home" in mounts:
+            cfg.log(f"Error: {device} has system partitions mounted. Refusing.")
+            return False
+
+    # Size limit
+    if size_bytes > MAX_USB_SIZE_GB * (1024 ** 3):
+        cfg.log(f"Error: {device} is larger than {MAX_USB_SIZE_GB}GB. Refusing.")
+        return False
+
+    return True
+
+
+def _detect_source_type(source: str) -> str:
+    """Detect source type: 'directory' or 'image'.
+
+    Raises ValueError for unrecognized source.
+    """
+    p = Path(source)
+    if p.is_dir():
+        return "directory"
+    if p.is_file() and p.suffix.lower() in (".img", ".iso"):
+        return "image"
+    if p.is_file():
+        return "image"  # treat any file as image for dd
+    raise ValueError(f"Source '{source}' is not a directory or file")
+
+
+def _detect_target_type(target: str) -> str:
+    """Detect target type: 'img', 'iso', 'device', or 'usb-auto'.
+
+    Raises ValueError for unrecognized target.
+    """
+    if target.lower() == "usb":
+        return "usb-auto"
+    if target.startswith("/dev/") or target.startswith("\\\\.\\"):
+        return "device"
+    ext = Path(target).suffix.lower()
+    if ext == ".iso":
+        return "iso"
+    if ext == ".img":
+        return "img"
+    raise ValueError(
+        f"Cannot determine target type for '{target}'. "
+        f"Use .img, .iso, /dev/sdX, or 'usb'"
+    )
 
 
 def _cli_select_drive(drives: list[dict[str, str]]) -> Optional[dict[str, str]]:
@@ -1279,26 +1420,183 @@ def _write_usb_linux(
 # Main
 # ---------------------------------------------------------------------------
 
+def _write_usb_from_dir(cfg: Config, files: dict[str, str],
+                        target: str) -> None:
+    """Build and write to a USB device from collected files."""
+    drive = _resolve_usb_target(cfg, target)
+    if drive is None:
+        return
+
+    if not _usb_safety_checks(cfg, drive):
+        return
+
+    if not cfg.force:
+        if not _cli_confirm_write(drive):
+            cfg.log("Aborted.")
+            return
+
+    device = drive["path"]
+    _unmount_device(cfg, device)
+
+    if cfg.gpt:
+        # GPT direct to device
+        cfg.log(f"Writing GPT layout to {device}...")
+        _write_gpt_to_device(cfg, files, device)
+    elif _is_windows():
+        _write_usb_windows(cfg, "", [], drive)
+    else:
+        # Build temp FAT32 image, then dd
+        with tempfile.NamedTemporaryFile(suffix=".img", delete=False) as tmp:
+            tmp_path = tmp.name
+        try:
+            cfg.log("Building FAT32 image...")
+            build_img(cfg, files, tmp_path)
+            img_size = os.path.getsize(tmp_path)
+            img_resolved = _resolve(tmp_path)
+            _write_usb_linux(cfg, tmp_path, img_size, img_resolved, drive)
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+
+def _write_usb_from_image(cfg: Config, image_path: str,
+                          target: str) -> None:
+    """Write an existing image file to a USB device via dd."""
+    if not os.path.isfile(image_path):
+        cfg.log(f"Error: {image_path} not found")
+        return
+
+    drive = _resolve_usb_target(cfg, target)
+    if drive is None:
+        return
+
+    if not _usb_safety_checks(cfg, drive):
+        return
+
+    if not cfg.force:
+        if not _cli_confirm_write(drive):
+            cfg.log("Aborted.")
+            return
+
+    _unmount_device(cfg, drive["path"])
+    img_resolved = _resolve(image_path)
+    img_size = os.path.getsize(image_path)
+    _write_usb_linux(cfg, image_path, img_size, img_resolved, drive)
+
+
+def _write_gpt_to_device(cfg: Config, files: dict[str, str],
+                          device: str) -> None:
+    """Write GPT layout directly to a USB device (no intermediate image).
+
+    Requires root for sgdisk on a device and mount operations.
+    """
+    _check_root(cfg, "GPT USB write")
+    ensure_tools(cfg, "gpt")
+
+    content_mb = _calculate_content_size(files)
+    esp_mb = max(int(content_mb * 1.3 + 10), 64)
+    esp_label = cfg.esp_label[:11]
+
+    # Collect data files upfront if needed
+    data_files: dict[str, str] = {}
+    data_label = cfg.data_label[:11]
+    if cfg.data_dir:
+        data_files = collect_files(cfg, cfg.data_dir, [])
+
+    with tempfile.TemporaryDirectory() as staging:
+        _stage_files(files, Path(staging))
+        stg_resolved = _resolve(staging)
+
+        # Partition the device directly
+        cfg.log(f"  Creating GPT partition table on {device}...")
+        _run(cfg, ["sgdisk", "-Z", device], verbose=cfg.verbose, as_root=True)
+        _run(cfg, ["sgdisk", "-o", device], verbose=cfg.verbose, as_root=True)
+        _run(cfg, ["sgdisk",
+                   "-n", f"1:2048:+{esp_mb}M", "-t", "1:EF00",
+                   "-c", f"1:{esp_label}",
+                   device], verbose=True, as_root=True)
+
+        if cfg.data_dir:
+            _run(cfg, ["sgdisk",
+                       "-n", "2:0:0", "-t", "2:0700",
+                       "-c", f"2:{data_label}",
+                       device], verbose=True, as_root=True)
+
+        # Re-read partition table
+        _run(cfg, ["partprobe", device], check=False, as_root=True)
+        import time
+        time.sleep(1)
+
+        # Determine partition device naming (sdX1 vs sdXp1)
+        if Path(f"{device}1").exists() or Path(f"{device}1").is_block_device():
+            part_fmt = f"{device}{{}}"
+        else:
+            part_fmt = f"{device}p{{}}"
+
+        esp_part = part_fmt.format(1)
+        cfg.log(f"  Formatting ESP ({esp_label}) on {esp_part}...")
+        _run(cfg, ["mkfs.vfat", "-F", "32", "-n", esp_label, esp_part],
+             verbose=True, as_root=True)
+        cfg.log(f"  Copying {len(files)} files to ESP...")
+        _populate_partition(cfg, stg_resolved, esp_part)
+
+        if cfg.data_dir and data_files:
+            data_part = part_fmt.format(2)
+            data_staging = Path(staging) / "data"
+            data_staging.mkdir()
+            _stage_files(data_files, data_staging)
+            data_stg = _resolve(str(data_staging))
+
+            cfg.log(f"  Formatting data ({data_label}) on {data_part}...")
+            _run(cfg, ["mkfs.vfat", "-F", "32", "-n", data_label, data_part],
+                 verbose=True, as_root=True)
+            cfg.log(f"  Copying {len(data_files)} files to data...")
+            _populate_partition(cfg, data_stg, data_part)
+
+    _run(cfg, ["sync"], check=False)
+    cfg.log(f"  [OK] USB drive {device} ready. You can safely remove it.")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Create bootable UEFI media images from a directory.",
         epilog="""\
 examples:
-  %(prog)s build/binaries/ -o ipmitool.img
-  %(prog)s build/binaries/ -o ipmitool.iso --label IPMITOOL
-  %(prog)s . --include scripts/xfer-server.py -o tools.img
-  %(prog)s --write-usb ipmitool.img
+  %(prog)s --source build/ --target boot.img
+  %(prog)s --source build/ --target boot.img --gpt
+  %(prog)s --source build/ --target boot.iso
+  %(prog)s --source build/ --target /dev/sdb
+  %(prog)s --source build/ --target usb
+  %(prog)s --source boot.img --target usb
+  %(prog)s --list-drives
+  %(prog)s --check
+
+  # Backward-compatible syntax:
+  %(prog)s build/ -o boot.img
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    # New --source/--target interface
+    parser.add_argument(
+        "--source",
+        help="Source directory or image file",
+    )
+    parser.add_argument(
+        "--target",
+        help="Target: .img file, .iso file, /dev/sdX device, or 'usb' for auto-detect",
+    )
+    # Backward-compatible positional and -o
     parser.add_argument(
         "source_dir", nargs="?",
-        help="Directory to include (recursively)",
+        help=argparse.SUPPRESS,  # hidden, use --source instead
     )
     parser.add_argument(
         "-o", "--output",
-        help="Output file (.img for FAT32, .iso for ISO)",
+        help=argparse.SUPPRESS,  # hidden, use --target instead
     )
+    # Common options
     parser.add_argument(
         "--include", action="append", default=[],
         help="Additional file or directory to include (repeatable)",
@@ -1332,8 +1630,12 @@ examples:
         help="Data partition volume label (default: DATA)",
     )
     parser.add_argument(
-        "--write-usb", metavar="IMAGE",
-        help="Write an existing .img to a USB drive (lists removable drives)",
+        "--force", action="store_true",
+        help="Skip USB write confirmation prompt",
+    )
+    parser.add_argument(
+        "--list-drives", action="store_true",
+        help="List removable USB drives and exit",
     )
     parser.add_argument(
         "-v", "--verbose", action="store_true",
@@ -1342,6 +1644,11 @@ examples:
     parser.add_argument(
         "--gui", action="store_true",
         help="Launch graphical interface",
+    )
+    # Backward compat: --write-usb IMAGE (old syntax)
+    parser.add_argument(
+        "--write-usb", metavar="IMAGE",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--check", action="store_true",
@@ -1355,20 +1662,37 @@ examples:
         gui_main()
         return
 
+    # Resolve --source / --target from new or old-style arguments
+    source = args.source or args.source_dir
+    target = args.target or args.output
+
+    # Backward compat: --write-usb IMAGE → --source IMAGE --target usb
+    if args.write_usb:
+        source = source or args.write_usb
+        target = target or "usb"
+
     cfg = Config(
         verbose=args.verbose,
         label=args.label,
         extra_mb=args.extra_mb,
         gpt=args.gpt or bool(args.data_dir),
+        force=args.force,
         data_dir=args.data_dir or "",
         data_size=args.data_size,
         esp_label=args.esp_label,
         data_label=args.data_label,
     )
 
-    if args.write_usb:
-        write_usb(cfg, args.write_usb)
-        return
+    if args.list_drives:
+        drives = _list_removable_drives()
+        if not drives:
+            print("No removable USB drives found.")
+        else:
+            print(f"Removable USB drives (<={MAX_USB_SIZE_GB}GB):")
+            for d in drives:
+                model = f"  {d['model']}" if d['model'] else ""
+                print(f"  {d['path']}  {d['size']}{model}")
+        sys.exit(0)
 
     if args.check:
         img_missing = check_tools_img()
@@ -1387,48 +1711,56 @@ examples:
                 print(f"\nInstall all: sudo {pkg_cmd} install {' '.join(packages)}")
         sys.exit(1 if all_missing else 0)
 
-    if not args.source_dir:
-        parser.error("source_dir is required")
-    if not args.output:
-        parser.error("-o/--output is required")
-
-    ext = Path(args.output).suffix.lower()
-    if ext not in (".img", ".iso"):
-        print(f"Error: output must be .img or .iso, got '{ext}'", file=sys.stderr)
-        sys.exit(1)
+    if not source:
+        parser.error("--source (or positional source_dir) is required")
+    if not target:
+        parser.error("--target (or -o/--output) is required")
 
     try:
-        print(f"Collecting files from {args.source_dir}...")
-        files = collect_files(cfg, args.source_dir, args.include)
-        if not files:
-            print("Error: no files found", file=sys.stderr)
-            sys.exit(1)
+        source_type = _detect_source_type(source)
+        target_type = _detect_target_type(target)
 
-        print(f"  {len(files)} files, {sum(os.path.getsize(p) for p in files.values()) // 1024}KB total")
-        for img_path in sorted(files.keys()):
-            print(f"    {img_path}")
+        if source_type == "directory":
+            print(f"Collecting files from {source}...")
+            files = collect_files(cfg, source, args.include)
+            if not files:
+                print("Error: no files found", file=sys.stderr)
+                sys.exit(1)
+            print(f"  {len(files)} files, "
+                  f"{sum(os.path.getsize(p) for p in files.values()) // 1024}KB total")
+            for img_path in sorted(files.keys()):
+                print(f"    {img_path}")
 
-        if ext == ".img" and cfg.gpt and cfg.data_dir:
-            data_files = collect_files(cfg, cfg.data_dir, [])
-            print(f"  {len(data_files)} data files, "
-                  f"{sum(os.path.getsize(p) for p in data_files.values()) // 1024}KB")
-            for dp in sorted(data_files.keys()):
-                print(f"    {dp}")
-            print("Building GPT image (ESP + data)...")
-            build_gpt_data_img(cfg, files, data_files, args.output)
-        elif ext == ".img" and cfg.gpt:
-            print("Building GPT image...")
-            build_gpt_img(cfg, files, args.output)
-        elif ext == ".img":
-            print("Building FAT32 image...")
-            build_img(cfg, files, args.output)
-        else:
-            print("Building ISO image...")
-            build_iso(cfg, files, args.output)
+            if target_type == "img" and cfg.gpt and cfg.data_dir:
+                data_files = collect_files(cfg, cfg.data_dir, [])
+                print(f"  {len(data_files)} data files, "
+                      f"{sum(os.path.getsize(p) for p in data_files.values()) // 1024}KB")
+                print("Building GPT image (ESP + data)...")
+                build_gpt_data_img(cfg, files, data_files, target)
+            elif target_type == "img" and cfg.gpt:
+                print("Building GPT image...")
+                build_gpt_img(cfg, files, target)
+            elif target_type == "img":
+                print("Building FAT32 image...")
+                build_img(cfg, files, target)
+            elif target_type == "iso":
+                print("Building ISO image...")
+                build_iso(cfg, files, target)
+            elif target_type in ("device", "usb-auto"):
+                _write_usb_from_dir(cfg, files, target)
+            print("Done.")
 
-        print("Done.")
+        elif source_type == "image":
+            if target_type in ("device", "usb-auto"):
+                print(f"Writing {source} to USB...")
+                _write_usb_from_image(cfg, source, target)
+                print("Done.")
+            else:
+                print(f"Error: cannot write image to file target '{target}'",
+                      file=sys.stderr)
+                sys.exit(1)
 
-    except (RuntimeError, FileNotFoundError) as e:
+    except (RuntimeError, FileNotFoundError, ValueError) as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 

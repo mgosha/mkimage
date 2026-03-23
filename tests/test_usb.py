@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -9,7 +10,11 @@ import pytest
 from mkimage import (
     Config,
     MAX_USB_SIZE_GB,
+    _detect_source_type,
+    _detect_target_type,
     _list_removable_drives_linux,
+    _usb_safety_checks,
+    _verify_usb_bus,
     write_usb,
 )
 
@@ -136,3 +141,107 @@ class TestWriteUsbSafety:
                 confirm_write=lambda target: True,
             )
         assert any("system" in m.lower() or "refusing" in m.lower() for m in messages)
+
+
+class TestVerifyUsbBus:
+    def test_accepts_usb(self) -> None:
+        cfg = Config()
+        udevadm_output = "ID_BUS=usb\nID_USB_DRIVER=usb-storage\n"
+
+        def fake_run(cfg_arg: object, cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            if cmd[0] == "which":
+                return subprocess.CompletedProcess(cmd, 0, stdout="/usr/bin/udevadm", stderr="")
+            if cmd[0] == "udevadm":
+                return subprocess.CompletedProcess(cmd, 0, stdout=udevadm_output, stderr="")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        with patch("mkimage._run", side_effect=fake_run):
+            assert _verify_usb_bus(cfg, "/dev/sdb") is True
+
+    def test_rejects_sata(self) -> None:
+        cfg = Config()
+        udevadm_output = "ID_BUS=ata\nID_TYPE=disk\n"
+
+        def fake_run(cfg_arg: object, cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            if cmd[0] == "which":
+                return subprocess.CompletedProcess(cmd, 0, stdout="/usr/bin/udevadm", stderr="")
+            if cmd[0] == "udevadm":
+                return subprocess.CompletedProcess(cmd, 0, stdout=udevadm_output, stderr="")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        with patch("mkimage._run", side_effect=fake_run):
+            assert _verify_usb_bus(cfg, "/dev/sda") is False
+
+    def test_skips_if_unavailable(self) -> None:
+        cfg = Config()
+
+        def fake_which(tool: str) -> bool:
+            return tool != "udevadm"
+
+        with patch("mkimage._which", side_effect=fake_which):
+            assert _verify_usb_bus(cfg, "/dev/sdb") is True
+
+
+class TestUsbSafetyChecks:
+    def test_rejects_non_usb_bus(self) -> None:
+        cfg = Config()
+        drive = {"name": "sdb", "path": "/dev/sdb", "size": "16GB",
+                 "size_bytes": str(16 * 1024**3), "model": "SSD"}
+
+        with patch("mkimage._verify_usb_bus", return_value=False):
+            assert _usb_safety_checks(cfg, drive) is False
+
+    def test_rejects_oversized(self) -> None:
+        cfg = Config()
+        drive = {"name": "sdb", "path": "/dev/sdb", "size": "500GB",
+                 "size_bytes": str(500 * 1024**3), "model": "Big Drive"}
+
+        with patch("mkimage._verify_usb_bus", return_value=True):
+            assert _usb_safety_checks(cfg, drive) is False
+
+    def test_accepts_valid_usb(self) -> None:
+        cfg = Config()
+        drive = {"name": "sdb", "path": "/dev/sdb", "size": "16GB",
+                 "size_bytes": str(16 * 1024**3), "model": "USB Flash"}
+
+        with patch("mkimage._verify_usb_bus", return_value=True):
+            assert _usb_safety_checks(cfg, drive) is True
+
+
+class TestDetectSourceType:
+    def test_directory(self, tmp_path: Path) -> None:
+        assert _detect_source_type(str(tmp_path)) == "directory"
+
+    def test_image_file(self, tmp_path: Path) -> None:
+        img = tmp_path / "test.img"
+        img.write_bytes(b"\x00")
+        assert _detect_source_type(str(img)) == "image"
+
+    def test_iso_file(self, tmp_path: Path) -> None:
+        iso = tmp_path / "test.iso"
+        iso.write_bytes(b"\x00")
+        assert _detect_source_type(str(iso)) == "image"
+
+    def test_nonexistent_raises(self) -> None:
+        with pytest.raises(ValueError):
+            _detect_source_type("/nonexistent/path")
+
+
+class TestDetectTargetType:
+    def test_img(self) -> None:
+        assert _detect_target_type("output.img") == "img"
+
+    def test_iso(self) -> None:
+        assert _detect_target_type("output.iso") == "iso"
+
+    def test_device(self) -> None:
+        assert _detect_target_type("/dev/sdb") == "device"
+
+    def test_usb_auto(self) -> None:
+        assert _detect_target_type("usb") == "usb-auto"
+        assert _detect_target_type("USB") == "usb-auto"
+
+    def test_unknown_raises(self) -> None:
+        with pytest.raises(ValueError):
+            _detect_target_type("output.txt")
+
