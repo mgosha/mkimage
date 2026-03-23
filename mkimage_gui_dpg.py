@@ -563,7 +563,7 @@ def gui_main() -> None:
         with dpg.child_window(tag="log_child", height=160, border=True):
             dpg.add_input_text(tag="log_text", multiline=True,
                                readonly=True, width=-1, height=-1,
-                               default_value="Ready.\n", tracked=True)
+                               default_value="", tracked=True)
         dpg.bind_item_theme(dpg.last_container(), "log_theme")
 
         # --- Status bar ---
