@@ -195,18 +195,6 @@ tips:
         help="Check tool availability and exit",
     )
 
-    # --- Hidden backward compat flags ---
-    parser.add_argument("source_dir", nargs="?", help=argparse.SUPPRESS)
-    parser.add_argument("-o", "--output", help=argparse.SUPPRESS)
-    parser.add_argument("--write-usb", metavar="IMAGE", help=argparse.SUPPRESS)
-    parser.add_argument("--extra", type=int, default=32, dest="extra_mb",
-                        help=argparse.SUPPRESS)
-    parser.add_argument("--fs", default="fat32", help=argparse.SUPPRESS)
-    parser.add_argument("--data-dir", default="", help=argparse.SUPPRESS)
-    parser.add_argument("--data-size", default="", help=argparse.SUPPRESS)
-    parser.add_argument("--esp-label", default="ESP", help=argparse.SUPPRESS)
-    parser.add_argument("--data-label", default="DATA", help=argparse.SUPPRESS)
-
     args = parser.parse_args()
 
     if args.gui or len(sys.argv) == 1:
@@ -217,39 +205,20 @@ tips:
         gui_main()
         return
 
-    # Resolve --source / --target from new or old-style arguments
-    source = args.source or args.source_dir
-    target = args.target or args.output
+    source = args.source
+    target = args.target
 
-    # Backward compat: --write-usb IMAGE -> --source IMAGE --target usb
-    if args.write_usb:
-        source = source or args.write_usb
-        target = target or "usb"
-
-    # Build partitions list from --partition or legacy flags
-    if args.partition:
-        partitions = [_parse_partition_spec(s) for s in args.partition]
-        # Infer --gpt if any partition is esp type
-        if any(p.fs_type == "esp" for p in partitions):
-            args.gpt = True
-    elif args.gpt and args.data_dir:
-        partitions = [
-            PartitionSpec("esp", "", args.esp_label or "ESP"),
-            PartitionSpec(args.fs, args.data_size, args.data_label or "DATA",
-                          args.data_dir),
-        ]
-    elif args.gpt:
-        partitions = [PartitionSpec("esp", "", args.esp_label or "ESP")]
-    elif args.mbr:
-        partitions = [PartitionSpec(args.fs, "", args.label)]
-    else:
-        partitions = [PartitionSpec(args.fs, f"+{args.extra_mb}M", args.label)]
+    # Build partitions list from --partition specs
+    partitions = [_parse_partition_spec(s) for s in args.partition]
+    # Infer --gpt if any partition is esp type
+    if any(p.fs_type == "esp" for p in partitions):
+        args.gpt = True
 
     cfg = Config(
         verbose=args.verbose,
         verify=args.verify,
         label=args.label,
-        gpt=args.gpt or bool(args.data_dir),
+        gpt=args.gpt,
         mbr=args.mbr,
         force=args.force,
         iso_hybrid=args.iso_hybrid,
