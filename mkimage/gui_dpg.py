@@ -417,9 +417,15 @@ def _animate_progress() -> None:
 # ---------------------------------------------------------------------------
 
 def gui_main() -> None:
+    # Suppress non-fatal GLFW errors on macOS (Cocoa workarea/scale queries)
+    import sys as _sys
+    import io as _io
+    _orig_stderr = _sys.stderr
+    _sys.stderr = _io.StringIO()
     dpg.create_context()
     dpg.create_viewport(title="mkimage \u2014 Bootable Media Creator",
                         width=720, height=620)
+    _sys.stderr = _orig_stderr
     _create_themes()
 
     # --- File dialogs ---
@@ -562,18 +568,11 @@ def gui_main() -> None:
 
             # ===================== LOG TAB =====================
             with dpg.tab(label="Log", tag="log_tab"):
-                pb = dpg.add_progress_bar(tag="progress_bar", default_value=0.0,
-                                          width=-1, show=False)
-                dpg.bind_item_theme(pb, "progress_theme")
-
-                with dpg.child_window(tag="log_child", height=-22, border=True):
+                with dpg.child_window(tag="log_child", height=-1, border=True):
                     dpg.add_input_text(tag="log_text", multiline=True,
                                        readonly=True, width=-1, height=-1,
                                        default_value="", tracked=True)
                 dpg.bind_item_theme(dpg.last_container(), "log_theme")
-
-                st = dpg.add_text("Ready", tag="status_text")
-                dpg.bind_item_theme(st, "status_theme")
 
             # ===================== HELP TAB =====================
             with dpg.tab(label="Help", tag="help_tab"):
@@ -627,6 +626,13 @@ def gui_main() -> None:
                     dpg.add_text("ISOs, and USB drives.")
                     dpg.add_spacer(height=4)
                     dpg.add_text("https://github.com/mgosha/mkimage")
+
+        # --- Status bar (below tabs, always visible) ---
+        pb = dpg.add_progress_bar(tag="progress_bar", default_value=0.0,
+                                  width=-1, show=False)
+        dpg.bind_item_theme(pb, "progress_theme")
+        st = dpg.add_text("Ready", tag="status_text")
+        dpg.bind_item_theme(st, "status_theme")
 
     # Populate default partition row (None scheme = one fat32 row)
     _on_partition_scheme_change()
