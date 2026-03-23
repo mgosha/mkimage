@@ -4,7 +4,10 @@ Spawns a Python subprocess that opens tkinter.filedialog, prints the
 selected path to stdout, and exits. This avoids event loop conflicts
 when used alongside Dear PyGui or other GUI frameworks.
 
-Fallback chain: tkinter.filedialog -> zenity/kdialog (Linux) -> empty list.
+Fallback chain:
+  macOS: osascript (AppleScript) -> tkinter.filedialog -> empty list
+  Linux: tkinter.filedialog -> zenity -> kdialog -> empty list
+  Windows: tkinter.filedialog -> empty list
 """
 from __future__ import annotations
 
@@ -30,11 +33,21 @@ def native_file_dialog(
         initial_dir: Starting directory
         multiple: Allow multiple file selection (open_file only)
     """
+    system = platform.system()
+
+    # macOS: prefer AppleScript (always available, truly native)
+    if system == "Darwin":
+        result = _try_osascript(mode, title, filetypes, initial_dir, multiple)
+        if result is not None:
+            return result
+
+    # All platforms: try tkinter subprocess
     result = _try_tkinter(mode, title, filetypes, initial_dir, multiple)
     if result is not None:
         return result
 
-    if platform.system() == "Linux":
+    # Linux: try desktop-specific dialog tools
+    if system == "Linux":
         result = _try_zenity(mode, title, filetypes, initial_dir, multiple)
         if result is not None:
             return result
@@ -43,6 +56,70 @@ def native_file_dialog(
             return result
 
     return []
+
+
+def _try_osascript(
+    mode: str, title: str, filetypes: list[tuple[str, str]] | None,
+    initial_dir: str, multiple: bool,
+) -> list[str] | None:
+    """Open dialog via AppleScript (macOS only). Truly native Cocoa dialogs."""
+    prompt = title or "Select"
+    if mode == "open_dir":
+        script = f'POSIX path of (choose folder with prompt "{prompt}")'
+    elif mode == "open_file" and multiple:
+        ft_clause = _osascript_filetypes(filetypes)
+        script = (
+            f'set fs to (choose file with prompt "{prompt}"'
+            f'{ft_clause} with multiple selections allowed)\n'
+            'set out to ""\n'
+            'repeat with f in fs\n'
+            '  set out to out & POSIX path of f & linefeed\n'
+            'end repeat\n'
+            'return out'
+        )
+    elif mode == "open_file":
+        ft_clause = _osascript_filetypes(filetypes)
+        script = (
+            f'POSIX path of (choose file with prompt "{prompt}"'
+            f'{ft_clause})'
+        )
+    elif mode == "save_file":
+        script = (
+            f'POSIX path of (choose file name with prompt "{prompt}"'
+            f' default name "output.img")'
+        )
+    else:
+        return None
+
+    try:
+        r = subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True, text=True, timeout=300,
+        )
+        if r.returncode != 0:
+            # User cancelled (rc=1) or error
+            return [] if r.returncode == 1 else None
+        paths = [p.rstrip("/") for p in r.stdout.strip().splitlines() if p.strip()]
+        return paths
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+
+
+def _osascript_filetypes(filetypes: list[tuple[str, str]] | None) -> str:
+    """Convert filetypes list to AppleScript 'of type' clause."""
+    if not filetypes:
+        return ""
+    extensions: list[str] = []
+    for _, pattern in filetypes:
+        if pattern in ("*.*", "*"):
+            continue
+        # "*.img" -> "img", "*.iso" -> "iso"
+        ext = pattern.lstrip("*.")
+        if ext:
+            extensions.append(f'"{ext}"')
+    if not extensions:
+        return ""
+    return " of type {" + ", ".join(extensions) + "}"
 
 
 def _try_tkinter(
