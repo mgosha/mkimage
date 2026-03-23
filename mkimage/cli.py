@@ -79,6 +79,15 @@ examples:
   # Verify after build:
   %(prog)s --source build/ --target boot.img --verify
 
+  # USB with persistent storage partition (4GB ext4):
+  %(prog)s --source build/ --target usb --persistent 4G
+
+  # Custom cluster size for FAT32:
+  %(prog)s --source build/ --target boot.img --cluster-size 32768
+
+  # Check USB drive for bad blocks:
+  %(prog)s --check-usb /dev/sdb
+
   # List USB drives:
   %(prog)s --list-drives
 
@@ -150,6 +159,10 @@ tips:
         "--verify", action="store_true",
         help="SHA256 verification after build",
     )
+    img_group.add_argument(
+        "--cluster-size", type=int, default=0, metavar="BYTES",
+        help="Cluster size in bytes for FAT32 (e.g. 4096, 32768). Default: auto",
+    )
 
     # --- USB Options ---
     usb_group = parser.add_argument_group("USB Options")
@@ -164,6 +177,14 @@ tips:
     usb_group.add_argument(
         "--wipe", metavar="DEVICE",
         help="Wipe all partition signatures from a device (MBR, GPT, filesystem)",
+    )
+    usb_group.add_argument(
+        "--check-usb", metavar="DEVICE",
+        help="Check USB drive for bad blocks (destructive test, erases all data)",
+    )
+    usb_group.add_argument(
+        "--persistent", metavar="SIZE",
+        help="Add persistent storage partition (e.g. 4G). Creates ext4 'casper-rw' partition.",
     )
 
     # --- Modify ---
@@ -230,6 +251,20 @@ tips:
     if any(p.fs_type == "esp" for p in partitions):
         args.gpt = True
 
+    # --persistent shorthand: add ext4 casper-rw partition
+    if args.persistent:
+        args.gpt = True
+        partitions.append(PartitionSpec("ext4", args.persistent, "casper-rw"))
+
+    # Apply --cluster-size to first partition spec (or create default)
+    if args.cluster_size > 0:
+        if partitions:
+            partitions[0].cluster_size = args.cluster_size
+        else:
+            p = PartitionSpec()
+            p.cluster_size = args.cluster_size
+            partitions.append(p)
+
     cfg = Config(
         verbose=args.verbose,
         verify=args.verify,
@@ -279,6 +314,29 @@ tips:
         _unmount_device(cfg, device)
         _wipe_device(cfg, device)
         print(f"[OK] Wiped all partition signatures from {device}.")
+        sys.exit(0)
+
+    if args.check_usb:
+        from mkimage.usb.safety import _check_bad_blocks, _verify_usb_bus, _unmount_device
+        device = args.check_usb
+        if not _verify_usb_bus(cfg, device):
+            print(f"Error: {device} is not on the USB bus. Refusing.", file=sys.stderr)
+            sys.exit(1)
+        if not cfg.force:
+            print(f"\n  WARNING: Bad block test will ERASE ALL DATA on {device}.\n")
+            try:
+                confirm = input(f"  Type 'yes' to test {device}: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                confirm = ""
+            if confirm != "yes":
+                print("Aborted.")
+                sys.exit(0)
+        _unmount_device(cfg, device)
+        if _check_bad_blocks(cfg, device):
+            print(f"[OK] No bad blocks found on {device}.")
+        else:
+            print(f"[FAIL] Bad blocks detected on {device}!", file=sys.stderr)
+            sys.exit(1)
         sys.exit(0)
 
     if args.check:

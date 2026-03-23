@@ -71,7 +71,7 @@ def build_mbr_img(cfg: Config, files: dict[str, str], output: str) -> None:
             part = _wait_for_partition(cfg, loop_dev, 1)
 
             cfg.log(f"  Formatting partition ({part_label})...")
-            _format_partition(cfg, part, fs_type, part_label)
+            _format_partition(cfg, part, fs_type, part_label, part_spec.cluster_size)
 
             cfg.log(f"  Copying {len(files)} files...")
             _populate_partition(cfg, stg_resolved, part)

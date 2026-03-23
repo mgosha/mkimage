@@ -136,7 +136,9 @@ def build_gpt_img(cfg: Config, source_files: dict[str, str],
                 part_dev = _wait_for_partition(cfg, loop_dev, pnum)
 
                 cfg.log(f"  Formatting partition {pnum} ({label})...")
-                _format_partition(cfg, part_dev, fs_type, label)
+                spec = info["spec"]
+                cs = spec.cluster_size if hasattr(spec, 'cluster_size') else 0  # type: ignore[union-attr]
+                _format_partition(cfg, part_dev, fs_type, label, cs)
 
                 if files:
                     cfg.log(f"  Copying {len(files)} files to partition {pnum}...")  # type: ignore[arg-type]

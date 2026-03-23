@@ -12,22 +12,38 @@ if TYPE_CHECKING:
 
 
 def _format_partition(cfg: Config, device: str, fs_type: str,
-                      label: str) -> None:
+                      label: str, cluster_size: int = 0) -> None:
     """Format a partition with the specified filesystem.
 
     Args:
-        fs_type: 'fat32', 'exfat', or 'ntfs'.
+        fs_type: 'fat32', 'exfat', 'ext4', or 'ntfs'.
+        cluster_size: Cluster/block size in bytes (0 = auto/default).
     """
     label = label[:11]  # FAT32/exFAT label limit
     if fs_type == "fat32":
-        _run(cfg, [_find_tool("mkfs.vfat"), "-F", "32", "-n", label, device],
-             verbose=True, as_root=True)
+        cmd = [_find_tool("mkfs.vfat"), "-F", "32", "-n", label]
+        if cluster_size > 0:
+            cmd.extend(["-s", str(cluster_size // 512)])
+        cmd.append(device)
+        _run(cfg, cmd, verbose=True, as_root=True)
     elif fs_type == "exfat":
-        _run(cfg, [_find_tool("mkfs.exfat"), "-n", label, device],
-             verbose=True, as_root=True)
+        cmd = [_find_tool("mkfs.exfat"), "-n", label]
+        if cluster_size > 0:
+            cmd.extend(["-s", str(cluster_size)])
+        cmd.append(device)
+        _run(cfg, cmd, verbose=True, as_root=True)
+    elif fs_type == "ext4":
+        cmd = [_find_tool("mkfs.ext4"), "-L", label, "-F"]
+        if cluster_size > 0:
+            cmd.extend(["-b", str(cluster_size)])
+        cmd.append(device)
+        _run(cfg, cmd, verbose=True, as_root=True)
     elif fs_type == "ntfs":
-        _run(cfg, [_find_tool("mkfs.ntfs"), "-f", "-L", label, device],
-             verbose=True, as_root=True)
+        cmd = [_find_tool("mkfs.ntfs"), "-f", "-L", label]
+        if cluster_size > 0:
+            cmd.extend(["-c", str(cluster_size)])
+        cmd.append(device)
+        _run(cfg, cmd, verbose=True, as_root=True)
     else:
         raise ValueError(f"Unknown filesystem type: {fs_type}")
 

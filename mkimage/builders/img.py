@@ -158,8 +158,11 @@ def build_img(cfg: Config, files: dict[str, str], output: str) -> None:
             if cfg.verbose:
                 dd_cmd.append("status=progress")
             _run(cfg, dd_cmd, verbose=True)
-            _run(cfg, ["mkfs.vfat", "-F", "32", "-n", part_label, out],
-                 verbose=True)
+            mkfs_cmd = ["mkfs.vfat", "-F", "32", "-n", part_label]
+            if part.cluster_size > 0:
+                mkfs_cmd.extend(["-s", str(part.cluster_size // 512)])
+            mkfs_cmd.append(out)
+            _run(cfg, mkfs_cmd, verbose=True)
             _populate_img_mcopy(cfg, files, out)
         elif _which("rsync"):
             # Fallback: mount+rsync (requires root)

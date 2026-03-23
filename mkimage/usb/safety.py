@@ -178,6 +178,56 @@ def _cli_confirm_write(target: dict[str, str]) -> bool:
     return confirm == "yes"
 
 
+def _check_bad_blocks(cfg: Config, device: str) -> bool:
+    """Check USB drive for bad blocks. Returns True if all blocks OK.
+
+    Uses badblocks on Linux (destructive write test), or a dd-based
+    write/read pattern on macOS. On Windows, delegates to chkdsk.
+
+    WARNING: This is a destructive test -- all data on the device will
+    be erased.
+    """
+    if _is_windows():
+        # Use chkdsk via PowerShell (non-destructive scan)
+        cfg.log(f"  Running chkdsk scan on {device}...")
+        r = _run(cfg, ["chkdsk", device], check=False, verbose=True)
+        return r.returncode == 0
+
+    if _is_macos():
+        # macOS: use diskutil verifyDisk
+        cfg.log(f"  Running disk verification on {device}...")
+        r = _run(cfg, ["diskutil", "verifyDisk", device],
+                 check=False, verbose=True)
+        return r.returncode == 0
+
+    # Linux: use badblocks if available
+    if _which("badblocks"):
+        cfg.log(f"  Running bad block scan on {device} (destructive write test)...")
+        r = _run(cfg, ["badblocks", "-wsv", device],
+                 check=False, verbose=True, as_root=True)
+        return r.returncode == 0
+
+    # Fallback: dd write pattern + read-back
+    cfg.log(f"  badblocks not found, using dd write/read test on {device}...")
+    cfg.log("  Writing test pattern...")
+    r = _run(cfg, ["dd", "if=/dev/urandom", f"of={device}", "bs=1M",
+                   "conv=fsync", "status=progress"],
+             check=False, verbose=True, as_root=True)
+    if r.returncode != 0:
+        cfg.log(f"  Write failed: {r.stderr.strip()}")
+        return False
+
+    cfg.log("  Reading back for verification...")
+    r = _run(cfg, ["dd", f"if={device}", "of=/dev/null", "bs=1M",
+                   "status=progress"],
+             check=False, verbose=True, as_root=True)
+    if r.returncode != 0:
+        cfg.log(f"  Read failed: {r.stderr.strip()}")
+        return False
+
+    return True
+
+
 def _resolve_usb_target(cfg: Config, target: str,
                         select_drive: Optional[Callable[..., Optional[dict[str, str]]]] = None,
                         ) -> Optional[dict[str, str]]:

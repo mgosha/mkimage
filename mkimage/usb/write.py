@@ -15,7 +15,7 @@ from mkimage.files import (
     collect_files,
 )
 from mkimage.partition import _check_root, _format_partition, _populate_partition
-from mkimage.platform import _is_macos, _is_windows, _resolve, _run
+from mkimage.platform import _is_macos, _is_windows, _resolve, _run, _which
 from mkimage.tools import ensure_tools
 from mkimage.usb.detect import MAX_USB_SIZE_GB, _list_removable_drives
 from mkimage.usb.safety import (
@@ -29,6 +29,110 @@ from mkimage.usb.safety import (
 
 if TYPE_CHECKING:
     from mkimage import Config, PartitionSpec
+
+
+def _is_hybrid_iso(path: str) -> bool:
+    """Check if an ISO is a hybrid (has MBR boot code, can be dd'd to USB).
+
+    Hybrid ISOs (created with isohybrid) have an MBR boot signature at
+    offset 510-511 AND a valid ISO 9660 signature at offset 32769.
+    """
+    try:
+        with open(path, 'rb') as f:
+            # Check for MBR signature at offset 510-511
+            f.seek(510)
+            sig = f.read(2)
+            if sig != b'\x55\xAA':
+                return False
+            # Check for ISO 9660 signature at offset 32769
+            f.seek(32769)
+            iso_sig = f.read(5)
+            return iso_sig == b'CD001'
+    except (OSError, IOError):
+        return False
+
+
+def _extract_iso_to_usb(cfg: Config, iso_path: str, target: str) -> None:
+    """Extract a non-hybrid ISO to a USB drive with proper boot setup.
+
+    Mounts or extracts the ISO contents, determines boot type (UEFI vs
+    legacy), creates appropriate partition layout on the USB drive, and
+    copies all files.
+    """
+    drive = _resolve_usb_target(cfg, target)
+    if drive is None:
+        return
+
+    if not _usb_safety_checks(cfg, drive):
+        return
+
+    if not cfg.force:
+        if not _cli_confirm_write(drive):
+            cfg.log("Aborted.")
+            return
+
+    device = drive["path"]
+    _unmount_device(cfg, device)
+    _wipe_device(cfg, device)
+
+    # Extract ISO to temp dir
+    with tempfile.TemporaryDirectory() as extract_dir:
+        cfg.log("  Extracting ISO contents...")
+        if _which("xorriso"):
+            _run(cfg, ["xorriso", "-osirrox", "on", "-indev", iso_path,
+                       "-extract", "/", extract_dir],
+                 verbose=cfg.verbose, check=False, as_root=True)
+        else:
+            # Fallback: mount and copy
+            _run(cfg, ["bash", "-c",
+                       f"MNTDIR=$(mktemp -d) && "
+                       f"mount -o loop,ro '{iso_path}' $MNTDIR && "
+                       f"cp -a $MNTDIR/* '{extract_dir}/' && "
+                       f"umount $MNTDIR && rmdir $MNTDIR"],
+                 verbose=cfg.verbose, as_root=True)
+
+        # Determine boot type from extracted contents
+        has_efi = Path(extract_dir, "EFI").is_dir()
+
+        # Collect all extracted files
+        files: dict[str, str] = {}
+        extract_path = Path(extract_dir)
+        for p in sorted(extract_path.rglob("*")):
+            if p.is_file():
+                rel = str(p.relative_to(extract_path))
+                files[rel] = str(p)
+
+        cfg.log(f"  Extracted {len(files)} files")
+
+        if has_efi:
+            # UEFI boot: create GPT + ESP on USB, copy files
+            cfg.log("  UEFI boot detected, creating GPT layout...")
+            cfg.gpt = True
+            if not cfg.partitions:
+                from mkimage import PartitionSpec
+                cfg.partitions = [PartitionSpec("esp", "0", "BOOT")]
+            _write_gpt_to_device(cfg, files, device)
+        else:
+            # No EFI: create simple FAT32, build temp image and dd
+            cfg.log("  Creating FAT32 layout...")
+            from mkimage import PartitionSpec
+            if not cfg.partitions:
+                cfg.partitions = [PartitionSpec("fat32", "0", "BOOT")]
+            with tempfile.NamedTemporaryFile(suffix=".img", delete=False) as tmp:
+                tmp_path = tmp.name
+            try:
+                build_img(cfg, files, tmp_path)
+                img_size = os.path.getsize(tmp_path)
+                img_resolved = _resolve(tmp_path)
+                _write_usb_linux(cfg, tmp_path, img_size, img_resolved, drive)
+            finally:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+
+    _run(cfg, ["sync"], check=False)
+    cfg.log(f"  [OK] ISO extracted to {device}. You can safely remove it.")
 
 
 def write_usb(
@@ -489,9 +593,19 @@ def _write_usb_from_dir(cfg: Config, files: dict[str, str],
 
 def _write_usb_from_image(cfg: Config, image_path: str,
                           target: str) -> None:
-    """Write an existing image file to a USB device via dd."""
+    """Write an existing image file to a USB device via dd.
+
+    For non-hybrid ISOs, extracts contents to a properly formatted USB
+    instead of raw dd (which would produce an unbootable drive).
+    """
     if not os.path.isfile(image_path):
         cfg.log(f"Error: {image_path} not found")
+        return
+
+    # Non-hybrid ISOs need extraction, not raw dd
+    if image_path.lower().endswith('.iso') and not _is_hybrid_iso(image_path):
+        cfg.log("  Non-hybrid ISO detected, extracting to USB...")
+        _extract_iso_to_usb(cfg, image_path, target)
         return
 
     drive = _resolve_usb_target(cfg, target)
@@ -608,7 +722,9 @@ def _write_gpt_to_device(cfg: Config, files: dict[str, str],
 
             part_dev = part_fmt.format(pnum)
             cfg.log(f"  Formatting partition {pnum} ({label}) on {part_dev}...")
-            _format_partition(cfg, part_dev, fs_type, label)
+            spec = info["spec"]
+            cs = spec.cluster_size if hasattr(spec, 'cluster_size') else 0  # type: ignore[union-attr]
+            _format_partition(cfg, part_dev, fs_type, label, cs)
 
             if pfiles:
                 cfg.log(f"  Copying {len(pfiles)} files to partition {pnum}...")  # type: ignore[arg-type]

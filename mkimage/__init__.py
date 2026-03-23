@@ -20,6 +20,7 @@ class PartitionSpec:
     size: str = ""            # 64M, 4G, +32M (extra), 0 (rest), "" (auto)
     label: str = "UEFITOOLS"
     source_dir: str = ""      # "" = use main --source
+    cluster_size: int = 0     # cluster size in bytes (0 = auto/default)
 
 
 @dataclass
@@ -103,6 +104,8 @@ from mkimage.usb import (  # noqa: E402
     _list_removable_drives,
     _write_usb_from_dir,
     _write_usb_from_image,
+    _is_hybrid_iso,
+    _extract_iso_to_usb,
 )
 from mkimage.usb.detect import MAX_USB_SIZE_GB  # noqa: E402
 from mkimage.usb.safety import (  # noqa: E402
@@ -113,6 +116,7 @@ from mkimage.usb.safety import (  # noqa: E402
     _cli_select_drive,
     _cli_confirm_write,
     _wipe_device,
+    _check_bad_blocks,
 )
 
 # CLI entry point
@@ -147,8 +151,9 @@ __all__ = [
     "build_img", "build_iso", "build_mbr_img", "build_gpt_img",
     # usb
     "write_usb", "_list_removable_drives", "_write_usb_from_dir", "_write_usb_from_image",
+    "_is_hybrid_iso", "_extract_iso_to_usb",
     "_verify_usb_bus", "_usb_safety_checks", "_unmount_device", "_resolve_usb_target",
-    "_cli_select_drive", "_cli_confirm_write",
+    "_cli_select_drive", "_cli_confirm_write", "_check_bad_blocks",
     # cli
     "main",
 ]
