@@ -98,6 +98,52 @@ def _unmount_device(cfg: Config, device: str) -> None:
             _run(cfg, ["umount", f"{device}p{i}"], check=False, as_root=True)
 
 
+def _wipe_device(cfg: Config, device: str) -> None:
+    """Thoroughly wipe all partition signatures from a device.
+
+    Removes MBR, GPT (including backup at end of disk), and filesystem
+    signatures. Necessary when converting between partition schemes, as
+    `diskpart clean` and `sgdisk -Z` only wipe headers, leaving stale
+    backup GPT or filesystem magic bytes.
+    """
+    cfg.log(f"  Wiping partition signatures from {device}...")
+
+    if _is_macos():
+        # diskutil eraseDisk wipes everything
+        _run(cfg, ["diskutil", "eraseDisk", "free", "EMPTY", device],
+             check=False, as_root=True)
+        return
+
+    if _is_windows():
+        # Handled separately in the PS1 script via diskpart clean all
+        return
+
+    # Linux: use wipefs to remove all signatures, then zero first/last 2MB
+    if _which("wipefs"):
+        _run(cfg, ["wipefs", "--all", "--force", device],
+             check=False, as_root=True)
+
+    # Zero first 2MB (MBR + GPT header)
+    _run(cfg, ["dd", "if=/dev/zero", f"of={device}", "bs=1M", "count=2"],
+         check=False, as_root=True)
+
+    # Zero last 2MB (GPT backup header at end of disk)
+    # Get disk size in bytes
+    r = _run(cfg, ["blockdev", "--getsize64", device], check=False, as_root=True)
+    if r.returncode == 0 and r.stdout.strip():
+        try:
+            disk_bytes = int(r.stdout.strip())
+            # Zero last 2MB
+            skip_mb = max(0, disk_bytes // (1024 * 1024) - 2)
+            _run(cfg, ["dd", "if=/dev/zero", f"of={device}", "bs=1M",
+                       f"seek={skip_mb}", "count=2"],
+                 check=False, as_root=True)
+        except ValueError:
+            pass
+
+    _run(cfg, ["sync"], check=False)
+
+
 def _cli_select_drive(drives: list[dict[str, str]]) -> Optional[dict[str, str]]:
     """CLI drive selection via input()."""
     print(f"\nAvailable USB drives (removable, <={MAX_USB_SIZE_GB}GB):\n")

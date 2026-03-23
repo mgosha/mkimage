@@ -24,6 +24,7 @@ from mkimage.usb.safety import (
     _unmount_device,
     _usb_safety_checks,
     _resolve_usb_target,
+    _wipe_device,
 )
 
 if TYPE_CHECKING:
@@ -149,7 +150,7 @@ try {{
 
     # Step 2: clean (separate session)
     "  diskpart: clean..." | Out-File -Append '{prg_esc}'
-    ("select disk {disk_num}`r`nclean" | diskpart 2>&1) | Out-Null
+    ("select disk {disk_num}`r`nclean all" | diskpart 2>&1) | Out-Null
     Start-Sleep -Seconds 1
 
     # Step 3: convert (separate session, ignore failure if already correct type)
@@ -461,6 +462,7 @@ def _write_usb_from_dir(cfg: Config, files: dict[str, str],
 
     device = drive["path"]
     _unmount_device(cfg, device)
+    _wipe_device(cfg, device)
 
     if cfg.gpt:
         # GPT direct to device
@@ -505,6 +507,7 @@ def _write_usb_from_image(cfg: Config, image_path: str,
             return
 
     _unmount_device(cfg, drive["path"])
+    _wipe_device(cfg, drive["path"])
     img_resolved = _resolve(image_path)
     img_size = os.path.getsize(image_path)
     _write_usb_linux(cfg, image_path, img_size, img_resolved, drive)

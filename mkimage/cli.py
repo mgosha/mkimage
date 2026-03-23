@@ -160,6 +160,10 @@ tips:
         "--list-drives", action="store_true",
         help="List removable USB drives and exit",
     )
+    usb_group.add_argument(
+        "--wipe", metavar="DEVICE",
+        help="Wipe all partition signatures from a device (MBR, GPT, filesystem)",
+    )
 
     # --- Modify ---
     mod_group = parser.add_argument_group("Image Modification")
@@ -270,6 +274,26 @@ tips:
             for d in drives:
                 model = f"  {d['model']}" if d['model'] else ""
                 print(f"  {d['path']}  {d['size']}{model}")
+        sys.exit(0)
+
+    if args.wipe:
+        from mkimage.usb.safety import _wipe_device, _unmount_device, _verify_usb_bus
+        device = args.wipe
+        if not _verify_usb_bus(cfg, device):
+            print(f"Error: {device} is not on the USB bus. Refusing.", file=sys.stderr)
+            sys.exit(1)
+        if not cfg.force:
+            print(f"\n  WARNING: This will ERASE ALL DATA on {device}.\n")
+            try:
+                confirm = input(f"  Type 'yes' to wipe {device}: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                confirm = ""
+            if confirm != "yes":
+                print("Aborted.")
+                sys.exit(0)
+        _unmount_device(cfg, device)
+        _wipe_device(cfg, device)
+        print(f"[OK] Wiped all partition signatures from {device}.")
         sys.exit(0)
 
     if args.check:

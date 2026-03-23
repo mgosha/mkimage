@@ -447,14 +447,15 @@ try {
     Set-Disk -Number __DISKNUM__ -IsOffline $true -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 1
 
-    # Step 1a: clean the disk
+    # Step 1a: clean the disk (clean all wipes entire disk including
+    # stale GPT backup headers and filesystem signatures)
     $dpClean = @"
 select disk __DISKNUM__
-clean
+clean all
 "@
-    "  diskpart: clean..." | Out-File -Append __PROGRESS__
+    "  diskpart: clean all (wiping signatures)..." | Out-File -Append __PROGRESS__
     ($dpClean | diskpart 2>&1) | Out-Null
-    Start-Sleep -Seconds 1
+    Start-Sleep -Seconds 2
 
     # Step 1b: convert to target type. After clean, the disk retains
     # its previous partition style. convert only works when switching,

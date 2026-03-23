@@ -111,6 +111,7 @@ from mkimage.usb.safety import (  # noqa: E402
     _resolve_usb_target,
     _cli_select_drive,
     _cli_confirm_write,
+    _wipe_device,
 )
 
 # CLI entry point
