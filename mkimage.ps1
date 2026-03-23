@@ -1,3 +1,17 @@
+param(
+    [ValidateSet('', 'WriteUsb')]
+    [string]$Action = '',
+    [int]$DiskNumber = -1,
+    [string]$SourceDir = '',
+    [string[]]$Includes = @(),
+    [string]$Label = 'UEFITOOLS',
+    [switch]$UseGpt,
+    [switch]$SkipConfirm,
+    [switch]$Verbose,
+    [switch]$Verify,
+    [string]$ProgressFile = ''
+)
+
 <#
 .SYNOPSIS
     mkimage - Bootable Media Creator (native Windows, no WSL required)
@@ -13,12 +27,13 @@
 
     Safety: Never writes to the C: drive. Rejects drives larger than 256GB.
 
+    CLI mode (called from mkimage.py):
+    - mkimage.ps1 -Action WriteUsb -DiskNumber 2 -SourceDir C:\files -Label TOOLS -SkipConfirm
+    - mkimage.ps1  (no args = launch WinForms GUI)
+
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File mkimage.ps1
 #>
-
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
 
 $MAX_USB_SIZE_GB = 256
 
@@ -339,34 +354,61 @@ function Write-UsbDrive {
         [switch]$UseGpt,
         [switch]$Verbose,
         [switch]$Verify,
-        [System.Windows.Forms.TextBox]$LogBox
+        [switch]$SkipConfirm,
+        [string]$CliProgressFile = '',
+        $LogBox = $null
     )
+
+    # Helper: log to GUI LogBox or console
+    function Write-Log([string]$Message) {
+        if ($LogBox) {
+            $LogBox.AppendText("$Message`r`n")
+        } else {
+            Write-Host $Message
+        }
+    }
 
     # Safety: reject C: drive
     $partitions = Get-Partition -DiskNumber $TargetDrive.Number -ErrorAction SilentlyContinue
     $hasCDrive = $partitions | Where-Object { $_.DriveLetter -eq 'C' }
     if ($hasCDrive) {
-        [System.Windows.Forms.MessageBox]::Show(
-            "This disk contains the C: drive. Refusing to write.",
-            "Safety Check Failed", "OK", "Error")
+        if ($LogBox) {
+            [System.Windows.Forms.MessageBox]::Show(
+                "This disk contains the C: drive. Refusing to write.",
+                "Safety Check Failed", "OK", "Error")
+        } else {
+            Write-Log "ERROR: This disk contains the C: drive. Refusing to write."
+        }
         return
     }
 
     # Safety: reject > 256GB
     if ($TargetDrive.SizeBytes -gt ($MAX_USB_SIZE_GB * 1GB)) {
-        [System.Windows.Forms.MessageBox]::Show(
-            "This disk is larger than ${MAX_USB_SIZE_GB}GB. Refusing to write.",
-            "Safety Check Failed", "OK", "Error")
+        if ($LogBox) {
+            [System.Windows.Forms.MessageBox]::Show(
+                "This disk is larger than ${MAX_USB_SIZE_GB}GB. Refusing to write.",
+                "Safety Check Failed", "OK", "Error")
+        } else {
+            Write-Log "ERROR: This disk is larger than ${MAX_USB_SIZE_GB}GB. Refusing to write."
+        }
         return
     }
 
-    # Confirmation
-    $confirm = [System.Windows.Forms.MessageBox]::Show(
-        "WARNING: ALL DATA on $($TargetDrive.Path) ($($TargetDrive.Size) $($TargetDrive.Model)) WILL BE DESTROYED.`n`nAre you sure?",
-        "Confirm Write", "YesNo", "Warning")
-    if ($confirm -ne "Yes") {
-        $LogBox.AppendText("Aborted.`r`n")
-        return
+    # Confirmation (skipped in CLI mode)
+    if (-not $SkipConfirm) {
+        if ($LogBox) {
+            $confirm = [System.Windows.Forms.MessageBox]::Show(
+                "WARNING: ALL DATA on $($TargetDrive.Path) ($($TargetDrive.Size) $($TargetDrive.Model)) WILL BE DESTROYED.`n`nAre you sure?",
+                "Confirm Write", "YesNo", "Warning")
+            if ($confirm -ne "Yes") {
+                Write-Log "Aborted."
+                return
+            }
+        } else {
+            Write-Log "WARNING: ALL DATA on $($TargetDrive.Path) ($($TargetDrive.Size) $($TargetDrive.Model)) WILL BE DESTROYED."
+            Write-Log "Aborted (use -SkipConfirm to proceed)."
+            return
+        }
     }
 
     $diskNum = $TargetDrive.Number
@@ -374,7 +416,13 @@ function Write-UsbDrive {
 
     # Use diskpart to clean, partition, and format the USB drive.
     # Then copy files directly — no raw disk write needed.
-    $progressFile = [System.IO.Path]::GetTempFileName()
+    $ownProgressFile = $false
+    if ($CliProgressFile) {
+        $progressFile = $CliProgressFile
+    } else {
+        $progressFile = [System.IO.Path]::GetTempFileName()
+        $ownProgressFile = $true
+    }
     $tmpScript = [System.IO.Path]::GetTempFileName() -replace '\.tmp$', '.ps1'
 
     # Collect all source files for the elevated script
@@ -613,42 +661,42 @@ format fs=fat32 quick label=__LABEL__
     [System.IO.File]::WriteAllText($tmpScript, $writeScript)
 
     # Log the operation summary
-    $LogBox.AppendText("Target: Disk $diskNum ($($TargetDrive.Size) $($TargetDrive.Model))`r`n")
-    $LogBox.AppendText("Source: $SourceDir`r`n")
+    Write-Log "Target: Disk $diskNum ($($TargetDrive.Size) $($TargetDrive.Model))"
+    Write-Log "Source: $SourceDir"
     if ($Includes.Count -gt 0) {
-        $LogBox.AppendText("Includes: $($Includes -join ', ')`r`n")
+        Write-Log "Includes: $($Includes -join ', ')"
     }
-    $LogBox.AppendText("Label: $Label`r`n")
-    $LogBox.AppendText("Formatting disk $diskNum as FAT32 and copying files...`r`n")
-    $LogBox.Parent.Refresh()
+    Write-Log "Label: $Label"
+    Write-Log "Formatting disk $diskNum as FAT32 and copying files..."
+    if ($LogBox) { $LogBox.Parent.Refresh() }
 
     try {
-        $LogBox.AppendText("Requesting Administrator access...`r`n")
-        $LogBox.Parent.Refresh()
+        Write-Log "Requesting Administrator access..."
+        if ($LogBox) { $LogBox.Parent.Refresh() }
 
         $proc = Start-Process -FilePath "powershell.exe" `
             -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $tmpScript `
             -Verb RunAs -PassThru -WindowStyle Hidden
 
         if ($null -eq $proc) {
-            $LogBox.AppendText("Aborted - Administrator access denied.`r`n")
+            Write-Log "Aborted - Administrator access denied."
             return
         }
 
         # Poll progress file for new lines while subprocess runs
         $linesRead = 0
         while (-not $proc.HasExited) {
-            [System.Windows.Forms.Application]::DoEvents()
+            if ($LogBox) { [System.Windows.Forms.Application]::DoEvents() }
             Start-Sleep -Milliseconds 300
             if (Test-Path $progressFile) {
                 $allLines = @(Get-Content $progressFile -ErrorAction SilentlyContinue)
                 if ($allLines.Count -gt $linesRead) {
                     for ($i = $linesRead; $i -lt $allLines.Count; $i++) {
                         $line = $allLines[$i]
-                        if ($line) { $LogBox.AppendText("  $line`r`n") }
+                        if ($line) { Write-Log "  $line" }
                     }
                     $linesRead = $allLines.Count
-                    $LogBox.Parent.Refresh()
+                    if ($LogBox) { $LogBox.Parent.Refresh() }
                 }
             }
         }
@@ -661,7 +709,7 @@ format fs=fat32 quick label=__LABEL__
             if ($allLines.Count -gt $linesRead) {
                 for ($i = $linesRead; $i -lt $allLines.Count; $i++) {
                     $line = $allLines[$i]
-                    if ($line) { $LogBox.AppendText("  $line`r`n") }
+                    if ($line) { Write-Log "  $line" }
                 }
             }
             # Last line is the status
@@ -669,37 +717,38 @@ format fs=fat32 quick label=__LABEL__
         }
         if ($finalMsg -match "^OK:(\d+)") {
             $count = $Matches[1]
-            # Ensure the drive letter is visible in the current user session.
-            # The elevated subprocess may have assigned a letter that the
-            # non-elevated Explorer session doesn't see.
-            # Try to find and open the drive letter
-            $driveLine = $allLines | Where-Object { $_ -match "Assigned drive letter: (.):$" } | Select-Object -Last 1
-            $usbLetter = $null
-            if ($driveLine -match "Assigned drive letter: (.):") { $usbLetter = $Matches[1] }
+            if ($LogBox) {
+                # GUI mode: try to open the drive in Explorer
+                $driveLine = $allLines | Where-Object { $_ -match "Assigned drive letter: (.):$" } | Select-Object -Last 1
+                $usbLetter = $null
+                if ($driveLine -match "Assigned drive letter: (.):") { $usbLetter = $Matches[1] }
 
-            if ($usbLetter -and (Test-Path "${usbLetter}:\")) {
-                $LogBox.AppendText("  Opening ${usbLetter}: in Explorer...`r`n")
-                Start-Process "explorer.exe" "${usbLetter}:\" -ErrorAction SilentlyContinue
-            } else {
-                $LogBox.AppendText("  NOTE: Eject and re-insert the USB drive to see it in Explorer.`r`n")
+                if ($usbLetter -and (Test-Path "${usbLetter}:\")) {
+                    Write-Log "  Opening ${usbLetter}: in Explorer..."
+                    Start-Process "explorer.exe" "${usbLetter}:\" -ErrorAction SilentlyContinue
+                } else {
+                    Write-Log "  NOTE: Eject and re-insert the USB drive to see it in Explorer."
+                }
             }
-            $LogBox.AppendText("[OK] Wrote $count files to USB drive ($($TargetDrive.Size)). You can safely remove it.`r`n")
+            Write-Log "[OK] Wrote $count files to USB drive ($($TargetDrive.Size)). You can safely remove it."
         } elseif ($finalMsg -match "^ERROR:") {
-            $LogBox.AppendText("[ERROR] $finalMsg`r`n")
+            Write-Log "[ERROR] $finalMsg"
         } elseif ($finalMsg) {
-            $LogBox.AppendText("  $finalMsg`r`n")
+            Write-Log "  $finalMsg"
         } else {
-            $LogBox.AppendText("[ERROR] Write subprocess produced no output. Check if Administrator access was granted.`r`n")
+            Write-Log "[ERROR] Write subprocess produced no output. Check if Administrator access was granted."
         }
     } catch {
         if ($_.Exception.Message -match "canceled by the user") {
-            $LogBox.AppendText("Aborted - Administrator access denied.`r`n")
+            Write-Log "Aborted - Administrator access denied."
         } else {
-            $LogBox.AppendText("[ERROR] $_`r`n")
+            Write-Log "[ERROR] $_"
         }
     } finally {
         Remove-Item $tmpScript -ErrorAction SilentlyContinue
-        Remove-Item $progressFile -ErrorAction SilentlyContinue
+        if ($ownProgressFile) {
+            Remove-Item $progressFile -ErrorAction SilentlyContinue
+        }
     }
 }
 
@@ -1043,4 +1092,37 @@ function Show-MainForm {
 }
 
 # --- Entry point ---
-Show-MainForm
+if ($Action) {
+    # CLI mode — called from mkimage.py or command line
+    switch ($Action) {
+        'WriteUsb' {
+            if ($DiskNumber -lt 0) {
+                Write-Error "DiskNumber is required for WriteUsb action"
+                exit 1
+            }
+            $disk = Get-Disk -Number $DiskNumber
+            $sizeGB = [math]::Round($disk.Size / 1GB, 1)
+            $drive = [PSCustomObject]@{
+                Number    = $DiskNumber
+                Name      = "Disk $DiskNumber"
+                Size      = "${sizeGB}GB"
+                SizeBytes = $disk.Size
+                Model     = $disk.FriendlyName
+                Path      = "\\.\PhysicalDrive$DiskNumber"
+            }
+            Write-UsbDrive -TargetDrive $drive -SourceDir $SourceDir `
+                -Includes $Includes -Label $Label `
+                -UseGpt:$UseGpt -Verbose:$Verbose -Verify:$Verify `
+                -SkipConfirm:$SkipConfirm -CliProgressFile $ProgressFile
+        }
+        default {
+            Write-Error "Unknown action: $Action"
+            exit 1
+        }
+    }
+} else {
+    # GUI mode — launch WinForms interface
+    Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -AssemblyName System.Drawing
+    Show-MainForm
+}

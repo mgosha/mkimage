@@ -28,6 +28,7 @@ Requirements:
 
 Python 3.7+ — no external packages required.
 """
+from __future__ import annotations
 
 import argparse
 import os
@@ -36,8 +37,30 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Callable, Optional
+
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Config:
+    """Runtime configuration threaded through all mkimage operations."""
+    verbose: bool = False
+    verify: bool = False
+    gpt: bool = False
+    label: str = "UEFITOOLS"
+    extra_mb: int = 32
+    force: bool = False
+    log: Callable[..., None] = field(default=print)
+    # Phase 2 placeholders:
+    data_dir: str = ""
+    data_size: str = ""
+    esp_label: str = "ESP"
+    data_label: str = "DATA"
 
 
 # ---------------------------------------------------------------------------
@@ -56,61 +79,14 @@ def _wsl_path(win_path: str) -> str:
     return f"/mnt/{drive}{rest}"
 
 
-# Module-level log function and verbose flag
-_log_fn = print
-_verbose = False
-
-
-def _set_verbose(v: bool) -> None:
-    """Set module-level verbose flag."""
-    global _verbose
-    _verbose = v
-
-
-def _get_verbose() -> bool:
-    """Get module-level verbose flag."""
-    return _verbose
-
-
-_verify = False
-
-
-def _set_verify(v: bool) -> None:
-    """Set module-level verify flag."""
-    global _verify
-    _verify = v
-
-
-def _get_verify() -> bool:
-    """Get module-level verify flag."""
-    return _verify
-
-
-_gpt = False
-
-
-def _set_gpt(v: bool) -> None:
-    """Set module-level GPT flag."""
-    global _gpt
-    _gpt = v
-
-
-def _get_gpt() -> bool:
-    """Get module-level GPT flag."""
-    return _gpt
-
-
-def _set_log(fn: object) -> None:
-    """Set the module-level log function (used by GUI to redirect output)."""
-    global _log_fn
-    _log_fn = fn
-
-
-def _run(cmd: list[str], check: bool = True, verbose: bool = False,
-         as_root: bool = False, **kwargs) -> subprocess.CompletedProcess:
+def _run(cfg: Config, cmd: list[str], check: bool = True,
+         verbose: bool = False,
+         as_root: bool = False) -> subprocess.CompletedProcess[str]:
     """Run a command, routing through WSL on Windows.
 
     Args:
+        cfg: Runtime configuration (used for logging).
+        verbose: Log this specific command's invocation and output.
         as_root: Run as root. On Windows uses 'wsl -u root'. On Linux uses 'sudo'.
     """
     if _is_windows():
@@ -126,14 +102,14 @@ def _run(cmd: list[str], check: bool = True, verbose: bool = False,
             actual = cmd
     if verbose:
         prefix = "(root) " if as_root else ""
-        _log_fn(f"  > {prefix}{' '.join(cmd)}")
-    result = subprocess.run(actual, check=check, capture_output=True, text=True, **kwargs)
+        cfg.log(f"  > {prefix}{' '.join(cmd)}")
+    result = subprocess.run(actual, check=check, capture_output=True, text=True)
     if verbose and result.stdout.strip():
         for line in result.stdout.strip().splitlines():
-            _log_fn(f"  {line}")
+            cfg.log(f"  {line}")
     if verbose and result.stderr.strip():
         for line in result.stderr.strip().splitlines():
-            _log_fn(f"  {line}")
+            cfg.log(f"  {line}")
     return result
 
 
@@ -146,8 +122,9 @@ def _shell_quote(s: str) -> str:
 
 def _which(tool: str) -> bool:
     """Check if a tool is available (via WSL on Windows)."""
+    _quiet = Config()  # silent config for tool probing
     try:
-        r = _run(["which", tool], check=False)
+        r = _run(_quiet, ["which", tool], check=False)
         return r.returncode == 0
     except FileNotFoundError:
         return False
@@ -183,7 +160,7 @@ def _detect_pkg_manager() -> tuple[str, str]:
     return "", ""
 
 
-def _install_packages(packages: list[str]) -> bool:
+def _install_packages(cfg: Config, packages: list[str]) -> bool:
     """Attempt to install packages via the system package manager."""
     pkg_cmd, pkg_name = _detect_pkg_manager()
     if not pkg_cmd:
@@ -191,7 +168,7 @@ def _install_packages(packages: list[str]) -> bool:
 
     # Deduplicate
     pkgs = sorted(set(packages))
-    print(f"  Installing: {' '.join(pkgs)} (via {pkg_cmd})")
+    cfg.log(f"  Installing: {' '.join(pkgs)} (via {pkg_cmd})")
 
     if pkg_name == "pacman":
         cmd = [pkg_cmd, "-S", "--noconfirm"] + pkgs
@@ -199,13 +176,13 @@ def _install_packages(packages: list[str]) -> bool:
         cmd = [pkg_cmd, "install", "-y"] + pkgs
 
     try:
-        r = _run(cmd, check=False, verbose=True, as_root=True)
+        r = _run(cfg, cmd, check=False, verbose=True, as_root=True)
         if r.returncode != 0:
-            _log_fn(f"  Install failed: {r.stderr.strip()}")
+            cfg.log(f"  Install failed: {r.stderr.strip()}")
             return False
         return True
     except Exception as e:
-        print(f"  Install failed: {e}", file=sys.stderr)
+        cfg.log(f"  Install failed: {e}")
         return False
 
 
@@ -241,9 +218,12 @@ def check_tools_iso() -> list[str]:
     return ["xorriso"]
 
 
-def ensure_tools(format: str) -> None:
-    """Check for required tools and auto-install if missing."""
-    if format == "img":
+def ensure_tools(cfg: Config, fmt: str) -> None:
+    """Check for required tools and auto-install if missing.
+
+    Raises RuntimeError if tools cannot be installed.
+    """
+    if fmt == "img":
         missing = check_tools_img()
     else:
         missing = check_tools_iso()
@@ -251,50 +231,49 @@ def ensure_tools(format: str) -> None:
     if not missing:
         return
 
-    print(f"  Missing tools: {', '.join(missing)}")
+    cfg.log(f"  Missing tools: {', '.join(missing)}")
     packages = _resolve_packages(missing)
 
-    print(f"  Attempting auto-install...")
-    if _install_packages(packages):
+    cfg.log(f"  Attempting auto-install...")
+    if _install_packages(cfg, packages):
         # Verify installation worked
-        if format == "img":
+        if fmt == "img":
             still_missing = check_tools_img()
         else:
             still_missing = check_tools_iso()
         if not still_missing:
-            print(f"  Tools installed successfully.")
+            cfg.log(f"  Tools installed successfully.")
             return
 
     # Failed — give manual instructions
     pkg_cmd, _ = _detect_pkg_manager()
     if _is_windows():
-        print(f"Error: missing tools. Run in WSL:", file=sys.stderr)
-        print(f"    sudo apt install {' '.join(packages)}", file=sys.stderr)
+        msg = f"Missing tools. Run in WSL:\n    sudo apt install {' '.join(packages)}"
     elif pkg_cmd:
-        print(f"Error: auto-install failed. Run manually:", file=sys.stderr)
-        print(f"    sudo {pkg_cmd} install {' '.join(packages)}", file=sys.stderr)
+        msg = f"Auto-install failed. Run manually:\n    sudo {pkg_cmd} install {' '.join(packages)}"
     else:
-        print(f"Error: missing tools: {', '.join(missing)}", file=sys.stderr)
-        print(f"    Install packages: {' '.join(packages)}", file=sys.stderr)
-    sys.exit(1)
+        msg = f"Missing tools: {', '.join(missing)}\n    Install packages: {' '.join(packages)}"
+    raise RuntimeError(msg)
 
 
 # ---------------------------------------------------------------------------
 # File collection
 # ---------------------------------------------------------------------------
 
-def collect_files(source_dir: str, includes: list[str]) -> dict[str, str]:
+def collect_files(cfg: Config, source_dir: str,
+                  includes: list[str]) -> dict[str, str]:
     """Collect files to include in the image.
 
     Returns a dict of {image_path: local_path}. image_path uses forward
     slashes and is relative to the image root.
+
+    Raises FileNotFoundError if source_dir does not exist.
     """
     files: dict[str, str] = {}
     src = Path(source_dir)
 
     if not src.is_dir():
-        print(f"Error: {source_dir} is not a directory", file=sys.stderr)
-        sys.exit(1)
+        raise FileNotFoundError(f"{source_dir} is not a directory")
 
     # Recursively add all files from source directory
     for p in sorted(src.rglob("*")):
@@ -306,7 +285,7 @@ def collect_files(source_dir: str, includes: list[str]) -> dict[str, str]:
     for inc in includes:
         p = Path(inc)
         if not p.exists():
-            print(f"Warning: --include {inc} not found, skipping", file=sys.stderr)
+            cfg.log(f"Warning: --include {inc} not found, skipping")
             continue
         if p.is_file():
             files[p.name] = str(p.resolve())
@@ -323,18 +302,15 @@ def collect_files(source_dir: str, includes: list[str]) -> dict[str, str]:
 # FAT32 .img builder
 # ---------------------------------------------------------------------------
 
-def build_img(files: dict[str, str], output: str, label: str, extra_mb: int = 32) -> None:
+def build_img(cfg: Config, files: dict[str, str], output: str) -> None:
     """Create a FAT32 disk image.
 
     Stages files into a temp directory, creates the image in a location
     where loop mount works (native /tmp, not NTFS), mounts it, rsyncs
     files in, then copies the result to the output path.
     Falls back to mcopy if mount/rsync is not available.
-
-    Args:
-        extra_mb: Extra free space beyond content size (default 32MB).
     """
-    ensure_tools("img")
+    ensure_tools(cfg, "img")
 
     out = _resolve(output)
 
@@ -342,8 +318,8 @@ def build_img(files: dict[str, str], output: str, label: str, extra_mb: int = 32
     total_bytes = sum(os.path.getsize(lp) for lp in files.values())
     content_mb = max(1, -(-total_bytes // (1024 * 1024)))  # ceiling division
     # FAT32 minimum is ~36MB usable; VHD/partition overhead needs extra, so 40MB floor
-    size_mb = max(40, content_mb + extra_mb)
-    _log_fn(f"  Image size: {size_mb}MB ({content_mb}MB content + {size_mb - content_mb}MB free)")
+    size_mb = max(40, content_mb + cfg.extra_mb)
+    cfg.log(f"  Image size: {size_mb}MB ({content_mb}MB content + {size_mb - content_mb}MB free)")
 
     # Stage files preserving directory structure (native Python I/O)
     with tempfile.TemporaryDirectory() as staging:
@@ -355,7 +331,7 @@ def build_img(files: dict[str, str], output: str, label: str, extra_mb: int = 32
 
         stg_resolved = _resolve(staging)
 
-        if _verbose:
+        if cfg.verbose:
             rsync_flags = "-av --no-owner --no-group"
         else:
             rsync_flags = "-a --no-owner --no-group --info=progress2"
@@ -363,15 +339,15 @@ def build_img(files: dict[str, str], output: str, label: str, extra_mb: int = 32
         # Create image in a location where loop mount works:
         # - Linux: output path is fine (native filesystem)
         # - Windows/WSL: create in WSL /tmp, then copy to output
-        _log_fn(f"  Copying {len(files)} files to image...")
+        cfg.log(f"  Copying {len(files)} files to image...")
         if _is_windows():
             # Build in WSL /tmp, rsync from /mnt/c staged dir, copy result
-            r = _run([
+            r = _run(cfg, [
                 "bash", "-c",
                 f"set -e && "
                 f"IMG=$(mktemp /tmp/mkimage.XXXXXX.img) && "
                 f"dd if=/dev/zero of=$IMG bs=1M count={size_mb} 2>/dev/null && "
-                f"mkfs.vfat -F 32 -n '{label[:11]}' $IMG >/dev/null && "
+                f"mkfs.vfat -F 32 -n '{cfg.label[:11]}' $IMG >/dev/null && "
                 f"MNTDIR=$(mktemp -d) && "
                 f"mount -o loop $IMG $MNTDIR && "
                 f"rsync {rsync_flags} '{stg_resolved}'/ $MNTDIR/ && "
@@ -385,12 +361,12 @@ def build_img(files: dict[str, str], output: str, label: str, extra_mb: int = 32
         else:
             # Linux: create image at output path, mount directly
             dd_cmd = ["dd", "if=/dev/zero", f"of={out}", "bs=1M", f"count={size_mb}"]
-            if _verbose:
+            if cfg.verbose:
                 dd_cmd.append("status=progress")
-            _run(dd_cmd, verbose=True)
-            _run(["mkfs.vfat", "-F", "32", "-n", label[:11], out], verbose=True)
+            _run(cfg, dd_cmd, verbose=True)
+            _run(cfg, ["mkfs.vfat", "-F", "32", "-n", cfg.label[:11], out], verbose=True)
 
-            r = _run([
+            r = _run(cfg, [
                 "bash", "-c",
                 f"MNTDIR=$(mktemp -d) && "
                 f"mount -o loop '{out}' $MNTDIR && "
@@ -403,16 +379,16 @@ def build_img(files: dict[str, str], output: str, label: str, extra_mb: int = 32
 
         if r.returncode != 0:
             # Fallback to mcopy (no root needed, works without mount)
-            _log_fn("  mount/rsync failed, falling back to mcopy...")
+            cfg.log("  mount/rsync failed, falling back to mcopy...")
             if not _which("mcopy"):
-                _log_fn("  Installing mtools for mcopy fallback...")
-                _install_packages(_resolve_packages(["mcopy", "mmd"]))
+                cfg.log("  Installing mtools for mcopy fallback...")
+                _install_packages(cfg, _resolve_packages(["mcopy", "mmd"]))
 
             if _is_windows():
                 # Need to create the image via WSL since dd/mkfs weren't run
-                _run(["dd", "if=/dev/zero", f"of={out}", "bs=1M",
+                _run(cfg, ["dd", "if=/dev/zero", f"of={out}", "bs=1M",
                       f"count={size_mb}"], verbose=True)
-                _run(["mkfs.vfat", "-F", "32", "-n", label[:11], out],
+                _run(cfg, ["mkfs.vfat", "-F", "32", "-n", cfg.label[:11], out],
                      verbose=True)
 
             dirs_created: set[str] = set()
@@ -421,25 +397,25 @@ def build_img(files: dict[str, str], output: str, label: str, extra_mb: int = 32
                 for i in range(1, len(parts)):
                     d = str(PurePosixPath(*parts[:i]))
                     if d not in dirs_created:
-                        _run(["mmd", "-i", out, f"::{d}"], check=False)
+                        _run(cfg, ["mmd", "-i", out, f"::{d}"], check=False)
                         dirs_created.add(d)
             for img_path, local_path in sorted(files.items()):
                 src = _resolve(local_path)
-                _run(["mcopy", "-i", out, src, f"::{img_path}"],
-                     verbose=_verbose)
-            _log_fn(f"  Copied {len(files)} files via mcopy")
+                _run(cfg, ["mcopy", "-i", out, src, f"::{img_path}"],
+                     verbose=cfg.verbose)
+            cfg.log(f"  Copied {len(files)} files via mcopy")
 
     actual_size = os.path.getsize(output)
-    _log_fn(f"  [OK] Created {output} ({actual_size // 1024}KB, FAT32)")
+    cfg.log(f"  [OK] Created {output} ({actual_size // 1024}KB, FAT32)")
 
 
 # ---------------------------------------------------------------------------
 # ISO builder
 # ---------------------------------------------------------------------------
 
-def build_iso(files: dict[str, str], output: str, label: str) -> None:
+def build_iso(cfg: Config, files: dict[str, str], output: str) -> None:
     """Create an ISO image."""
-    ensure_tools("iso")
+    ensure_tools(cfg, "iso")
 
     # Stage files in a temp directory
     with tempfile.TemporaryDirectory() as staging:
@@ -453,24 +429,24 @@ def build_iso(files: dict[str, str], output: str, label: str) -> None:
         out = _resolve(output)
 
         if _which("xorriso"):
-            _run([
+            _run(cfg, [
                 "xorriso", "-as", "mkisofs",
                 "-o", out,
                 "-R", "-J", "-joliet-long",
-                "-V", label[:32],
+                "-V", cfg.label[:32],
                 stg_resolved,
             ], verbose=True)
         else:
-            _run([
+            _run(cfg, [
                 "genisoimage",
                 "-o", out,
                 "-R", "-J", "-joliet-long",
-                "-V", label[:32],
+                "-V", cfg.label[:32],
                 stg_resolved,
             ], verbose=True)
 
     actual_size = os.path.getsize(output)
-    print(f"  Created {output} ({actual_size // 1024}KB, ISO 9660)")
+    cfg.log(f"  Created {output} ({actual_size // 1024}KB, ISO 9660)")
 
 
 # ---------------------------------------------------------------------------
@@ -482,8 +458,9 @@ MAX_USB_SIZE_GB = 256
 
 def _list_removable_drives_linux() -> list[dict[str, str]]:
     """List removable drives on Linux via lsblk."""
-    drives = []
-    r = _run(["lsblk", "-d", "-n", "-o", "NAME,SIZE,RM,TYPE,MODEL,TRAN",
+    drives: list[dict[str, str]] = []
+    quiet = Config()
+    r = _run(quiet, ["lsblk", "-d", "-n", "-o", "NAME,SIZE,RM,TYPE,MODEL,TRAN",
               "--bytes"], check=False)
     if r.returncode != 0:
         return drives
@@ -503,7 +480,7 @@ def _list_removable_drives_linux() -> list[dict[str, str]]:
 
         dev_path = f"/dev/{name}"
 
-        mr = _run(["lsblk", "-n", "-o", "MOUNTPOINT", dev_path], check=False)
+        mr = _run(quiet, ["lsblk", "-n", "-o", "MOUNTPOINT", dev_path], check=False)
         mountpoints = mr.stdout.strip().splitlines() if mr.returncode == 0 else []
         if any(mp.strip() == "/" for mp in mountpoints):
             continue
@@ -527,7 +504,7 @@ def _list_removable_drives_linux() -> list[dict[str, str]]:
 
 def _list_removable_drives_windows() -> list[dict[str, str]]:
     """List removable USB drives on Windows via PowerShell Get-Disk."""
-    drives = []
+    drives: list[dict[str, str]] = []
     ps_cmd = (
         "Get-Disk | Where-Object { $_.BusType -eq 'USB' } | "
         "ForEach-Object { "
@@ -617,13 +594,12 @@ def _cli_confirm_write(target: dict[str, str]) -> bool:
 
 
 def write_usb(
+    cfg: Config,
     image_path: str,
     source_dir: str = "",
     includes: Optional[list[str]] = None,
-    label: str = "UEFITOOLS",
-    select_drive: Optional[object] = None,
-    confirm_write: Optional[object] = None,
-    log: Callable[..., None] = print,
+    select_drive: Optional[Callable[..., Optional[dict[str, str]]]] = None,
+    confirm_write: Optional[Callable[..., bool]] = None,
 ) -> None:
     """Write files to a USB drive with safety checks.
 
@@ -631,32 +607,31 @@ def write_usb(
     On Linux: writes a pre-built .img file via dd.
 
     Args:
+        cfg: Runtime configuration.
         image_path: Path to .img file (used on Linux for dd, or as fallback on Windows).
         source_dir: Source directory containing files to copy (Windows diskpart path).
         includes: Extra files/directories to include (Windows diskpart path).
-        label: Volume label for FAT32 format.
         select_drive: Callback(drives_list) -> drive_dict or None. Defaults to CLI input().
         confirm_write: Callback(target_dict) -> bool. Defaults to CLI input().
-        log: Output function. Defaults to print.
     """
     if select_drive is None:
         select_drive = _cli_select_drive
     if confirm_write is None:
         confirm_write = _cli_confirm_write
 
-    log("Scanning for removable drives...")
+    cfg.log("Scanning for removable drives...")
     drives = _list_removable_drives()
 
     if not drives:
-        log("No removable USB drives found.")
-        log("  - On Windows/WSL, USB passthrough may need usbipd")
-        log(f"  - Drive must be removable and under {MAX_USB_SIZE_GB}GB")
+        cfg.log("No removable USB drives found.")
+        cfg.log("  - On Windows/WSL, USB passthrough may need usbipd")
+        cfg.log(f"  - Drive must be removable and under {MAX_USB_SIZE_GB}GB")
         return
 
-    log(f"Found {len(drives)} removable drive(s)")
+    cfg.log(f"Found {len(drives)} removable drive(s)")
     target = select_drive(drives)
     if target is None:
-        log("Aborted.")
+        cfg.log("Aborted.")
         return
 
     target_path = target["path"]
@@ -664,34 +639,34 @@ def write_usb(
 
     # Safety checks
     if "sda" in target["name"] and not _is_windows():
-        mr = _run(["lsblk", "-n", "-o", "MOUNTPOINT", target_path], check=False)
+        mr = _run(cfg, ["lsblk", "-n", "-o", "MOUNTPOINT", target_path], check=False)
         mounts = mr.stdout.strip() if mr.returncode == 0 else ""
         if "/" in mounts or "/boot" in mounts or "/home" in mounts:
-            log(f"Error: {target_path} has system partitions mounted. Refusing.")
+            cfg.log(f"Error: {target_path} has system partitions mounted. Refusing.")
             return
 
     if target_size > MAX_USB_SIZE_GB * (1024 ** 3):
-        log(f"Error: {target_path} is larger than {MAX_USB_SIZE_GB}GB. Refusing.")
+        cfg.log(f"Error: {target_path} is larger than {MAX_USB_SIZE_GB}GB. Refusing.")
         return
 
     if not confirm_write(target):
-        log("Aborted.")
+        cfg.log("Aborted.")
         return
 
     if _is_windows():
-        _write_usb_windows(source_dir, includes or [], label, target, log)
+        _write_usb_windows(cfg, source_dir, includes or [], target)
     else:
         if not os.path.isfile(image_path):
-            log(f"Error: {image_path} not found")
+            cfg.log(f"Error: {image_path} not found")
             return
         img_resolved = _resolve(image_path)
         img_size = os.path.getsize(image_path)
-        _write_usb_linux(image_path, img_size, img_resolved, target, log)
+        _write_usb_linux(cfg, image_path, img_size, img_resolved, target)
 
 
 def _write_usb_windows(
-    source_dir: str, includes: list[str], label: str,
-    target: dict[str, str], log: object
+    cfg: Config, source_dir: str, includes: list[str],
+    target: dict[str, str],
 ) -> None:
     """Format USB as FAT32 via diskpart and copy files directly.
 
@@ -700,9 +675,9 @@ def _write_usb_windows(
     """
     target_path = target["path"]  # \\.\PhysicalDriveN
     disk_num = target_path.rsplit("PhysicalDrive", 1)[-1]
-    label_trim = label[:11]
+    label_trim = cfg.label[:11]
 
-    log(f"Formatting disk {disk_num} as FAT32 and copying files...")
+    cfg.log(f"Formatting disk {disk_num} as FAT32 and copying files...")
 
     fd, progress_file = tempfile.mkstemp(suffix=".txt")
     os.close(fd)
@@ -719,9 +694,9 @@ def _write_usb_windows(
         if inc and os.path.exists(inc):
             sources.append(inc)
     sources_str = ",".join(f"'{s.replace(chr(39), chr(39)*2)}'" for s in sources)
-    verbose_str = "$true" if _get_verbose() else "$false"
-    verify_str = "$true" if _get_verify() else "$false"
-    gpt_str = "$true" if _get_gpt() else "$false"
+    verbose_str = "$true" if cfg.verbose else "$false"
+    verify_str = "$true" if cfg.verify else "$false"
+    gpt_str = "$true" if cfg.gpt else "$false"
 
     ps_script = f"""
 try {{
@@ -924,7 +899,7 @@ format fs=fat32 quick label={label_trim}
         f.write(ps_script)
 
     try:
-        log("  Requesting Administrator access...")
+        cfg.log("  Requesting Administrator access...")
         proc = subprocess.Popen([
             "powershell.exe", "-NoProfile", "-Command",
             f"Start-Process -FilePath 'powershell.exe' "
@@ -932,26 +907,28 @@ format fs=fat32 quick label={label_trim}
             f"-Verb RunAs -Wait"
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-        import time
-        lines_read = 0
-        while proc.poll() is None:
-            time.sleep(0.3)
-            if os.path.exists(progress_file):
-                try:
-                    with open(progress_file, "r", encoding="utf-8", errors="replace") as pf:
-                        all_lines = pf.readlines()
-                    if len(all_lines) > lines_read:
-                        for line in all_lines[lines_read:]:
-                            stripped = line.rstrip()
-                            if stripped:
-                                log(f"  {stripped}")
-                        lines_read = len(all_lines)
-                except OSError:
-                    pass
+        _poll_progress(proc, progress_file, cfg.log)
 
-        # Read remaining lines after process exits
-        time.sleep(0.5)
-        final_msg = ""
+    except Exception as exc:
+        cfg.log(f"[ERROR] {exc}")
+    finally:
+        for f in (script_file, progress_file):
+            try:
+                os.unlink(f)
+            except OSError:
+                pass
+
+
+def _poll_progress(proc: subprocess.Popen[bytes], progress_file: str,
+                   log: Callable[..., None]) -> None:
+    """Poll a progress file while a subprocess runs, logging new lines.
+
+    Reads the final status line after the process exits and logs the result.
+    """
+    import time
+    lines_read = 0
+    while proc.poll() is None:
+        time.sleep(0.3)
         if os.path.exists(progress_file):
             try:
                 with open(progress_file, "r", encoding="utf-8", errors="replace") as pf:
@@ -961,367 +938,73 @@ format fs=fat32 quick label={label_trim}
                         stripped = line.rstrip()
                         if stripped:
                             log(f"  {stripped}")
-                final_msg = all_lines[-1].strip() if all_lines else ""
+                    lines_read = len(all_lines)
             except OSError:
                 pass
 
-        if final_msg.startswith("OK:"):
-            count = final_msg.split(":")[1]
-            log(f"[OK] Wrote {count} files to USB drive. "
-                f"You can safely remove it.")
-        elif final_msg.startswith("ERROR:"):
-            log(f"[ERROR] {final_msg}")
-        elif final_msg:
-            log(f"  {final_msg}")
-        else:
-            log("[ERROR] Write subprocess produced no output. UAC may have been denied.")
+    # Read remaining lines after process exits
+    time.sleep(0.5)
+    final_msg = ""
+    if os.path.exists(progress_file):
+        try:
+            with open(progress_file, "r", encoding="utf-8", errors="replace") as pf:
+                all_lines = pf.readlines()
+            if len(all_lines) > lines_read:
+                for line in all_lines[lines_read:]:
+                    stripped = line.rstrip()
+                    if stripped:
+                        log(f"  {stripped}")
+            final_msg = all_lines[-1].strip() if all_lines else ""
+        except OSError:
+            pass
 
-    except Exception as exc:
-        log(f"[ERROR] {exc}")
-    finally:
-        for f in (script_file, progress_file):
-            try:
-                os.unlink(f)
-            except OSError:
-                pass
+    if final_msg.startswith("OK:"):
+        count = final_msg.split(":")[1]
+        log(f"[OK] Wrote {count} files to USB drive. "
+            f"You can safely remove it.")
+    elif final_msg.startswith("ERROR:"):
+        log(f"[ERROR] {final_msg}")
+    elif final_msg:
+        log(f"  {final_msg}")
+    else:
+        log("[ERROR] Write subprocess produced no output. UAC may have been denied.")
 
 
 def _write_usb_linux(
-    image_path: str, img_size: int, img_resolved: str,
-    target: dict[str, str], log: object
+    cfg: Config, image_path: str, img_size: int, img_resolved: str,
+    target: dict[str, str],
 ) -> None:
     """Write image to USB on Linux using dd."""
     target_path = target["path"]
 
     # Unmount any mounted partitions
-    log(f"Unmounting {target_path} partitions...")
-    _run(["umount", f"{target_path}*"], check=False)
+    cfg.log(f"Unmounting {target_path} partitions...")
+    _run(cfg, ["umount", f"{target_path}*"], check=False)
     for i in range(1, 10):
-        _run(["umount", f"{target_path}{i}"], check=False)
-        _run(["umount", f"{target_path}p{i}"], check=False)
+        _run(cfg, ["umount", f"{target_path}{i}"], check=False)
+        _run(cfg, ["umount", f"{target_path}p{i}"], check=False)
 
-    log(f"Writing {image_path} ({img_size // (1024*1024)}MB) to {target_path}...")
+    cfg.log(f"Writing {image_path} ({img_size // (1024*1024)}MB) to {target_path}...")
     dd_cmd = ["dd", f"if={img_resolved}", f"of={target_path}", "bs=4M", "conv=fsync"]
-    if _verbose:
+    if cfg.verbose:
         dd_cmd.insert(-1, "status=progress")
-    r = _run(dd_cmd, check=False, verbose=True)
+    r = _run(cfg, dd_cmd, check=False, verbose=True)
 
     if r.returncode != 0:
-        log("  Retrying as root...")
-        r = _run([
+        cfg.log("  Retrying as root...")
+        r = _run(cfg, [
             "dd", f"if={img_resolved}", f"of={target_path}",
             "bs=4M", "conv=fsync",
         ], check=False, verbose=True, as_root=True)
 
     if r.returncode != 0:
-        log(f"[ERROR] dd failed: {r.stderr.strip()}")
-        log("  You may need to run with sudo.")
+        cfg.log(f"[ERROR] dd failed: {r.stderr.strip()}")
+        cfg.log("  You may need to run with sudo.")
         return
 
-    _run(["sync"], check=False)
-    log(f"[OK] Wrote {img_size // (1024*1024)}MB to {target_path}. "
+    _run(cfg, ["sync"], check=False)
+    cfg.log(f"[OK] Wrote {img_size // (1024*1024)}MB to {target_path}. "
         f"You can safely remove the USB drive.")
-
-
-# ---------------------------------------------------------------------------
-# Tkinter GUI
-# ---------------------------------------------------------------------------
-
-def gui_main() -> None:
-    """Launch the Tkinter graphical interface."""
-    import queue
-    import threading
-    try:
-        import tkinter as tk
-        from tkinter import filedialog, messagebox, scrolledtext
-    except ImportError:
-        print("Error: tkinter not available.", file=sys.stderr)
-        print("  Linux:   sudo dnf install python3-tkinter  (or apt: python3-tk)", file=sys.stderr)
-        print("  Windows: tkinter is included with Python", file=sys.stderr)
-        sys.exit(1)
-
-    log_queue: queue.Queue = queue.Queue()
-
-    def log(msg: str) -> None:
-        log_queue.put(msg + "\n")
-
-    def poll_log() -> None:
-        while not log_queue.empty():
-            msg = log_queue.get_nowait()
-            log_text.insert(tk.END, msg)
-            log_text.see(tk.END)
-        root.after(100, poll_log)
-
-    def browse_source() -> None:
-        d = filedialog.askdirectory(title="Select Source Directory")
-        if d:
-            source_var.set(d)
-
-    def add_include_file() -> None:
-        f = filedialog.askopenfilename(title="Select File to Include")
-        if f:
-            includes_list.insert(tk.END, f)
-
-    def add_include_dir() -> None:
-        d = filedialog.askdirectory(title="Select Directory to Include")
-        if d:
-            includes_list.insert(tk.END, d)
-
-    def clear_includes() -> None:
-        includes_list.delete(0, tk.END)
-
-    def browse_output() -> None:
-        ext = ".img" if fmt_var.get() == "img" else ".iso"
-        f = filedialog.asksaveasfilename(
-            title="Save Image As",
-            defaultextension=ext,
-            filetypes=[(f"{'FAT32' if ext == '.img' else 'ISO'} Image", f"*{ext}"), ("All Files", "*.*")],
-        )
-        if f:
-            output_var.set(f)
-
-    def on_format_change(*_args) -> None:
-        state = tk.NORMAL if fmt_var.get() == "img" else tk.DISABLED
-        size_entry.config(state=state)
-
-    def refresh_usb_drives() -> None:
-        """Refresh the USB drive dropdown."""
-        drives = _list_removable_drives()
-        usb_drives.clear()
-        usb_drives.extend(drives)
-        menu = drive_combo["menu"]
-        menu.delete(0, tk.END)
-        if not drives:
-            menu.add_command(label="(no USB drives found)", command=lambda: drive_var.set(""))
-            drive_var.set("")
-        else:
-            for d in drives:
-                model = f"  {d['model']}" if d['model'] else ""
-                label_text = f"{d['path']}  {d['size']}{model}"
-                menu.add_command(label=label_text, command=lambda v=label_text: drive_var.set(v))
-            drive_var.set(f"{drives[0]['path']}  {drives[0]['size']}"
-                         f"{'  ' + drives[0]['model'] if drives[0]['model'] else ''}")
-
-    def on_usb_toggle() -> None:
-        """Toggle between file output and USB drive output."""
-        if usb_var.get():
-            # Switch to USB mode
-            output_entry.grid_remove()
-            browse_btn.grid_remove()
-            drive_frame.grid(row=6, column=1, columnspan=3, sticky=tk.EW, padx=10, pady=2)
-            create_btn.config(text="Write to Target")
-            target_label.config(text="Output Target:")
-            refresh_usb_drives()
-        else:
-            # Switch to file mode
-            drive_frame.grid_remove()
-            output_entry.grid(row=6, column=1, columnspan=2, sticky=tk.EW, padx=10, pady=2)
-            browse_btn.grid(row=6, column=3, padx=10, pady=2)
-            create_btn.config(text="Create Image")
-            target_label.config(text="Output Target:")
-
-    def gui_confirm_write(target: dict[str, str]) -> bool:
-        return messagebox.askyesno(
-            "Confirm Write",
-            f"WARNING: ALL DATA on {target['path']} "
-            f"({target['size']} {target['model']}) WILL BE DESTROYED.\n\n"
-            f"Are you sure you want to write to {target['path']}?",
-            icon=messagebox.WARNING,
-        )
-
-    def do_create() -> None:
-        src = source_var.get().strip()
-        if not src:
-            messagebox.showerror("Error", "Source directory is required.")
-            return
-
-        to_usb = usb_var.get()
-        if to_usb:
-            # Find the selected drive
-            sel = drive_var.get().strip()
-            target_drive = None
-            for d in usb_drives:
-                if d["path"] in sel:
-                    target_drive = d
-                    break
-            if not target_drive:
-                messagebox.showerror("Error", "No USB drive selected.\nClick Refresh if no drives appear.")
-                return
-        else:
-            out = output_var.get().strip()
-            if not out:
-                messagebox.showerror("Error", "Output file is required.")
-                return
-
-        includes = list(includes_list.get(0, tk.END))
-        label = label_var.get().strip() or "UEFITOOLS"
-        size_mb = int(size_var.get()) if size_var.get().isdigit() else 32
-        fmt = fmt_var.get()
-
-        create_btn.config(state=tk.DISABLED)
-
-        def run() -> None:
-            _set_log(log)
-            _set_verbose(verbose_var.get())
-            _set_verify(verify_var.get())
-            _set_gpt(gpt_var.get())
-            try:
-                log(f"Collecting files from {src}...")
-                files = collect_files(src, includes)
-                if not files:
-                    log("Error: no files found.")
-                    return
-                log(f"  {len(files)} files")
-                for p in sorted(files.keys()):
-                    log(f"    {p}")
-
-                if to_usb:
-                    if not gui_confirm_write(target_drive):
-                        log("Aborted.")
-                        return
-
-                    if _is_windows():
-                        # Windows: diskpart format + copy directly, no image needed
-                        log(f"Writing to {target_drive['path']}...")
-                        write_usb(
-                            "",
-                            source_dir=src,
-                            includes=includes,
-                            label=label,
-                            select_drive=lambda _drives: target_drive,
-                            confirm_write=lambda _t: True,
-                            log=log,
-                        )
-                    else:
-                        # Linux: build temp image, then dd to USB
-                        import tempfile as _tf
-                        with _tf.NamedTemporaryFile(suffix=".img", delete=False) as tmp:
-                            tmp_path = tmp.name
-                        try:
-                            log("Building FAT32 image...")
-                            ensure_tools("img")
-                            build_img(files, tmp_path, label, size_mb)
-
-                            log(f"Writing to {target_drive['path']}...")
-                            write_usb(
-                                tmp_path,
-                                select_drive=lambda _drives: target_drive,
-                                confirm_write=lambda _t: True,
-                                log=log,
-                            )
-                        finally:
-                            try:
-                                os.unlink(tmp_path)
-                            except OSError:
-                                pass
-                else:
-                    ext = Path(out).suffix.lower()
-                    if ext == ".img" or (ext != ".iso" and fmt == "img"):
-                        log("Building FAT32 image...")
-                        ensure_tools("img")
-                        build_img(files, out, label, size_mb)
-                    else:
-                        log("Building ISO image...")
-                        ensure_tools("iso")
-                        build_iso(files, out, label)
-                    log("Done.")
-            except Exception as e:
-                log(f"Error: {e}")
-            finally:
-                create_btn.config(state=tk.NORMAL)
-
-        threading.Thread(target=run, daemon=True).start()
-
-    # --- Build the window ---
-    root = tk.Tk()
-    root.title("mkimage \u2014 Bootable Media Creator")
-    root.resizable(False, False)
-
-    pad = {"padx": 10, "pady": 2}
-    usb_drives: list[dict[str, str]] = []
-
-    # Source directory
-    tk.Label(root, text="Source Directory:").grid(row=0, column=0, sticky=tk.W, **pad)
-    source_var = tk.StringVar()
-    tk.Entry(root, textvariable=source_var, width=50).grid(row=0, column=1, columnspan=2, sticky=tk.EW, **pad)
-    tk.Button(root, text="Browse...", command=browse_source).grid(row=0, column=3, **pad)
-
-    # Extra includes
-    tk.Label(root, text="Extra Includes:").grid(row=1, column=0, sticky=tk.NW, **pad)
-    inc_btn_frame = tk.Frame(root)
-    inc_btn_frame.grid(row=1, column=1, columnspan=2, sticky=tk.W, **pad)
-    tk.Button(inc_btn_frame, text="Add File", command=add_include_file).pack(side=tk.LEFT, padx=(0, 5))
-    tk.Button(inc_btn_frame, text="Add Dir", command=add_include_dir).pack(side=tk.LEFT, padx=(0, 5))
-    tk.Button(inc_btn_frame, text="Clear", command=clear_includes).pack(side=tk.LEFT)
-
-    includes_list = tk.Listbox(root, height=4, width=60)
-    includes_list.grid(row=2, column=0, columnspan=4, sticky=tk.EW, padx=10, pady=2)
-
-    # Output format
-    tk.Label(root, text="Output Format:").grid(row=3, column=0, sticky=tk.W, **pad)
-    fmt_var = tk.StringVar(value="img")
-    fmt_frame = tk.Frame(root)
-    fmt_frame.grid(row=3, column=1, columnspan=2, sticky=tk.W, **pad)
-    tk.Radiobutton(fmt_frame, text="FAT32 (.img)", variable=fmt_var, value="img").pack(side=tk.LEFT)
-    tk.Radiobutton(fmt_frame, text="ISO (.iso)", variable=fmt_var, value="iso").pack(side=tk.LEFT, padx=10)
-    fmt_var.trace_add("write", on_format_change)
-
-    # Volume label
-    tk.Label(root, text="Volume Label:").grid(row=4, column=0, sticky=tk.W, **pad)
-    label_var = tk.StringVar(value="UEFITOOLS")
-    tk.Entry(root, textvariable=label_var, width=20).grid(row=4, column=1, sticky=tk.W, **pad)
-
-    # Image size
-    tk.Label(root, text="Extra Space (MB):").grid(row=5, column=0, sticky=tk.W, **pad)
-    size_var = tk.StringVar(value="32")
-    size_entry = tk.Entry(root, textvariable=size_var, width=10)
-    size_entry.grid(row=5, column=1, sticky=tk.W, **pad)
-
-    # Write to USB toggle
-    usb_var = tk.BooleanVar(value=False)
-    verbose_var = tk.BooleanVar(value=False)
-    verify_var = tk.BooleanVar(value=False)
-    gpt_var = tk.BooleanVar(value=False)
-    opt_frame = tk.Frame(root)
-    opt_frame.grid(row=5, column=2, columnspan=2, sticky=tk.E, **pad)
-    tk.Checkbutton(opt_frame, text="Verbose", variable=verbose_var).pack(side=tk.LEFT, padx=(0, 8))
-    tk.Checkbutton(opt_frame, text="Verify", variable=verify_var).pack(side=tk.LEFT, padx=(0, 8))
-    tk.Checkbutton(opt_frame, text="GPT", variable=gpt_var).pack(side=tk.LEFT, padx=(0, 8))
-    tk.Checkbutton(opt_frame, text="Write to USB", variable=usb_var,
-                   command=on_usb_toggle).pack(side=tk.LEFT)
-
-    # Output target — file entry (default) or drive dropdown (USB mode)
-    target_label = tk.Label(root, text="Output Target:")
-    target_label.grid(row=6, column=0, sticky=tk.W, **pad)
-
-    output_var = tk.StringVar()
-    output_entry = tk.Entry(root, textvariable=output_var, width=50)
-    output_entry.grid(row=6, column=1, columnspan=2, sticky=tk.EW, **pad)
-    browse_btn = tk.Button(root, text="Browse...", command=browse_output)
-    browse_btn.grid(row=6, column=3, **pad)
-
-    # USB drive dropdown (hidden by default)
-    drive_frame = tk.Frame(root)
-    drive_var = tk.StringVar(value="")
-    drive_combo = tk.OptionMenu(drive_frame, drive_var, "")
-    drive_combo.config(width=45, anchor=tk.W, font=("Consolas", 9))
-    drive_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
-    tk.Button(drive_frame, text="Refresh", command=refresh_usb_drives).pack(side=tk.LEFT, padx=(5, 0))
-
-    # Action button (single button, label changes)
-    action_frame = tk.Frame(root)
-    action_frame.grid(row=7, column=0, columnspan=4, pady=10)
-    create_btn = tk.Button(action_frame, text="Create Image", width=20, command=do_create)
-    create_btn.pack()
-
-    # Log
-    tk.Label(root, text="Log:").grid(row=8, column=0, sticky=tk.NW, **pad)
-    log_text = scrolledtext.ScrolledText(root, height=10, width=70, state=tk.NORMAL, font=("Consolas", 9))
-    log_text.grid(row=9, column=0, columnspan=4, sticky=tk.EW, padx=10, pady=(0, 10))
-    log_text.insert(tk.END, "Ready.\n")
-
-    root.after(100, poll_log)
-    root.mainloop()
 
 
 # ---------------------------------------------------------------------------
@@ -1380,14 +1063,18 @@ examples:
     args = parser.parse_args()
 
     if args.gui or len(sys.argv) == 1:
+        from mkimage_gui import gui_main
         gui_main()
         return
 
-    if hasattr(args, 'verbose') and args.verbose:
-        _set_verbose(True)
+    cfg = Config(
+        verbose=args.verbose,
+        label=args.label,
+        extra_mb=args.extra_mb,
+    )
 
     if args.write_usb:
-        write_usb(args.write_usb)
+        write_usb(cfg, args.write_usb)
         return
 
     if args.check:
@@ -1415,23 +1102,28 @@ examples:
         print(f"Error: output must be .img or .iso, got '{ext}'", file=sys.stderr)
         sys.exit(1)
 
-    print(f"Collecting files from {args.source_dir}...")
-    files = collect_files(args.source_dir, args.include)
-    if not files:
-        print("Error: no files found", file=sys.stderr)
+    try:
+        print(f"Collecting files from {args.source_dir}...")
+        files = collect_files(cfg, args.source_dir, args.include)
+        if not files:
+            print("Error: no files found", file=sys.stderr)
+            sys.exit(1)
+
+        print(f"  {len(files)} files, {sum(os.path.getsize(p) for p in files.values()) // 1024}KB total")
+        for img_path in sorted(files.keys()):
+            print(f"    {img_path}")
+
+        print(f"Building {ext.lstrip('.')} image...")
+        if ext == ".img":
+            build_img(cfg, files, args.output)
+        else:
+            build_iso(cfg, files, args.output)
+
+        print("Done.")
+
+    except (RuntimeError, FileNotFoundError) as e:
+        print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
-
-    print(f"  {len(files)} files, {sum(os.path.getsize(p) for p in files.values()) // 1024}KB total")
-    for img_path in sorted(files.keys()):
-        print(f"    {img_path}")
-
-    print(f"Building {ext.lstrip('.')} image...")
-    if ext == ".img":
-        build_img(files, args.output, args.label, args.extra_mb)
-    else:
-        build_iso(files, args.output, args.label)
-
-    print("Done.")
 
 
 if __name__ == "__main__":
