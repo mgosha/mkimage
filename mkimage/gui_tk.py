@@ -494,6 +494,7 @@ def gui_main() -> None:
     help_text.insert(tk.END, "Tips\n", "header")
     help_text.insert(tk.END,
                      "- Use .img.gz extension for compressed output\n"
+                     "- Works natively on Windows (no WSL needed)\n"
                      "- FAT32 images don't need root; GPT/MBR do\n"
                      "- --modify flag (CLI only) edits images without rebuild\n"
                      "- Volume labels are limited to 11 characters for FAT32\n", "body")

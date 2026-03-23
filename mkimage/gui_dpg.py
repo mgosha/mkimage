@@ -605,6 +605,7 @@ def gui_main() -> None:
                     t = dpg.add_text("Tips")
                     dpg.bind_item_theme(t, "header_theme")
                     dpg.add_text("- Use .img.gz extension for compressed output")
+                    dpg.add_text("- Works natively on Windows (no WSL needed)")
                     dpg.add_text("- FAT32 images don't need root; GPT/MBR do")
                     dpg.add_text("- --modify flag (CLI only) edits images without rebuild")
                     dpg.add_text("- Volume labels are limited to 11 characters for FAT32")

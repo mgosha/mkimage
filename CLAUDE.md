@@ -92,8 +92,8 @@ mkimage.py <dir> -o output.img
 - Python: typed, passes Pylance strict mode, `from __future__ import annotations`
 - No external packages — stdlib only (Python 3.7+)
 - Cross-platform: use `platform.system()` checks, not hardcoded paths
-- WSL bridge: all shell commands go through `_run()` which routes
-  through WSL on Windows
+- Windows: calls mkimage.ps1 natively for all operations (no WSL)
+- Linux/macOS: uses native shell commands via `_run()`
 - mkimage.ps1 is independent — shares no code with mkimage.py
 
 ## Key Constraints
@@ -102,6 +102,6 @@ mkimage.py <dir> -o output.img
   organization-specific logic
 - CLI is the primary interface; GUI is optional
 - Linux/macOS operations use native tools (dd, mkfs.vfat, sgdisk, mount)
-- Windows operations route through WSL or use native mkimage.ps1
+- Windows operations use native PowerShell (mkimage.ps1) — no WSL needed
 - USB write requires safety checks on all platforms
 - No external Python packages — stdlib only

@@ -94,7 +94,8 @@ partition spec format:
     DIR:   optional source directory (default: use --source)
 
 tips:
-  - FAT32 images (.img) don't need root; GPT/MBR images do
+  - Works natively on Windows (no WSL needed) — uses PowerShell
+  - FAT32 images (.img) don't need root on Linux; GPT/MBR do
   - Use .img.gz or .img.xz extension for automatic compression
   - ISO hybrid (--iso-hybrid) makes ISOs dd-writable to USB
   - Volume labels are 11 chars max for FAT32/exFAT
