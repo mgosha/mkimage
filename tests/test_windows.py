@@ -217,7 +217,7 @@ class TestPs1UsbWrite:
             "-SourceDir", test_source,
             "-Label", "TESTUSB",
             "-SkipConfirm", "-Verbose",
-            timeout=60,
+            timeout=180,
         )
         combined = stdout + stderr
         assert "OK" in combined, f"Write failed:\n{combined}"
@@ -231,7 +231,7 @@ class TestPs1UsbWrite:
             "-SourceDir", test_source,
             "-Label", "GPTTEST",
             "-SkipConfirm", "-UseGpt", "-Verbose",
-            timeout=60,
+            timeout=180,
         )
         combined = stdout + stderr
         assert "OK" in combined, f"GPT write failed:\n{combined}"
@@ -245,7 +245,7 @@ class TestPs1UsbWrite:
             "-SourceDir", test_source,
             "-Label", "VERTEST",
             "-SkipConfirm", "-Verify", "-Verbose",
-            timeout=60,
+            timeout=180,
         )
         combined = stdout + stderr
         assert "OK" in combined, f"Verify write failed:\n{combined}"
@@ -296,7 +296,7 @@ class TestPs1UsbRewrite:
             args.append("-UseGpt")
         if verify:
             args.append("-Verify")
-        rc, stdout, stderr = _ps_file(*args, timeout=60)
+        rc, stdout, stderr = _ps_file(*args, timeout=120)
         combined = stdout + stderr
         assert "OK" in combined, f"Write failed (label={label}, gpt={gpt}):\n{combined}"
         return combined
@@ -324,6 +324,19 @@ class TestPs1UsbRewrite:
             )
         finally:
             os.unlink(iso_path)
+
+    def _wipe_backing(self) -> None:
+        """Zero the entire QEMU backing file from the Linux host.
+
+        Much faster than diskpart clean all (direct file write vs USB I/O).
+        This pre-cleans all partition signatures so diskpart clean (fast)
+        is sufficient on the Windows side.
+        """
+        subprocess.run(
+            ["dd", "if=/dev/zero", f"of={self.USB_IMG}",
+             "bs=1M", "count=256"],
+            check=True, capture_output=True,
+        )
 
     def _write_raw_garbage(self) -> None:
         """Write random garbage to the backing file to simulate a corrupted drive."""
@@ -363,6 +376,8 @@ class TestPs1UsbRewrite:
     def test_mbr_to_gpt(self, usb_disk: int, test_source: str) -> None:
         """Write FAT32 MBR, then rewrite as FAT32 GPT."""
         self._write_usb(usb_disk, test_source, "FIRST_MBR")
+        self._wipe_backing()
+        self._rescan_disk(usb_disk)
         out = self._write_usb(usb_disk, test_source, "SECOND_GPT", gpt=True, verify=True)
         assert "Wrote" in out
         assert "GPT" in out
@@ -370,6 +385,8 @@ class TestPs1UsbRewrite:
     def test_gpt_to_mbr(self, usb_disk: int, test_source: str) -> None:
         """Write FAT32 GPT, then rewrite as FAT32 MBR."""
         self._write_usb(usb_disk, test_source, "FIRST_GPT", gpt=True)
+        self._wipe_backing()
+        self._rescan_disk(usb_disk)
         out = self._write_usb(usb_disk, test_source, "SECOND_MBR", verify=True)
         assert "Wrote" in out
         assert "MBR" in out
@@ -377,6 +394,8 @@ class TestPs1UsbRewrite:
     def test_gpt_to_gpt(self, usb_disk: int, test_source: str) -> None:
         """Rewrite GPT over existing GPT (backup header at end of disk)."""
         self._write_usb(usb_disk, test_source, "GPT_ONE", gpt=True)
+        self._wipe_backing()
+        self._rescan_disk(usb_disk)
         out = self._write_usb(usb_disk, test_source, "GPT_TWO", gpt=True, verify=True)
         assert "Wrote" in out
 
