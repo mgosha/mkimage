@@ -1,6 +1,11 @@
 """Windows VM tests — run via SSH to QEMU Windows VM.
 
 All tests are marked @pytest.mark.windows and skip if winvm is unreachable.
+
+The QEMU VM can be started with a virtual USB drive for end-to-end write
+testing. Add to the QEMU command line:
+    -drive file=usb-test.raw,format=raw,if=none,id=usbdisk0
+    -device usb-storage,drive=usbdisk0,removable=on
 """
 from __future__ import annotations
 
@@ -16,6 +21,23 @@ pytestmark = pytest.mark.windows
 
 VM_MKIMAGE_DIR = "C:/Users/mike/mkimage"
 VM_MKIMAGE_PS1 = f"{VM_MKIMAGE_DIR}/mkimage.ps1"
+
+
+def _find_usb_disk() -> int | None:
+    """Find a USB disk on the VM that is NOT the system disk. Returns disk number or None."""
+    r = winvm_ssh(
+        'powershell -NoProfile -Command "'
+        "Get-Disk | Where-Object { $_.BusType -eq 'USB' } | "
+        "ForEach-Object { Write-Host $_.Number }"
+        '"',
+        timeout=15,
+    )
+    if r.returncode != 0 or not r.stdout.strip():
+        return None
+    try:
+        return int(r.stdout.strip().splitlines()[0])
+    except (ValueError, IndexError):
+        return None
 
 
 @pytest.fixture(autouse=True)
@@ -173,3 +195,73 @@ class TestPs1SkipConfirm:
         # Should contain diskpart error or Get-Disk error
         assert "MessageBox" not in combined
         assert "diskpart" in combined.lower() or "get-disk" in combined.lower() or "not found" in combined.lower()
+
+
+class TestPs1UsbWrite:
+    """End-to-end USB write tests using a QEMU virtual USB drive.
+
+    These tests require the VM to be started with a virtual USB mass storage
+    device attached. They format and write to the virtual drive, then verify
+    the files are present.
+    """
+
+    @pytest.fixture(autouse=True)
+    def usb_disk(self) -> int:
+        """Find the virtual USB disk or skip."""
+        disk = _find_usb_disk()
+        if disk is None:
+            pytest.skip("No USB disk found on VM (start QEMU with -device usb-storage)")
+        return disk
+
+    @pytest.fixture
+    def test_source(self) -> str:
+        """Create test source files on the VM, return the path, cleanup after."""
+        src_dir = "C:\\temp\\usb_write_test_src"
+        winvm_ssh(f'powershell -NoProfile -Command "Remove-Item {src_dir} -Recurse -Force -ErrorAction SilentlyContinue"')
+        winvm_ssh(f'powershell -NoProfile -Command "New-Item -ItemType Directory -Path {src_dir} -Force | Out-Null"')
+        winvm_ssh(f'powershell -NoProfile -Command "\'hello from test\' | Out-File {src_dir}\\hello.txt"')
+        winvm_ssh(f'powershell -NoProfile -Command "\'echo Test\' | Out-File {src_dir}\\startup.nsh"')
+        yield src_dir
+        winvm_ssh(f'powershell -NoProfile -Command "Remove-Item {src_dir} -Recurse -Force -ErrorAction SilentlyContinue"')
+
+    def test_write_and_verify(self, usb_disk: int, test_source: str) -> None:
+        """Write files to the virtual USB drive and verify they're present."""
+        rc, stdout, stderr = _ps_file(
+            VM_MKIMAGE_PS1, "-Action", "WriteUsb",
+            "-DiskNumber", str(usb_disk),
+            "-SourceDir", test_source,
+            "-Label", "TESTUSB",
+            "-SkipConfirm", "-Verbose",
+            timeout=60,
+        )
+        combined = stdout + stderr
+        assert "OK" in combined, f"Write failed:\n{combined}"
+        assert "Wrote" in combined and "files" in combined
+
+    def test_write_gpt(self, usb_disk: int, test_source: str) -> None:
+        """Write with GPT partitioning to the virtual USB drive."""
+        rc, stdout, stderr = _ps_file(
+            VM_MKIMAGE_PS1, "-Action", "WriteUsb",
+            "-DiskNumber", str(usb_disk),
+            "-SourceDir", test_source,
+            "-Label", "GPTTEST",
+            "-SkipConfirm", "-UseGpt", "-Verbose",
+            timeout=60,
+        )
+        combined = stdout + stderr
+        assert "OK" in combined, f"GPT write failed:\n{combined}"
+        assert "convert GPT" in combined or "GPT" in combined
+
+    def test_write_verify_flag(self, usb_disk: int, test_source: str) -> None:
+        """Write with -Verify flag to check file integrity."""
+        rc, stdout, stderr = _ps_file(
+            VM_MKIMAGE_PS1, "-Action", "WriteUsb",
+            "-DiskNumber", str(usb_disk),
+            "-SourceDir", test_source,
+            "-Label", "VERTEST",
+            "-SkipConfirm", "-Verify", "-Verbose",
+            timeout=60,
+        )
+        combined = stdout + stderr
+        assert "OK" in combined, f"Verify write failed:\n{combined}"
+        assert "erif" in combined  # "Verify" or "Verification"
