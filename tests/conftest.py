@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from mkimage import Config, collect_files
 
 MKIMAGE_PY = str(Path(__file__).parent.parent / "mkimage.py")
+MKIMAGE_GUI = str(Path(__file__).parent.parent / "mkimage_gui.py")
 MKIMAGE_PS1 = str(Path(__file__).parent.parent / "mkimage.ps1")
 
 
@@ -28,6 +29,8 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             item.add_marker(pytest.mark.skip(reason="requires root"))
         if "windows" in item.keywords and not _winvm_reachable():
             item.add_marker(pytest.mark.skip(reason="Windows VM (winvm) not reachable"))
+        if "macos" in item.keywords and not _macos_reachable():
+            item.add_marker(pytest.mark.skip(reason="macOS host not reachable"))
 
 
 _winvm_ok: bool | None = None
@@ -48,6 +51,45 @@ def _winvm_reachable() -> bool:
     except (subprocess.TimeoutExpired, FileNotFoundError):
         _winvm_ok = False
     return _winvm_ok
+
+
+MACOS_HOST = "100.108.244.116"
+_macos_ok: bool | None = None
+
+
+def _macos_reachable() -> bool:
+    """Check SSH connectivity to macOS host (cached for session)."""
+    global _macos_ok
+    if _macos_ok is not None:
+        return _macos_ok
+    try:
+        r = subprocess.run(
+            ["ssh", "-o", "ConnectTimeout=3", "-o", "BatchMode=yes",
+             MACOS_HOST, "echo", "ok"],
+            capture_output=True, text=True, timeout=10,
+        )
+        _macos_ok = r.returncode == 0 and "ok" in r.stdout
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        _macos_ok = False
+    return _macos_ok
+
+
+def macos_ssh(cmd: str, timeout: int = 30) -> subprocess.CompletedProcess[str]:
+    """Run a command on the macOS host via SSH."""
+    return subprocess.run(
+        ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes",
+         MACOS_HOST, cmd],
+        capture_output=True, text=True, timeout=timeout,
+    )
+
+
+def macos_scp_to(local_path: str, remote_path: str) -> subprocess.CompletedProcess[str]:
+    """SCP a file to the macOS host."""
+    return subprocess.run(
+        ["scp", "-o", "BatchMode=yes", local_path,
+         f"{MACOS_HOST}:{remote_path}"],
+        capture_output=True, text=True, timeout=30,
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -64,11 +64,15 @@ class Config:
 
 
 # ---------------------------------------------------------------------------
-# WSL bridge
+# Platform detection
 # ---------------------------------------------------------------------------
 
 def _is_windows() -> bool:
     return platform.system() == "Windows"
+
+
+def _is_macos() -> bool:
+    return platform.system() == "Darwin"
 
 
 def _wsl_path(win_path: str) -> str:
@@ -89,6 +93,10 @@ def _run(cfg: Config, cmd: list[str], check: bool = True,
         verbose: Log this specific command's invocation and output.
         as_root: Run as root. On Windows uses 'wsl -u root'. On Linux uses 'sudo'.
     """
+    # On macOS, resolve tool paths (Homebrew sbin may not be in PATH)
+    if _is_macos() and cmd and not cmd[0].startswith("/"):
+        cmd = [_find_tool(cmd[0])] + cmd[1:]
+
     if _is_windows():
         shell_cmd = " ".join(_shell_quote(c) for c in cmd)
         if as_root:
@@ -125,9 +133,27 @@ def _which(tool: str) -> bool:
     _quiet = Config()  # silent config for tool probing
     try:
         r = _run(_quiet, ["which", tool], check=False)
-        return r.returncode == 0
+        if r.returncode == 0:
+            return True
     except FileNotFoundError:
-        return False
+        pass
+    # On macOS, Homebrew sbin may not be in PATH
+    if _is_macos():
+        for sbin in ["/usr/local/sbin", "/opt/homebrew/sbin"]:
+            if Path(f"{sbin}/{tool}").exists():
+                return True
+    return False
+
+
+def _find_tool(tool: str) -> str:
+    """Find a tool's full path, checking Homebrew sbin on macOS."""
+    if _is_macos():
+        for sbin in ["/usr/local/sbin", "/opt/homebrew/sbin",
+                     "/usr/local/bin", "/opt/homebrew/bin"]:
+            full = f"{sbin}/{tool}"
+            if Path(full).exists():
+                return full
+    return tool  # return as-is, let PATH handle it
 
 
 def _resolve(path: str) -> str:
@@ -143,19 +169,20 @@ def _resolve(path: str) -> str:
 
 # Map tool names to packages per distro family
 _TOOL_PACKAGES: dict[str, dict[str, str]] = {
-    "mkfs.vfat": {"apt": "dosfstools",  "dnf": "dosfstools",  "pacman": "dosfstools"},
-    "mcopy":     {"apt": "mtools",      "dnf": "mtools",      "pacman": "mtools"},
-    "mmd":       {"apt": "mtools",      "dnf": "mtools",      "pacman": "mtools"},
-    "rsync":     {"apt": "rsync",       "dnf": "rsync",       "pacman": "rsync"},
-    "xorriso":   {"apt": "xorriso",     "dnf": "xorriso",     "pacman": "libisoburn"},
-    "genisoimage": {"apt": "genisoimage", "dnf": "genisoimage", "pacman": "cdrtools"},
-    "sgdisk":      {"apt": "gdisk",       "dnf": "gdisk",       "pacman": "gptfdisk"},
+    "mkfs.vfat": {"apt": "dosfstools",  "dnf": "dosfstools",  "pacman": "dosfstools",  "brew": "dosfstools"},
+    "mcopy":     {"apt": "mtools",      "dnf": "mtools",      "pacman": "mtools",      "brew": "mtools"},
+    "mmd":       {"apt": "mtools",      "dnf": "mtools",      "pacman": "mtools",      "brew": "mtools"},
+    "rsync":     {"apt": "rsync",       "dnf": "rsync",       "pacman": "rsync",       "brew": "rsync"},
+    "xorriso":   {"apt": "xorriso",     "dnf": "xorriso",     "pacman": "libisoburn",  "brew": "xorriso"},
+    "genisoimage": {"apt": "genisoimage", "dnf": "genisoimage", "pacman": "cdrtools",  "brew": "cdrtools"},
+    "sgdisk":      {"apt": "gdisk",       "dnf": "gdisk",       "pacman": "gptfdisk",  "brew": "gptfdisk"},
 }
 
 
 def _detect_pkg_manager() -> tuple[str, str]:
     """Detect the package manager. Returns (command, name)."""
-    for cmd, name in [("apt-get", "apt"), ("dnf", "dnf"), ("yum", "dnf"), ("pacman", "pacman")]:
+    for cmd, name in [("apt-get", "apt"), ("dnf", "dnf"), ("yum", "dnf"),
+                      ("pacman", "pacman"), ("brew", "brew")]:
         if _which(cmd):
             return cmd, name
     return "", ""
@@ -173,11 +200,15 @@ def _install_packages(cfg: Config, packages: list[str]) -> bool:
 
     if pkg_name == "pacman":
         cmd = [pkg_cmd, "-S", "--noconfirm"] + pkgs
+    elif pkg_name == "brew":
+        cmd = [pkg_cmd, "install"] + pkgs
     else:
         cmd = [pkg_cmd, "install", "-y"] + pkgs
 
     try:
-        r = _run(cfg, cmd, check=False, verbose=True, as_root=True)
+        # brew runs as user, not root
+        r = _run(cfg, cmd, check=False, verbose=True,
+                 as_root=(pkg_name != "brew"))
         if r.returncode != 0:
             cfg.log(f"  Install failed: {r.stderr.strip()}")
             return False
@@ -222,7 +253,13 @@ def check_tools_iso() -> list[str]:
 def check_tools_gpt() -> list[str]:
     """Check tools needed for GPT image creation. Returns missing tools."""
     missing: list[str] = []
-    for tool in ["dd", "mkfs.vfat", "rsync", "sgdisk", "losetup"]:
+    base_tools = ["dd", "mkfs.vfat", "rsync", "sgdisk"]
+    # macOS uses hdiutil instead of losetup for loop devices
+    if _is_macos():
+        base_tools.append("hdiutil")
+    else:
+        base_tools.append("losetup")
+    for tool in base_tools:
         if not _which(tool):
             missing.append(tool)
     return missing
@@ -375,11 +412,33 @@ def _parse_size(size_str: str) -> int:
 
 
 def _setup_loop_device(cfg: Config, image_path: str) -> str:
-    """Attach image to a loop device with partition scanning.
+    """Attach image to a loop/disk device with partition scanning.
 
-    Returns the loop device path (e.g. /dev/loop0).
-    Raises RuntimeError if losetup fails.
+    On Linux: uses losetup. Returns /dev/loopN.
+    On macOS: uses hdiutil attach. Returns /dev/diskN.
+    Raises RuntimeError on failure.
     """
+    if _is_macos():
+        r = _run(cfg, [
+            "hdiutil", "attach", "-nomount",
+            "-imagekey", "diskimage-class=CRawDiskImage",
+            image_path,
+        ], verbose=True, as_root=True)
+        # hdiutil outputs lines like "/dev/disk4  GUID_partition_scheme"
+        for line in r.stdout.strip().splitlines():
+            parts = line.split()
+            if parts and parts[0].startswith("/dev/disk"):
+                dev = parts[0]
+                # Return the base disk device (not partition)
+                if "s" not in dev.split("disk")[-1]:
+                    return dev
+        # Fallback: first /dev/disk* token
+        for line in r.stdout.strip().splitlines():
+            for token in line.split():
+                if token.startswith("/dev/disk"):
+                    return token
+        raise RuntimeError(f"hdiutil attach returned no device: {r.stdout}")
+
     r = _run(cfg, [
         "losetup", "--find", "--show", "--partscan", image_path
     ], verbose=True, as_root=True)
@@ -391,18 +450,22 @@ def _setup_loop_device(cfg: Config, image_path: str) -> str:
 
 def _wait_for_partition(cfg: Config, loop_dev: str,
                         part_num: int, retries: int = 10) -> str:
-    """Wait for a partition device to appear after losetup.
+    """Wait for a partition device to appear.
 
-    Returns the partition device path (e.g. /dev/loop0p1).
+    On Linux: /dev/loopNpM. On macOS: /dev/diskNsM.
     Raises RuntimeError if it doesn't appear within retries.
     """
     import time
-    part_path = f"{loop_dev}p{part_num}"
+    if _is_macos():
+        part_path = f"{loop_dev}s{part_num}"
+    else:
+        part_path = f"{loop_dev}p{part_num}"
     for _ in range(retries):
         r = _run(cfg, ["test", "-b", part_path], check=False, as_root=True)
         if r.returncode == 0:
             return part_path
-        _run(cfg, ["partprobe", loop_dev], check=False, as_root=True)
+        if not _is_macos():
+            _run(cfg, ["partprobe", loop_dev], check=False, as_root=True)
         time.sleep(0.5)
     raise RuntimeError(
         f"Partition {part_path} did not appear after {retries} retries"
@@ -410,8 +473,11 @@ def _wait_for_partition(cfg: Config, loop_dev: str,
 
 
 def _teardown_loop_device(cfg: Config, loop_dev: str) -> None:
-    """Detach a loop device."""
-    _run(cfg, ["losetup", "-d", loop_dev], check=False, as_root=True)
+    """Detach a loop/disk device."""
+    if _is_macos():
+        _run(cfg, ["hdiutil", "detach", loop_dev], check=False, as_root=True)
+    else:
+        _run(cfg, ["losetup", "-d", loop_dev], check=False, as_root=True)
 
 
 def _suggest_install(tool: str) -> str:
@@ -431,8 +497,9 @@ def _check_root(cfg: Config, operation: str) -> None:
     if _is_windows():
         return  # WSL uses wsl -u root, no check needed
     if os.geteuid() != 0:
+        detail = "hdiutil + mount" if _is_macos() else "losetup + mount"
         raise RuntimeError(
-            f"{operation} requires root (losetup + mount). Run with sudo."
+            f"{operation} requires root ({detail}). Run with sudo."
         )
 
 
@@ -820,21 +887,87 @@ def _list_removable_drives_windows() -> list[dict[str, str]]:
     return drives
 
 
+def _list_removable_drives_macos() -> list[dict[str, str]]:
+    """List removable USB drives on macOS via diskutil."""
+    drives: list[dict[str, str]] = []
+    quiet = Config()
+    # Get external/removable disks
+    r = _run(quiet, ["diskutil", "list", "external"], check=False)
+    if r.returncode != 0 or not r.stdout.strip():
+        return drives
+
+    # Parse diskutil list output for /dev/diskN lines
+    import re
+    for line in r.stdout.splitlines():
+        m = re.match(r"^(/dev/disk\d+)\s+\(external", line)
+        if not m:
+            continue
+        dev_path = m.group(1)
+
+        # Get details via diskutil info
+        info_r = _run(quiet, ["diskutil", "info", dev_path], check=False)
+        if info_r.returncode != 0:
+            continue
+
+        info = info_r.stdout
+        size_bytes = 0
+        model = ""
+        for info_line in info.splitlines():
+            info_line = info_line.strip()
+            if info_line.startswith("Disk Size:"):
+                # "Disk Size:  15728640000 Bytes ..."
+                size_match = re.search(r"(\d+)\s+Bytes", info_line)
+                if size_match:
+                    size_bytes = int(size_match.group(1))
+            elif info_line.startswith("Device / Media Name:"):
+                model = info_line.split(":", 1)[1].strip()
+
+        if size_bytes == 0:
+            continue
+
+        size_gb = size_bytes / (1024 ** 3)
+        if size_gb > MAX_USB_SIZE_GB:
+            continue
+
+        name = dev_path.replace("/dev/", "")
+        size_str = f"{size_gb:.1f}GB" if size_gb >= 1 else f"{size_bytes // (1024 * 1024)}MB"
+        drives.append({
+            "name": name, "path": dev_path, "size": size_str,
+            "size_bytes": str(size_bytes), "model": model,
+        })
+
+    return drives
+
+
 def _list_removable_drives() -> list[dict[str, str]]:
     """List removable USB drives. Auto-detects platform."""
     if _is_windows():
         return _list_removable_drives_windows()
+    if _is_macos():
+        return _list_removable_drives_macos()
     return _list_removable_drives_linux()
 
 
 def _verify_usb_bus(cfg: Config, device: str) -> bool:
-    """Verify a device is on the USB bus via udevadm.
+    """Verify a device is on the USB bus.
 
-    Returns True if USB (or if udevadm is unavailable). Returns False
-    if the device is on a non-USB bus (SATA, NVMe, etc.).
+    Uses udevadm on Linux, diskutil on macOS.
+    Returns True if USB (or if verification is unavailable).
+    Returns False if the device is on a non-USB bus (SATA, NVMe, etc.).
     """
     if _is_windows():
         return True  # Windows checks bus type via Get-Disk
+
+    if _is_macos():
+        r = _run(cfg, ["diskutil", "info", device], check=False)
+        if r.returncode != 0:
+            return True
+        for line in r.stdout.splitlines():
+            if "Protocol:" in line:
+                return "USB" in line
+        return True  # can't determine protocol, allow
+
+    # Linux: udevadm
     if not _which("udevadm"):
         cfg.log("  Warning: udevadm not found, skipping bus verification")
         return True
@@ -848,6 +981,11 @@ def _verify_usb_bus(cfg: Config, device: str) -> bool:
 def _unmount_device(cfg: Config, device: str) -> None:
     """Unmount all mounted partitions on a device."""
     cfg.log(f"  Unmounting {device} partitions...")
+
+    if _is_macos():
+        _run(cfg, ["diskutil", "unmountDisk", device], check=False)
+        return
+
     if _which("findmnt"):
         r = _run(cfg, ["findmnt", "--list", "--noheadings", "-o", "TARGET",
                        "--source", device], check=False)
@@ -1529,8 +1667,10 @@ def _write_gpt_to_device(cfg: Config, files: dict[str, str],
         import time
         time.sleep(1)
 
-        # Determine partition device naming (sdX1 vs sdXp1)
-        if Path(f"{device}1").exists() or Path(f"{device}1").is_block_device():
+        # Determine partition device naming: sdX1, sdXp1, or diskNs1 (macOS)
+        if _is_macos():
+            part_fmt = f"{device}s{{}}"
+        elif Path(f"{device}1").exists() or Path(f"{device}1").is_block_device():
             part_fmt = f"{device}{{}}"
         else:
             part_fmt = f"{device}p{{}}"

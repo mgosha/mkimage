@@ -359,5 +359,18 @@ On macOS, install via Homebrew: `brew install dosfstools gdisk xorriso`
 | GPT direct to device | Done | sgdisk + mkfs.vfat directly on USB device |
 | USB auto-detect | Done | `--target usb` auto-selects single drive |
 
-### Phase 4: Polish — TODO
+### Phase 4: macOS support and polish — DONE
+
+| Feature | Status | Description |
+|---------|--------|-------------|
+| `_is_macos()` | Done | Platform detection for Darwin |
+| Homebrew support | Done | `brew` in package manager detection + tool mappings |
+| `_find_tool()` | Done | Resolves Homebrew sbin paths not in PATH |
+| hdiutil attach/detach | Done | Replaces losetup on macOS for GPT images |
+| diskutil list external | Done | Replaces lsblk for USB drive enumeration |
+| diskutil info Protocol | Done | Replaces udevadm for USB bus verification |
+| diskutil unmountDisk | Done | Replaces findmnt for partition unmounting |
+| macOS partition naming | Done | /dev/diskNsM instead of /dev/loopNpM |
+| macOS tests | Done | 7 SSH-based tests (--check, img, iso, gpt, drives) |
+
 ### Phase 5: Integration — TODO
