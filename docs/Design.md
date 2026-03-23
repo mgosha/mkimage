@@ -395,5 +395,9 @@ On macOS, install via Homebrew: `brew install dosfstools gdisk xorriso`
 | macOS support | Done | hdiutil/diskutil for GPT, USB, drive detection |
 | Dear PyGui GUI | Done | Modern GPU-accelerated GUI with tabbed layout |
 | Multi-boot | TODO | GRUB2 menu + multi-ISO USB (deferred — high complexity) |
+| GRUB bootloader gen | TODO | Generate GRUB config for persistent live USBs (mkusb parity) |
+| Windows ISO WIM split | TODO | Split >4GB install.wim for FAT32 USBs (mkusb-tow parity) |
+| USB clone | TODO | Clone USB drive to image or another USB (dd-based) |
+| UDF filesystem | TODO | UDF support for large files >4GB on optical media |
 
 ### Phase 5: Integration — TODO
