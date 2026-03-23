@@ -418,6 +418,8 @@ def _animate_progress() -> None:
 
 def gui_main() -> None:
     dpg.create_context()
+    dpg.create_viewport(title="mkimage \u2014 Bootable Media Creator",
+                        width=720, height=620)
     _create_themes()
 
     # --- File dialogs ---
@@ -631,8 +633,6 @@ def gui_main() -> None:
 
     dpg.bind_theme("main_theme")
     dpg.setup_dearpygui()
-    dpg.create_viewport(title="mkimage \u2014 Bootable Media Creator",
-                        width=720, height=620)
     dpg.show_viewport()
     dpg.set_primary_window("main", True)
 
