@@ -102,6 +102,34 @@ def gui_main() -> None:
         if f:
             output_var.set(f)
 
+    def _check_drive_tk() -> None:
+        """Run bad block check on selected USB drive."""
+        from mkimage.usb.safety import _check_bad_blocks, _unmount_device
+        sel = drive_var.get().strip()
+        if not sel:
+            messagebox.showerror("Error", "No USB drive selected.")
+            return
+        device = sel.split()[0]
+        if not messagebox.askyesno("Confirm", f"Bad block test will ERASE ALL DATA on {device}.\n\nProceed?"):
+            return
+        notebook.select(log_tab)
+        create_btn.config(state=tk.DISABLED)
+
+        def run() -> None:
+            cfg_chk = Config(log=log, verbose=True)
+            try:
+                _unmount_device(cfg_chk, device)
+                if _check_bad_blocks(cfg_chk, device):
+                    log(f"[OK] No bad blocks found on {device}.")
+                else:
+                    log(f"[FAIL] Bad blocks detected on {device}!")
+            except Exception as e:
+                log(f"Error: {e}")
+            finally:
+                create_btn.config(state=tk.NORMAL)
+
+        threading.Thread(target=run, daemon=True).start()
+
     def refresh_usb_drives() -> None:
         drives = _list_removable_drives()
         usb_drives.clear()
@@ -153,6 +181,12 @@ def gui_main() -> None:
         is_gpt = part_scheme_var.get() == "gpt"
         is_mbr = part_scheme_var.get() == "mbr"
         partitions = get_partitions()
+
+        # Add persistent partition if checked
+        if persistent_var.get():
+            ps = persistent_size_var.get().strip() or "4G"
+            partitions.append(PartitionSpec("ext4", ps, "casper-rw"))
+            is_gpt = True
 
         create_btn.config(state=tk.DISABLED)
         notebook.select(log_tab)  # Switch to Log tab
@@ -296,12 +330,26 @@ def gui_main() -> None:
 
     # USB output (hidden)
     usb_frame = tk.Frame(build_tab)
+    # Drive row
+    usb_drive_row = tk.Frame(usb_frame)
+    usb_drive_row.pack(fill=tk.X)
     drive_var = tk.StringVar(value="")
-    drive_combo = tk.OptionMenu(usb_frame, drive_var, "")
-    drive_combo.config(width=42, anchor=tk.W)
+    drive_combo = tk.OptionMenu(usb_drive_row, drive_var, "")
+    drive_combo.config(width=35, anchor=tk.W)
     drive_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
     ToolTip(drive_combo, "Select a removable USB drive")
-    tk.Button(usb_frame, text="Refresh", command=refresh_usb_drives).pack(side=tk.LEFT, padx=(5, 0))
+    tk.Button(usb_drive_row, text="Refresh", command=refresh_usb_drives).pack(side=tk.LEFT, padx=(5, 0))
+    tk.Button(usb_drive_row, text="Check Drive", command=lambda: _check_drive_tk()).pack(side=tk.LEFT, padx=(5, 0))
+    # Persistent row
+    usb_persist_row = tk.Frame(usb_frame)
+    usb_persist_row.pack(fill=tk.X, pady=(2, 0))
+    persistent_var = tk.BooleanVar(value=False)
+    tk.Checkbutton(usb_persist_row, text="Persistent storage",
+                   variable=persistent_var).pack(side=tk.LEFT)
+    persistent_size_var = tk.StringVar(value="4G")
+    tk.Entry(usb_persist_row, textvariable=persistent_size_var,
+             width=6).pack(side=tk.LEFT, padx=2)
+    ToolTip(usb_persist_row, "Add ext4 casper-rw partition for Linux live USBs")
 
     # Action button
     create_btn = tk.Button(build_tab, text="Create Image", width=25, command=do_create)
@@ -318,7 +366,8 @@ def gui_main() -> None:
     part_scheme_var = tk.StringVar(value="none")
 
     partition_rows: list[tuple[tk.Frame, tk.StringVar, tk.StringVar,
-                               tk.StringVar, tk.StringVar]] = []
+                               tk.StringVar, tk.StringVar,
+                               tk.StringVar]] = []
 
     def _browse_part_src(dir_var: tk.StringVar) -> None:
         d = filedialog.askdirectory(title="Select Source Directory")
@@ -326,28 +375,33 @@ def gui_main() -> None:
             dir_var.set(d)
 
     def add_partition_row(fs: str = "fat32", size: str = "",
-                          label: str = "UEFITOOLS", src: str = "") -> None:
+                          label: str = "UEFITOOLS", src: str = "",
+                          cluster: str = "") -> None:
         row = tk.Frame(partition_frame)
         type_var = tk.StringVar(value=fs)
         size_var_p = tk.StringVar(value=size)
         label_var_p = tk.StringVar(value=label)
+        cluster_var = tk.StringVar(value=cluster)
         dir_var = tk.StringVar(value=src)
 
         ttk.Combobox(row, textvariable=type_var,
-                     values=["esp", "fat32", "exfat", "ntfs"],
+                     values=["esp", "fat32", "exfat", "ntfs", "ext4"],
                      width=7).pack(side=tk.LEFT, padx=2)
-        tk.Entry(row, textvariable=size_var_p, width=8).pack(
+        tk.Entry(row, textvariable=size_var_p, width=7).pack(
             side=tk.LEFT, padx=2)
-        tk.Entry(row, textvariable=label_var_p, width=10).pack(
+        tk.Entry(row, textvariable=label_var_p, width=9).pack(
             side=tk.LEFT, padx=2)
-        tk.Entry(row, textvariable=dir_var, width=20).pack(
+        tk.Entry(row, textvariable=cluster_var, width=6).pack(
+            side=tk.LEFT, padx=2)
+        tk.Entry(row, textvariable=dir_var, width=15).pack(
             side=tk.LEFT, padx=2, fill=tk.X, expand=True)
         tk.Button(row, text="...",
                   command=lambda: _browse_part_src(dir_var)).pack(
             side=tk.LEFT)
 
         row.pack(fill=tk.X, padx=5, pady=1)
-        partition_rows.append((row, type_var, size_var_p, label_var_p, dir_var))
+        partition_rows.append((row, type_var, size_var_p, label_var_p,
+                               cluster_var, dir_var))
 
     def remove_partition_row() -> None:
         if len(partition_rows) > 1:
@@ -370,9 +424,13 @@ def gui_main() -> None:
             add_partition_row(fs="fat32", size="+32M", label="UEFITOOLS")
 
     def get_partitions() -> list[PartitionSpec]:
-        return [PartitionSpec(t.get(), s.get(), l.get() or "UEFITOOLS",
-                              d.get())
-                for _, t, s, l, d in partition_rows]
+        result: list[PartitionSpec] = []
+        for _, t, s, l, c, d in partition_rows:
+            cs_str = c.get().strip()
+            cs = int(cs_str) if cs_str.isdigit() else 0
+            result.append(PartitionSpec(t.get(), s.get(),
+                                        l.get() or "UEFITOOLS", d.get(), cs))
+        return result
 
     tk.Radiobutton(part_frame, text="None", variable=part_scheme_var,
                    value="none", command=on_scheme_change).pack(side=tk.LEFT)
@@ -400,9 +458,11 @@ def gui_main() -> None:
                       padx=15, pady=(2, 0))
     tk.Label(header_frame, text="Type", width=9, anchor=tk.W,
              font=("Segoe UI", 8)).pack(side=tk.LEFT)
-    tk.Label(header_frame, text="Size", width=9, anchor=tk.W,
+    tk.Label(header_frame, text="Size", width=8, anchor=tk.W,
              font=("Segoe UI", 8)).pack(side=tk.LEFT)
-    tk.Label(header_frame, text="Label", width=11, anchor=tk.W,
+    tk.Label(header_frame, text="Label", width=10, anchor=tk.W,
+             font=("Segoe UI", 8)).pack(side=tk.LEFT)
+    tk.Label(header_frame, text="Cluster", width=7, anchor=tk.W,
              font=("Segoe UI", 8)).pack(side=tk.LEFT)
     tk.Label(header_frame, text="Source Dir", anchor=tk.W,
              font=("Segoe UI", 8)).pack(side=tk.LEFT, fill=tk.X,

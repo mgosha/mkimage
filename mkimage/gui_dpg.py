@@ -186,14 +186,17 @@ _partition_rows: list[int] = []
 
 def _add_partition_row(sender: object = None, app_data: object = None,
                        fs: str = "fat32", size: str = "",
-                       label: str = "UEFITOOLS", src: str = "") -> None:
+                       label: str = "UEFITOOLS", src: str = "",
+                       cluster: str = "") -> None:
     """Add a partition row to the list."""
     row_id = dpg.add_group(horizontal=True, parent="partition_list")
-    dpg.add_combo(["esp", "fat32", "exfat", "ntfs"], default_value=fs,
-                  width=75, parent=row_id)
-    dpg.add_input_text(default_value=size, width=65, hint="Size",
+    dpg.add_combo(["esp", "fat32", "exfat", "ntfs", "ext4"],
+                  default_value=fs, width=70, parent=row_id)
+    dpg.add_input_text(default_value=size, width=55, hint="Size",
                        parent=row_id)
-    dpg.add_input_text(default_value=label, width=85, hint="Label",
+    dpg.add_input_text(default_value=label, width=75, hint="Label",
+                       parent=row_id)
+    dpg.add_input_text(default_value=cluster, width=50, hint="Cluster",
                        parent=row_id)
     dpg.add_input_text(default_value=src, width=-1, hint="Source dir",
                        parent=row_id)
@@ -233,14 +236,47 @@ def _get_partitions() -> list[PartitionSpec]:
     partitions: list[PartitionSpec] = []
     for row_id in _partition_rows:
         children = dpg.get_item_children(row_id, 1)
-        if len(children) >= 4:
+        if len(children) >= 5:
+            cs_str = dpg.get_value(children[3]).strip()
+            cs = int(cs_str) if cs_str.isdigit() else 0
             partitions.append(PartitionSpec(
                 fs_type=dpg.get_value(children[0]),
                 size=dpg.get_value(children[1]),
                 label=dpg.get_value(children[2]) or "UEFITOOLS",
-                source_dir=dpg.get_value(children[3]),
+                cluster_size=cs,
+                source_dir=dpg.get_value(children[4]),
             ))
     return partitions
+
+
+def _check_drive(sender: object = None, app_data: object = None) -> None:
+    """Run bad block check on the selected USB drive."""
+    from mkimage.usb.safety import _check_bad_blocks, _unmount_device
+    sel = dpg.get_value("drive_combo")
+    if not sel or "no USB" in sel:
+        _log("No USB drive selected.")
+        return
+    device = sel.split()[0]  # extract /dev/sdX from combo text
+    _log(f"Checking {device} for bad blocks (destructive)...")
+    _set_building(True)
+    dpg.set_value("log_text", "")
+
+    def run() -> None:
+        cfg = Config(log=_log, verbose=True)
+        try:
+            _unmount_device(cfg, device)
+            if _check_bad_blocks(cfg, device):
+                _log(f"[OK] No bad blocks found on {device}.")
+                _set_building(False, "success")
+            else:
+                _log(f"[FAIL] Bad blocks detected on {device}!")
+                _set_building(False, "error")
+        except Exception as e:
+            _log(f"Error: {e}")
+            _set_building(False, "error")
+
+    import threading
+    threading.Thread(target=run, daemon=True).start()
 
 
 def _on_target_mode_change(sender: int) -> None:
@@ -317,6 +353,12 @@ def _do_create() -> None:
     is_gpt = partition_scheme == "GPT"
     is_mbr = partition_scheme == "MBR"
     partitions = _get_partitions()
+
+    # Add persistent partition if checked
+    if dpg.get_value("persistent_check"):
+        ps = dpg.get_value("persistent_size").strip() or "4G"
+        partitions.append(PartitionSpec("ext4", ps, "casper-rw"))
+        is_gpt = True
 
     _set_building(True)
     dpg.set_value("log_text", "")
@@ -506,11 +548,21 @@ def gui_main() -> None:
                                                  hint="Output file (.img, .iso, .img.gz)")
                     with dpg.tooltip(out_inp):
                         dpg.add_text("Use .img.gz for compressed output")
-                with dpg.group(tag="usb_target_group", show=False, horizontal=True):
-                    drv_cb = dpg.add_combo(tag="drive_combo", items=["(click Refresh)"], width=-100)
-                    with dpg.tooltip(drv_cb):
-                        dpg.add_text("Select a removable USB drive")
-                    dpg.add_button(label="Refresh", callback=_refresh_drives, width=85)
+                with dpg.group(tag="usb_target_group", show=False):
+                    with dpg.group(horizontal=True):
+                        drv_cb = dpg.add_combo(tag="drive_combo", items=["(click Refresh)"], width=-180)
+                        with dpg.tooltip(drv_cb):
+                            dpg.add_text("Select a removable USB drive")
+                        dpg.add_button(label="Refresh", callback=_refresh_drives, width=80)
+                        chk_btn = dpg.add_button(label="Check Drive", callback=_check_drive, width=85)
+                        with dpg.tooltip(chk_btn):
+                            dpg.add_text("Test USB drive for bad blocks (destructive)")
+                    with dpg.group(horizontal=True):
+                        dpg.add_checkbox(label="Persistent storage", tag="persistent_check")
+                        dpg.add_input_text(tag="persistent_size", default_value="4G",
+                                           width=55, hint="Size")
+                        with dpg.tooltip(dpg.last_item()):
+                            dpg.add_text("Add ext4 casper-rw partition for Linux live USBs")
 
                 dpg.add_spacer(height=8)
                 btn = dpg.add_button(label="Create Image", tag="action_btn",
@@ -536,9 +588,10 @@ def gui_main() -> None:
 
                 with dpg.group(horizontal=True):
                     dpg.add_text("Type", indent=5)
-                    dpg.add_text("Size", indent=85)
-                    dpg.add_text("Label", indent=155)
-                    dpg.add_text("Source Dir", indent=245)
+                    dpg.add_text("Size", indent=80)
+                    dpg.add_text("Label", indent=140)
+                    dpg.add_text("Cluster", indent=220)
+                    dpg.add_text("Source Dir", indent=275)
 
                 with dpg.child_window(tag="partition_list", height=120,
                                       border=True):
