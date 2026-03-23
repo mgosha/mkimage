@@ -149,6 +149,7 @@ _TOOL_PACKAGES: dict[str, dict[str, str]] = {
     "rsync":     {"apt": "rsync",       "dnf": "rsync",       "pacman": "rsync"},
     "xorriso":   {"apt": "xorriso",     "dnf": "xorriso",     "pacman": "libisoburn"},
     "genisoimage": {"apt": "genisoimage", "dnf": "genisoimage", "pacman": "cdrtools"},
+    "sgdisk":      {"apt": "gdisk",       "dnf": "gdisk",       "pacman": "gptfdisk"},
 }
 
 
@@ -218,6 +219,15 @@ def check_tools_iso() -> list[str]:
     return ["xorriso"]
 
 
+def check_tools_gpt() -> list[str]:
+    """Check tools needed for GPT image creation. Returns missing tools."""
+    missing: list[str] = []
+    for tool in ["dd", "mkfs.vfat", "rsync", "sgdisk", "losetup"]:
+        if not _which(tool):
+            missing.append(tool)
+    return missing
+
+
 def ensure_tools(cfg: Config, fmt: str) -> None:
     """Check for required tools and auto-install if missing.
 
@@ -225,6 +235,8 @@ def ensure_tools(cfg: Config, fmt: str) -> None:
     """
     if fmt == "img":
         missing = check_tools_img()
+    elif fmt == "gpt":
+        missing = check_tools_gpt()
     else:
         missing = check_tools_iso()
 
@@ -239,6 +251,8 @@ def ensure_tools(cfg: Config, fmt: str) -> None:
         # Verify installation worked
         if fmt == "img":
             still_missing = check_tools_img()
+        elif fmt == "gpt":
+            still_missing = check_tools_gpt()
         else:
             still_missing = check_tools_iso()
         if not still_missing:
@@ -299,11 +313,113 @@ def collect_files(cfg: Config, source_dir: str,
 
 
 # ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
+def _calculate_content_size(files: dict[str, str]) -> int:
+    """Calculate total content size in MB (ceiling division, minimum 1)."""
+    total_bytes = sum(os.path.getsize(lp) for lp in files.values())
+    return max(1, -(-total_bytes // (1024 * 1024)))
+
+
+def _stage_files(files: dict[str, str], staging_dir: Path) -> None:
+    """Copy files to a staging directory, preserving relative paths."""
+    for img_path, local_path in files.items():
+        dest = staging_dir / img_path
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(local_path, dest)
+
+
+def _populate_partition(cfg: Config, staging_dir: str,
+                        partition: str) -> None:
+    """Mount a partition, rsync staged files into it, unmount.
+
+    Raises RuntimeError on failure.
+    """
+    if cfg.verbose:
+        rsync_flags = "-av --no-owner --no-group"
+    else:
+        rsync_flags = "-a --no-owner --no-group --info=progress2"
+
+    r = _run(cfg, [
+        "bash", "-c",
+        f"MNTDIR=$(mktemp -d) && "
+        f"mount '{partition}' $MNTDIR && "
+        f"rsync {rsync_flags} '{staging_dir}'/ $MNTDIR/ && "
+        f"sync && "
+        f"umount $MNTDIR && "
+        f"rmdir $MNTDIR"
+    ], check=False, verbose=True, as_root=True)
+
+    if r.returncode != 0:
+        raise RuntimeError(
+            f"Failed to populate {partition}: {r.stderr.strip()}"
+        )
+
+
+def _parse_size(size_str: str) -> int:
+    """Parse a human-readable size string to megabytes.
+
+    Accepts: "4G", "4g", "512M", "512m", "1024" (plain MB).
+    Returns 0 for empty string.
+    Raises ValueError for invalid format.
+    """
+    if not size_str:
+        return 0
+    s = size_str.strip().upper()
+    if s.endswith("G"):
+        return int(s[:-1]) * 1024
+    if s.endswith("M"):
+        return int(s[:-1])
+    return int(s)
+
+
+def _setup_loop_device(cfg: Config, image_path: str) -> str:
+    """Attach image to a loop device with partition scanning.
+
+    Returns the loop device path (e.g. /dev/loop0).
+    Raises RuntimeError if losetup fails.
+    """
+    r = _run(cfg, [
+        "losetup", "--find", "--show", "--partscan", image_path
+    ], verbose=True, as_root=True)
+    loop_dev = r.stdout.strip()
+    if not loop_dev:
+        raise RuntimeError("losetup returned no device")
+    return loop_dev
+
+
+def _wait_for_partition(cfg: Config, loop_dev: str,
+                        part_num: int, retries: int = 10) -> str:
+    """Wait for a partition device to appear after losetup.
+
+    Returns the partition device path (e.g. /dev/loop0p1).
+    Raises RuntimeError if it doesn't appear within retries.
+    """
+    import time
+    part_path = f"{loop_dev}p{part_num}"
+    for _ in range(retries):
+        r = _run(cfg, ["test", "-b", part_path], check=False, as_root=True)
+        if r.returncode == 0:
+            return part_path
+        _run(cfg, ["partprobe", loop_dev], check=False, as_root=True)
+        time.sleep(0.5)
+    raise RuntimeError(
+        f"Partition {part_path} did not appear after {retries} retries"
+    )
+
+
+def _teardown_loop_device(cfg: Config, loop_dev: str) -> None:
+    """Detach a loop device."""
+    _run(cfg, ["losetup", "-d", loop_dev], check=False, as_root=True)
+
+
+# ---------------------------------------------------------------------------
 # FAT32 .img builder
 # ---------------------------------------------------------------------------
 
 def build_img(cfg: Config, files: dict[str, str], output: str) -> None:
-    """Create a FAT32 disk image.
+    """Create a FAT32 disk image (no partition table).
 
     Stages files into a temp directory, creates the image in a location
     where loop mount works (native /tmp, not NTFS), mounts it, rsyncs
@@ -314,20 +430,14 @@ def build_img(cfg: Config, files: dict[str, str], output: str) -> None:
 
     out = _resolve(output)
 
-    # Auto-size: content + extra free space
-    total_bytes = sum(os.path.getsize(lp) for lp in files.values())
-    content_mb = max(1, -(-total_bytes // (1024 * 1024)))  # ceiling division
+    content_mb = _calculate_content_size(files)
     # FAT32 minimum is ~36MB usable; VHD/partition overhead needs extra, so 40MB floor
     size_mb = max(40, content_mb + cfg.extra_mb)
     cfg.log(f"  Image size: {size_mb}MB ({content_mb}MB content + {size_mb - content_mb}MB free)")
 
     # Stage files preserving directory structure (native Python I/O)
     with tempfile.TemporaryDirectory() as staging:
-        stg = Path(staging)
-        for img_path, local_path in files.items():
-            dest = stg / img_path
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(local_path, dest)
+        _stage_files(files, Path(staging))
 
         stg_resolved = _resolve(staging)
 
@@ -417,14 +527,8 @@ def build_iso(cfg: Config, files: dict[str, str], output: str) -> None:
     """Create an ISO image."""
     ensure_tools(cfg, "iso")
 
-    # Stage files in a temp directory
     with tempfile.TemporaryDirectory() as staging:
-        stg = Path(staging)
-        for img_path, local_path in files.items():
-            dest = stg / img_path
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(local_path, dest)
-
+        _stage_files(files, Path(staging))
         stg_resolved = _resolve(staging)
         out = _resolve(output)
 
@@ -447,6 +551,134 @@ def build_iso(cfg: Config, files: dict[str, str], output: str) -> None:
 
     actual_size = os.path.getsize(output)
     cfg.log(f"  Created {output} ({actual_size // 1024}KB, ISO 9660)")
+
+
+# ---------------------------------------------------------------------------
+# GPT image builders
+# ---------------------------------------------------------------------------
+
+def build_gpt_img(cfg: Config, files: dict[str, str], output: str) -> None:
+    """Create a GPT disk image with a single EFI System Partition."""
+    ensure_tools(cfg, "gpt")
+    out = _resolve(output)
+
+    content_mb = _calculate_content_size(files)
+    esp_mb = max(int(content_mb * 1.3 + 10), 64)
+    total_mb = esp_mb + 2  # 2MB GPT overhead
+    esp_label = cfg.esp_label[:11]
+    cfg.log(f"  GPT image: {total_mb}MB total ({esp_mb}MB ESP, "
+            f"{content_mb}MB content)")
+
+    with tempfile.TemporaryDirectory() as staging:
+        _stage_files(files, Path(staging))
+        stg_resolved = _resolve(staging)
+
+        # Create sparse image
+        _run(cfg, ["dd", "if=/dev/zero", f"of={out}", "bs=1M",
+                   "count=0", f"seek={total_mb}"], verbose=cfg.verbose)
+
+        # GPT partition table
+        _run(cfg, ["sgdisk", "-Z", out], verbose=cfg.verbose)
+        _run(cfg, ["sgdisk", "-o", out], verbose=cfg.verbose)
+        _run(cfg, ["sgdisk",
+                   "-n", f"1:2048:+{esp_mb}M",
+                   "-t", "1:EF00",
+                   "-c", f"1:{esp_label}",
+                   out], verbose=True)
+
+        loop_dev = _setup_loop_device(cfg, out)
+        try:
+            esp_part = _wait_for_partition(cfg, loop_dev, 1)
+
+            cfg.log(f"  Formatting ESP ({esp_label})...")
+            _run(cfg, ["mkfs.vfat", "-F", "32", "-n", esp_label,
+                       esp_part], verbose=True, as_root=True)
+
+            cfg.log(f"  Copying {len(files)} files to ESP...")
+            _populate_partition(cfg, stg_resolved, esp_part)
+        finally:
+            _teardown_loop_device(cfg, loop_dev)
+
+    actual_size = os.path.getsize(output)
+    cfg.log(f"  [OK] Created {output} ({actual_size // (1024*1024)}MB, "
+            f"GPT+ESP)")
+
+
+def build_gpt_data_img(cfg: Config, esp_files: dict[str, str],
+                       data_files: dict[str, str], output: str) -> None:
+    """Create a GPT disk image with ESP + data partition."""
+    ensure_tools(cfg, "gpt")
+    out = _resolve(output)
+
+    esp_content_mb = _calculate_content_size(esp_files)
+    esp_mb = max(int(esp_content_mb * 1.3 + 10), 64)
+
+    data_content_mb = _calculate_content_size(data_files) if data_files else 1
+    data_mb = (_parse_size(cfg.data_size) if cfg.data_size
+               else max(int(data_content_mb * 1.3 + 10), 34))
+
+    total_mb = esp_mb + data_mb + 2  # 2MB GPT overhead
+    esp_label = cfg.esp_label[:11]
+    data_label = cfg.data_label[:11]
+    cfg.log(f"  GPT image: {total_mb}MB total "
+            f"({esp_mb}MB ESP + {data_mb}MB data, "
+            f"{esp_content_mb}MB + {data_content_mb}MB content)")
+
+    with tempfile.TemporaryDirectory() as staging:
+        esp_staging = Path(staging) / "esp"
+        data_staging = Path(staging) / "data"
+        esp_staging.mkdir()
+        _stage_files(esp_files, esp_staging)
+        data_staging.mkdir()
+        if data_files:
+            _stage_files(data_files, data_staging)
+
+        esp_stg = _resolve(str(esp_staging))
+        data_stg = _resolve(str(data_staging))
+
+        # Create sparse image
+        _run(cfg, ["dd", "if=/dev/zero", f"of={out}", "bs=1M",
+                   "count=0", f"seek={total_mb}"], verbose=cfg.verbose)
+
+        # GPT partition table with two partitions
+        _run(cfg, ["sgdisk", "-Z", out], verbose=cfg.verbose)
+        _run(cfg, ["sgdisk", "-o", out], verbose=cfg.verbose)
+        _run(cfg, ["sgdisk",
+                   "-n", f"1:2048:+{esp_mb}M",
+                   "-t", "1:EF00",
+                   "-c", f"1:{esp_label}",
+                   out], verbose=True)
+        _run(cfg, ["sgdisk",
+                   "-n", "2:0:0",
+                   "-t", "2:0700",
+                   "-c", f"2:{data_label}",
+                   out], verbose=True)
+
+        loop_dev = _setup_loop_device(cfg, out)
+        try:
+            esp_part = _wait_for_partition(cfg, loop_dev, 1)
+            data_part = _wait_for_partition(cfg, loop_dev, 2)
+
+            # Format and populate ESP
+            cfg.log(f"  Formatting ESP ({esp_label})...")
+            _run(cfg, ["mkfs.vfat", "-F", "32", "-n", esp_label,
+                       esp_part], verbose=True, as_root=True)
+            cfg.log(f"  Copying {len(esp_files)} files to ESP...")
+            _populate_partition(cfg, esp_stg, esp_part)
+
+            # Format and populate data
+            cfg.log(f"  Formatting data ({data_label})...")
+            _run(cfg, ["mkfs.vfat", "-F", "32", "-n", data_label,
+                       data_part], verbose=True, as_root=True)
+            if data_files:
+                cfg.log(f"  Copying {len(data_files)} files to data...")
+                _populate_partition(cfg, data_stg, data_part)
+        finally:
+            _teardown_loop_device(cfg, loop_dev)
+
+    actual_size = os.path.getsize(output)
+    cfg.log(f"  [OK] Created {output} ({actual_size // (1024*1024)}MB, "
+            f"GPT+ESP+DATA)")
 
 
 # ---------------------------------------------------------------------------
@@ -1044,6 +1276,26 @@ examples:
         help="Extra free space in MB beyond content size (default: 32)",
     )
     parser.add_argument(
+        "--gpt", action="store_true",
+        help="Create GPT image with EFI System Partition",
+    )
+    parser.add_argument(
+        "--data-dir",
+        help="Directory for second data partition (implies --gpt)",
+    )
+    parser.add_argument(
+        "--data-size", default="",
+        help="Fixed size for data partition (e.g. 512M, 4G). Default: auto",
+    )
+    parser.add_argument(
+        "--esp-label", default="ESP",
+        help="ESP volume label (default: ESP)",
+    )
+    parser.add_argument(
+        "--data-label", default="DATA",
+        help="Data partition volume label (default: DATA)",
+    )
+    parser.add_argument(
         "--write-usb", metavar="IMAGE",
         help="Write an existing .img to a USB drive (lists removable drives)",
     )
@@ -1071,6 +1323,11 @@ examples:
         verbose=args.verbose,
         label=args.label,
         extra_mb=args.extra_mb,
+        gpt=args.gpt or bool(args.data_dir),
+        data_dir=args.data_dir or "",
+        data_size=args.data_size,
+        esp_label=args.esp_label,
+        data_label=args.data_label,
     )
 
     if args.write_usb:
@@ -1080,17 +1337,19 @@ examples:
     if args.check:
         img_missing = check_tools_img()
         iso_missing = check_tools_iso()
+        gpt_missing = check_tools_gpt()
         env = "WSL" if _is_windows() else "native"
         print(f"Environment: {env}")
         print(f"FAT32 (.img): {'OK' if not img_missing else 'MISSING: ' + ', '.join(img_missing)}")
         print(f"ISO   (.iso): {'OK' if not iso_missing else 'MISSING: ' + ', '.join(iso_missing)}")
-        if img_missing or iso_missing:
-            all_missing = sorted(set(img_missing + iso_missing))
+        print(f"GPT   (.img): {'OK' if not gpt_missing else 'MISSING: ' + ', '.join(gpt_missing)}")
+        all_missing = sorted(set(img_missing + iso_missing + gpt_missing))
+        if all_missing:
             packages = _resolve_packages(all_missing)
             pkg_cmd, _ = _detect_pkg_manager()
             if pkg_cmd:
                 print(f"\nInstall all: sudo {pkg_cmd} install {' '.join(packages)}")
-        sys.exit(1 if (img_missing or iso_missing) else 0)
+        sys.exit(1 if all_missing else 0)
 
     if not args.source_dir:
         parser.error("source_dir is required")
@@ -1113,10 +1372,22 @@ examples:
         for img_path in sorted(files.keys()):
             print(f"    {img_path}")
 
-        print(f"Building {ext.lstrip('.')} image...")
-        if ext == ".img":
+        if ext == ".img" and cfg.gpt and cfg.data_dir:
+            data_files = collect_files(cfg, cfg.data_dir, [])
+            print(f"  {len(data_files)} data files, "
+                  f"{sum(os.path.getsize(p) for p in data_files.values()) // 1024}KB")
+            for dp in sorted(data_files.keys()):
+                print(f"    {dp}")
+            print("Building GPT image (ESP + data)...")
+            build_gpt_data_img(cfg, files, data_files, args.output)
+        elif ext == ".img" and cfg.gpt:
+            print("Building GPT image...")
+            build_gpt_img(cfg, files, args.output)
+        elif ext == ".img":
+            print("Building FAT32 image...")
             build_img(cfg, files, args.output)
         else:
+            print("Building ISO image...")
             build_iso(cfg, files, args.output)
 
         print("Done.")

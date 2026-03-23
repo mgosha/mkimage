@@ -12,6 +12,8 @@ from mkimage import (
     Config,
     _is_windows,
     _list_removable_drives,
+    build_gpt_data_img,
+    build_gpt_img,
     build_img,
     build_iso,
     collect_files,
@@ -74,6 +76,17 @@ def gui_main() -> None:
         state = tk.NORMAL if fmt_var.get() == "img" else tk.DISABLED
         size_entry.config(state=state)
 
+    def browse_data_dir() -> None:
+        d = filedialog.askdirectory(title="Select Data Directory")
+        if d:
+            data_dir_var.set(d)
+
+    def on_gpt_toggle() -> None:
+        if gpt_var.get():
+            gpt_frame.grid(row=6, column=0, columnspan=4, sticky=tk.EW, padx=10, pady=2)
+        else:
+            gpt_frame.grid_remove()
+
     def refresh_usb_drives() -> None:
         """Refresh the USB drive dropdown."""
         drives = _list_removable_drives()
@@ -98,15 +111,15 @@ def gui_main() -> None:
             # Switch to USB mode
             output_entry.grid_remove()
             browse_btn.grid_remove()
-            drive_frame.grid(row=6, column=1, columnspan=3, sticky=tk.EW, padx=10, pady=2)
+            drive_frame.grid(row=7, column=1, columnspan=3, sticky=tk.EW, padx=10, pady=2)
             create_btn.config(text="Write to Target")
             target_label.config(text="Output Target:")
             refresh_usb_drives()
         else:
             # Switch to file mode
             drive_frame.grid_remove()
-            output_entry.grid(row=6, column=1, columnspan=2, sticky=tk.EW, padx=10, pady=2)
-            browse_btn.grid(row=6, column=3, padx=10, pady=2)
+            output_entry.grid(row=7, column=1, columnspan=2, sticky=tk.EW, padx=10, pady=2)
+            browse_btn.grid(row=7, column=3, padx=10, pady=2)
             create_btn.config(text="Create Image")
             target_label.config(text="Output Target:")
 
@@ -151,13 +164,18 @@ def gui_main() -> None:
         create_btn.config(state=tk.DISABLED)
 
         def run() -> None:
+            gui_data_dir = data_dir_var.get().strip()
             gui_cfg = Config(
                 verbose=verbose_var.get(),
                 verify=verify_var.get(),
-                gpt=gpt_var.get(),
+                gpt=gpt_var.get() or bool(gui_data_dir),
                 label=gui_label,
                 extra_mb=size_mb,
                 log=log,
+                data_dir=gui_data_dir,
+                data_size=data_size_var.get().strip(),
+                esp_label=esp_label_var.get().strip() or "ESP",
+                data_label=data_label_var.get().strip() or "DATA",
             )
             try:
                 log(f"Collecting files from {src}...")
@@ -208,7 +226,16 @@ def gui_main() -> None:
                                 pass
                 else:
                     ext = Path(out).suffix.lower()
-                    if ext == ".img" or (ext != ".iso" and fmt == "img"):
+                    is_img = ext == ".img" or (ext != ".iso" and fmt == "img")
+                    if is_img and gui_cfg.gpt and gui_cfg.data_dir:
+                        data_files = collect_files(gui_cfg, gui_cfg.data_dir, [])
+                        log(f"  {len(data_files)} data files")
+                        log("Building GPT image (ESP + data)...")
+                        build_gpt_data_img(gui_cfg, files, data_files, out)
+                    elif is_img and gui_cfg.gpt:
+                        log("Building GPT image...")
+                        build_gpt_img(gui_cfg, files, out)
+                    elif is_img:
                         log("Building FAT32 image...")
                         build_img(gui_cfg, files, out)
                     else:
@@ -276,19 +303,38 @@ def gui_main() -> None:
     opt_frame.grid(row=5, column=2, columnspan=2, sticky=tk.E, **pad)
     tk.Checkbutton(opt_frame, text="Verbose", variable=verbose_var).pack(side=tk.LEFT, padx=(0, 8))
     tk.Checkbutton(opt_frame, text="Verify", variable=verify_var).pack(side=tk.LEFT, padx=(0, 8))
-    tk.Checkbutton(opt_frame, text="GPT", variable=gpt_var).pack(side=tk.LEFT, padx=(0, 8))
+    tk.Checkbutton(opt_frame, text="GPT", variable=gpt_var,
+                   command=on_gpt_toggle).pack(side=tk.LEFT, padx=(0, 8))
     tk.Checkbutton(opt_frame, text="Write to USB", variable=usb_var,
                    command=on_usb_toggle).pack(side=tk.LEFT)
 
+    # GPT options panel (row 6, hidden by default)
+    gpt_frame = tk.LabelFrame(root, text="GPT Options", padx=5, pady=5)
+    data_dir_var = tk.StringVar()
+    data_size_var = tk.StringVar()
+    esp_label_var = tk.StringVar(value="ESP")
+    data_label_var = tk.StringVar(value="DATA")
+
+    tk.Label(gpt_frame, text="Data Dir:").grid(row=0, column=0, sticky=tk.W)
+    tk.Entry(gpt_frame, textvariable=data_dir_var, width=30).grid(row=0, column=1, sticky=tk.EW, padx=2)
+    tk.Button(gpt_frame, text="Browse...", command=browse_data_dir).grid(row=0, column=2, padx=2)
+    tk.Label(gpt_frame, text="Data Size:").grid(row=0, column=3, padx=(8, 0))
+    tk.Entry(gpt_frame, textvariable=data_size_var, width=8).grid(row=0, column=4, padx=2)
+
+    tk.Label(gpt_frame, text="ESP Label:").grid(row=1, column=0, sticky=tk.W)
+    tk.Entry(gpt_frame, textvariable=esp_label_var, width=12).grid(row=1, column=1, sticky=tk.W, padx=2)
+    tk.Label(gpt_frame, text="Data Label:").grid(row=1, column=3, padx=(8, 0))
+    tk.Entry(gpt_frame, textvariable=data_label_var, width=12).grid(row=1, column=4, sticky=tk.W, padx=2)
+
     # Output target — file entry (default) or drive dropdown (USB mode)
     target_label = tk.Label(root, text="Output Target:")
-    target_label.grid(row=6, column=0, sticky=tk.W, **pad)
+    target_label.grid(row=7, column=0, sticky=tk.W, **pad)
 
     output_var = tk.StringVar()
     output_entry = tk.Entry(root, textvariable=output_var, width=50)
-    output_entry.grid(row=6, column=1, columnspan=2, sticky=tk.EW, **pad)
+    output_entry.grid(row=7, column=1, columnspan=2, sticky=tk.EW, **pad)
     browse_btn = tk.Button(root, text="Browse...", command=browse_output)
-    browse_btn.grid(row=6, column=3, **pad)
+    browse_btn.grid(row=7, column=3, **pad)
 
     # USB drive dropdown (hidden by default)
     drive_frame = tk.Frame(root)
@@ -300,14 +346,14 @@ def gui_main() -> None:
 
     # Action button (single button, label changes)
     action_frame = tk.Frame(root)
-    action_frame.grid(row=7, column=0, columnspan=4, pady=10)
+    action_frame.grid(row=8, column=0, columnspan=4, pady=10)
     create_btn = tk.Button(action_frame, text="Create Image", width=20, command=do_create)
     create_btn.pack()
 
     # Log
-    tk.Label(root, text="Log:").grid(row=8, column=0, sticky=tk.NW, **pad)
+    tk.Label(root, text="Log:").grid(row=9, column=0, sticky=tk.NW, **pad)
     log_text = scrolledtext.ScrolledText(root, height=10, width=70, state=tk.NORMAL, font=("Consolas", 9))
-    log_text.grid(row=9, column=0, columnspan=4, sticky=tk.EW, padx=10, pady=(0, 10))
+    log_text.grid(row=10, column=0, columnspan=4, sticky=tk.EW, padx=10, pady=(0, 10))
     log_text.insert(tk.END, "Ready.\n")
 
     root.after(100, poll_log)

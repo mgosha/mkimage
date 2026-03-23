@@ -6,7 +6,10 @@ from pathlib import Path
 
 import pytest
 
-from mkimage import Config, _resolve, _shell_quote, collect_files
+from mkimage import (
+    Config, _calculate_content_size, _parse_size, _resolve, _shell_quote,
+    _stage_files, collect_files,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -162,3 +165,61 @@ class TestResolve:
         link.symlink_to(real)
         result = _resolve(str(link))
         assert "real.txt" in result
+
+
+# ---------------------------------------------------------------------------
+# _parse_size
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("input_str,expected", [
+    ("", 0),
+    ("1024", 1024),
+    ("512M", 512),
+    ("512m", 512),
+    ("4G", 4096),
+    ("4g", 4096),
+    ("1G", 1024),
+], ids=["empty", "plain-mb", "megabytes", "megabytes-lower", "gigabytes",
+        "gigabytes-lower", "1g"])
+def test_parse_size(input_str: str, expected: int) -> None:
+    assert _parse_size(input_str) == expected
+
+
+def test_parse_size_invalid() -> None:
+    with pytest.raises(ValueError):
+        _parse_size("abc")
+
+
+# ---------------------------------------------------------------------------
+# _calculate_content_size
+# ---------------------------------------------------------------------------
+
+class TestCalculateContentSize:
+    def test_small_files(self, sample_files: dict[str, str]) -> None:
+        mb = _calculate_content_size(sample_files)
+        assert mb >= 1
+
+    def test_empty(self) -> None:
+        assert _calculate_content_size({}) == 1  # minimum
+
+
+# ---------------------------------------------------------------------------
+# _stage_files
+# ---------------------------------------------------------------------------
+
+class TestStageFiles:
+    def test_preserves_structure(self, sample_files: dict[str, str],
+                                 tmp_path: Path) -> None:
+        staging = tmp_path / "staging"
+        staging.mkdir()
+        _stage_files(sample_files, staging)
+        assert (staging / "startup.nsh").exists()
+        assert (staging / "EFI" / "BOOT" / "BOOTX64.EFI").exists()
+        assert (staging / "tools" / "readme.txt").exists()
+
+    def test_file_content_preserved(self, sample_files: dict[str, str],
+                                     tmp_path: Path) -> None:
+        staging = tmp_path / "staging"
+        staging.mkdir()
+        _stage_files(sample_files, staging)
+        assert (staging / "startup.nsh").read_text() == "echo Hello\n"

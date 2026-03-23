@@ -5,7 +5,9 @@ from unittest.mock import patch
 
 import pytest
 
-from mkimage import Config, check_tools_img, check_tools_iso, ensure_tools
+from mkimage import (
+    Config, check_tools_gpt, check_tools_img, check_tools_iso, ensure_tools,
+)
 
 
 class TestCheckTools:
@@ -60,3 +62,21 @@ class TestEnsureTools:
              patch("mkimage._install_packages", return_value=False):
             with pytest.raises(RuntimeError, match="install"):
                 ensure_tools(cfg, "img")
+
+
+class TestCheckToolsGpt:
+    def test_gpt_tools_present(self) -> None:
+        """On this host, sgdisk and losetup should be available."""
+        assert check_tools_gpt() == []
+
+    def test_gpt_mock_missing_sgdisk(self) -> None:
+        original_which = __import__("mkimage")._which
+
+        def fake_which(tool: str) -> bool:
+            if tool == "sgdisk":
+                return False
+            return original_which(tool)
+
+        with patch("mkimage._which", side_effect=fake_which):
+            missing = check_tools_gpt()
+        assert "sgdisk" in missing

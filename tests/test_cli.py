@@ -86,3 +86,20 @@ class TestCliBuild:
         assert r.returncode == 0
         # Verbose should include per-file rsync output
         assert "status=progress" in r.stdout or "sending" in r.stdout or ">" in r.stdout
+
+
+class TestCliGptFlags:
+    def test_check_shows_gpt(self) -> None:
+        r = run_mkimage("--check")
+        assert "GPT" in r.stdout
+
+    def test_gpt_flag_recognized(self) -> None:
+        r = run_mkimage("--help")
+        assert "--gpt" in r.stdout
+
+    def test_data_dir_flag_recognized(self) -> None:
+        r = run_mkimage("--help")
+        assert "--data-dir" in r.stdout
+        assert "--data-size" in r.stdout
+        assert "--esp-label" in r.stdout
+        assert "--data-label" in r.stdout

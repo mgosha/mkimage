@@ -328,7 +328,21 @@ On macOS, install via Homebrew: `brew install dosfstools gdisk xorriso`
 | `docs/Design.md` | Done | This document |
 | `.gitignore` | Done | Build artifacts |
 
-### Phase 2: GPT support — TODO
+### Phase 2: GPT support — DONE
+
+| Feature | Status | Description |
+|---------|--------|-------------|
+| `--gpt` flag | Done | CLI and GUI support |
+| `build_gpt_img()` | Done | GPT + single ESP (sgdisk + losetup + mount) |
+| `build_gpt_data_img()` | Done | GPT + ESP + data partition |
+| `--data-dir` | Done | Secondary data partition from directory |
+| `--data-size` | Done | Fixed data partition size (e.g. 512M, 4G) |
+| `--esp-label` / `--data-label` | Done | Custom partition labels |
+| Auto-sizing | Done | ESP: max(content*1.3+10, 64)MB, 2MB GPT overhead |
+| `check_tools_gpt()` | Done | sgdisk + losetup availability check |
+| GUI GPT panel | Done | Toggleable panel with data dir, size, labels |
+| Tests | Done | Structure tests (no root) + integration tests (root) |
+
 ### Phase 3: USB safety and auto-sizing — TODO
 ### Phase 4: Polish — TODO
 ### Phase 5: Integration — TODO
