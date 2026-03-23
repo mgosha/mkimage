@@ -14,10 +14,29 @@ project — takes a directory of files and produces bootable media.
 ## Project Layout
 
 ```
-mkimage.py            Cross-platform image builder (Python 3.7+, no deps)
-mkimage.ps1           Native Windows alternative (PowerShell + WinForms GUI)
+mkimage/              Python package
+  __init__.py         Config, PartitionSpec, public API exports
+  __main__.py         CLI entry point (python -m mkimage)
+  cli.py              Argument parsing and dispatch
+  platform.py         _is_windows, _is_macos, _run, _which, _find_tool
+  tools.py            Tool detection, auto-install, get_available_filesystems
+  partition.py        Partition formatting, loop device management
+  compress.py         gzip/zstd compression support
+  verify.py           SHA256 write verification
+  detect.py           Auto-detect source/target types
+  native_dialog.py    Native OS file dialogs (subprocess-based)
+  uefi_ntfs.py        UEFI:NTFS driver download-on-demand
+  builders/           Image builders (img, iso, gpt, mbr)
+  usb/                USB drive detection, safety, and write
+  gui_dpg.py          Dear PyGui GUI (modern, GPU-rendered)
+  gui_tk.py           Tkinter GUI (stdlib fallback)
+mkimage.py            Backward-compat wrapper (imports mkimage package)
+mkimage.pyz           Zipapp distribution (single-file, ~57KB)
+mkimage.ps1           Native Windows (PowerShell + WinForms GUI)
 mkimage.bat           Windows batch launcher for mkimage.ps1
+build_pyz.py          Zipapp builder script
 docs/Design.md        Architecture and full specification
+tests/                Test suite (Linux, macOS, Windows via QEMU)
 ```
 
 ## Origin
@@ -65,6 +84,9 @@ mkimage.py --source <dir> --target output.img --verify
 # Hybrid ISO (dd-writable to USB)
 mkimage.py --source <dir> --target output.iso --iso-hybrid
 
+# UDF bridge ISO (ISO 9660 + UDF, supports files >4GB)
+mkimage.py --source <dir> --target output.iso --udf-bridge
+
 # Compressed output
 mkimage.py --source <dir> --target output.img.gz
 
@@ -73,6 +95,13 @@ mkimage.py --source <dir> --target output.img --partition fat32:+64M:TOOLS
 
 # exFAT or NTFS partition
 mkimage.py --source <dir> --target output.img --partition exfat::BIGFILES
+
+# NTFS partition (with UEFI:NTFS driver auto-downloaded for boot)
+mkimage.py --source <dir> --target output.img --gpt \
+    --partition esp::BOOT --partition ntfs:0:DATA
+
+# UDF partition
+mkimage.py --source <dir> --target output.img --gpt --partition udf:0:MEDIA
 
 # Modify existing image (add/remove files)
 mkimage.py --modify output.img --add newfile.txt --remove old.txt
@@ -126,3 +155,9 @@ mkimage.py <dir> -o output.img
 - Windows operations use native PowerShell (mkimage.ps1) — no WSL needed
 - USB write requires safety checks on all platforms
 - No external Python packages — stdlib only
+- GUI: Dear PyGui primary (auto-installed), Tkinter fallback (stdlib)
+- File dialogs: native OS dialogs via subprocess (AppleScript on macOS,
+  tkinter.filedialog on Windows/Linux, zenity/kdialog fallback)
+- Supported filesystems: FAT32, exFAT, NTFS, ext4, UDF
+  (availability varies by platform — use --check to verify)
+- UEFI:NTFS: downloaded on demand from GitHub (GPL-2.0, not shipped)

@@ -6,32 +6,32 @@ mkimage is a cross-platform command-line tool for creating bootable
 disk images, ISO images, and writing directly to USB drives. It takes
 a directory of files and produces bootable media in various formats.
 
-Works natively on Linux and macOS, and on Windows via WSL bridge.
-A native Windows alternative (mkimage.ps1) is provided for
-environments without WSL.
+Works natively on Linux, macOS, and Windows. On Windows, all
+operations use native PowerShell (mkimage.ps1) — no WSL needed.
 
 **Goal:** Single tool that replaces duplicated image-creation code
 across multiple projects, running on any developer workstation.
 
 ## Current State
 
-mkimage.py (1438 lines) was originally written for `uefi-ipmitool`
-as a cross-platform tool. It currently supports:
+mkimage is a Python package (~3200 lines) distributed as a 57KB zipapp.
 
-- FAT32 image creation (dd + mkfs.vfat + mount + rsync)
-- ISO image creation (xorriso or genisoimage)
-- USB write with drive detection
-- Windows support via WSL bridge (path conversion, `wsl -u root`)
-- Tkinter GUI
-- Auto-detection of missing tools with install hints
-
-What it does NOT currently support (to be added):
-
-- GPT partition tables
-- Multi-partition layouts (ESP + data)
-- USB safety checks (bus verification, size limits, confirmation)
-- Auto-sizing based on content
-- macOS support (untested)
+**Supported features:**
+- Image creation: FAT32, GPT (ESP + N partitions), MBR, ISO 9660
+- Filesystems: FAT32, exFAT, NTFS, ext4, UDF (platform-dependent)
+- ISO: standard, hybrid (dd-writable to USB), UDF bridge (>4GB files)
+- USB: auto-detect drives, write images, write from directory, clone, wipe
+- USB safety: bus verification, size limits, root partition protection
+- Compression: .img.gz, .img.xz output; .zst if zstd installed
+- Verification: SHA256 after build or USB write
+- Bad block detection: --check-usb destructive write/read test
+- Persistent storage: --persistent adds ext4 casper-rw for live USBs
+- UEFI:NTFS: auto-download GPL-2.0 driver for NTFS boot partitions
+- GUIs: Dear PyGui (modern, auto-installed) + Tkinter (stdlib fallback)
+- Native file dialogs: AppleScript (macOS), tkinter (Win/Linux), zenity/kdialog
+- Windows: all operations via native PowerShell (mkimage.ps1), no WSL
+- macOS: native tools (hdiutil, diskutil, newfs_msdos, newfs_exfat, newfs_udf)
+- Tool auto-detection with install hints per platform
 
 ## Architecture
 
@@ -398,6 +398,12 @@ On macOS, install via Homebrew: `brew install dosfstools gdisk xorriso`
 | GRUB bootloader gen | TODO | Generate GRUB config for persistent live USBs (mkusb parity) |
 | Windows ISO WIM split | TODO | Split >4GB install.wim for FAT32 USBs (mkusb-tow parity) |
 | USB clone | Done | Clone USB drive to image or another USB (dd-based) |
-| UDF filesystem | TODO | UDF support for large files >4GB on optical media |
+| UDF filesystem | Done | UDF partition type + UDF bridge ISO (ISO 9660 + UDF) |
+| UDF bridge ISO | Done | `--udf-bridge` creates dual ISO 9660 + UDF (via genisoimage -udf) |
+| UEFI:NTFS | Done | GPL-2.0 driver downloaded on-demand for NTFS boot partitions |
+| Native file dialogs | Done | AppleScript (macOS), tkinter subprocess, zenity/kdialog |
+| ext4 filesystem | Done | For persistent partitions (Linux only) |
+| Filesystem detection | Done | `get_available_filesystems()`, GUIs grey out unavailable types |
+| PS1 multi-filesystem | Done | mkimage.ps1 supports FAT32/NTFS/exFAT via diskpart |
 
 ### Phase 5: Integration — TODO
