@@ -102,11 +102,6 @@ def gui_main() -> None:
         if f:
             output_var.set(f)
 
-    def browse_data_dir() -> None:
-        d = filedialog.askdirectory(title="Select Data Directory")
-        if d:
-            data_dir_var.set(d)
-
     def refresh_usb_drives() -> None:
         drives = _list_removable_drives()
         usb_drives.clear()
@@ -124,12 +119,6 @@ def gui_main() -> None:
                 menu.add_command(label=lbl, command=lambda v=lbl: drive_var.set(v))
             drive_var.set(f"{drives[0]['path']}  {drives[0]['size']}"
                          f"{'  ' + drives[0]['model'] if drives[0]['model'] else ''}")
-
-    def on_gpt_toggle() -> None:
-        if gpt_var.get():
-            gpt_frame.grid(row=2, column=0, columnspan=4, sticky=tk.EW, padx=10, pady=2)
-        else:
-            gpt_frame.grid_remove()
 
     def on_target_mode_change(*_args: object) -> None:
         if target_mode_var.get() == "usb":
@@ -159,38 +148,16 @@ def gui_main() -> None:
 
         includes = list(includes_list.get(0, tk.END))
         gui_label = label_var.get().strip() or "UEFITOOLS"
-        size_mb = int(size_var.get()) if size_var.get().isdigit() else 32
+
+        # Read partition scheme and rows from Options tab
+        is_gpt = part_scheme_var.get() == "gpt"
+        is_mbr = part_scheme_var.get() == "mbr"
+        partitions = get_partitions()
 
         create_btn.config(state=tk.DISABLED)
         notebook.select(log_tab)  # Switch to Log tab
 
         def run() -> None:
-            gui_data_dir = data_dir_var.get().strip() if gpt_var.get() else ""
-            fs_map = {"fat32": "fat32", "exfat": "exfat", "ntfs": "ntfs"}
-            gui_fs_type = fs_map.get(fs_var.get(), "fat32")
-            gui_esp_label = esp_label_var.get().strip() or "ESP"
-            gui_data_label = data_label_var.get().strip() or "DATA"
-            gui_data_size = data_size_var.get().strip() if gpt_var.get() else ""
-            is_gpt = gpt_var.get() or bool(gui_data_dir)
-            is_mbr = mbr_var.get()
-
-            # Build partitions list from GUI widget values
-            partitions: list[PartitionSpec] = []
-            if is_gpt and gui_data_dir:
-                partitions = [
-                    PartitionSpec("esp", "", gui_esp_label),
-                    PartitionSpec(gui_fs_type, gui_data_size, gui_data_label,
-                                  gui_data_dir),
-                ]
-            elif is_gpt:
-                partitions = [PartitionSpec("esp", "", gui_esp_label)]
-            elif is_mbr:
-                partitions = [PartitionSpec(gui_fs_type, "", gui_label)]
-            else:
-                partitions = [
-                    PartitionSpec(gui_fs_type, f"+{size_mb}M", gui_label),
-                ]
-
             cfg = Config(
                 verbose=verbose_var.get(),
                 verify=verify_var.get(),
@@ -344,74 +311,135 @@ def gui_main() -> None:
     options_tab = ttk.Frame(notebook)
     notebook.add(options_tab, text="Options")
 
-    # Filesystem
-    tk.Label(options_tab, text="Filesystem:").grid(row=0, column=0, sticky=tk.W, **pad)
-    fs_frame = tk.Frame(options_tab)
-    fs_frame.grid(row=0, column=1, columnspan=3, sticky=tk.W, **pad)
-    fs_var = tk.StringVar(value="fat32")
-    tk.Radiobutton(fs_frame, text="FAT32", variable=fs_var, value="fat32").pack(side=tk.LEFT)
-    tk.Radiobutton(fs_frame, text="exFAT", variable=fs_var, value="exfat").pack(side=tk.LEFT, padx=10)
-    tk.Radiobutton(fs_frame, text="NTFS", variable=fs_var, value="ntfs").pack(side=tk.LEFT, padx=10)
-    ToolTip(fs_frame, "FAT32 is universal, exFAT for >4GB files, NTFS for Windows")
-
     # Partition scheme
-    tk.Label(options_tab, text="Partition:").grid(row=1, column=0, sticky=tk.W, **pad)
+    tk.Label(options_tab, text="Partition:").grid(row=0, column=0, sticky=tk.W, **pad)
     part_frame = tk.Frame(options_tab)
-    part_frame.grid(row=1, column=1, columnspan=3, sticky=tk.W, **pad)
-    partition_var = tk.StringVar(value="none")
-    gpt_var = tk.BooleanVar(value=False)
-    mbr_var = tk.BooleanVar(value=False)
+    part_frame.grid(row=0, column=1, columnspan=3, sticky=tk.W, **pad)
+    part_scheme_var = tk.StringVar(value="none")
 
-    def on_partition_change() -> None:
-        val = partition_var.get()
-        gpt_var.set(val == "gpt")
-        mbr_var.set(val == "mbr")
-        on_gpt_toggle()
+    partition_rows: list[tuple[tk.Frame, tk.StringVar, tk.StringVar,
+                               tk.StringVar, tk.StringVar]] = []
 
-    tk.Radiobutton(part_frame, text="None", variable=partition_var,
-                   value="none", command=on_partition_change).pack(side=tk.LEFT)
-    tk.Radiobutton(part_frame, text="MBR", variable=partition_var,
-                   value="mbr", command=on_partition_change).pack(side=tk.LEFT, padx=10)
-    tk.Radiobutton(part_frame, text="GPT", variable=partition_var,
-                   value="gpt", command=on_partition_change).pack(side=tk.LEFT, padx=10)
+    def _browse_part_src(dir_var: tk.StringVar) -> None:
+        d = filedialog.askdirectory(title="Select Source Directory")
+        if d:
+            dir_var.set(d)
+
+    def add_partition_row(fs: str = "fat32", size: str = "",
+                          label: str = "UEFITOOLS", src: str = "") -> None:
+        row = tk.Frame(partition_frame)
+        type_var = tk.StringVar(value=fs)
+        size_var_p = tk.StringVar(value=size)
+        label_var_p = tk.StringVar(value=label)
+        dir_var = tk.StringVar(value=src)
+
+        ttk.Combobox(row, textvariable=type_var,
+                     values=["esp", "fat32", "exfat", "ntfs"],
+                     width=7).pack(side=tk.LEFT, padx=2)
+        tk.Entry(row, textvariable=size_var_p, width=8).pack(
+            side=tk.LEFT, padx=2)
+        tk.Entry(row, textvariable=label_var_p, width=10).pack(
+            side=tk.LEFT, padx=2)
+        tk.Entry(row, textvariable=dir_var, width=20).pack(
+            side=tk.LEFT, padx=2, fill=tk.X, expand=True)
+        tk.Button(row, text="...",
+                  command=lambda: _browse_part_src(dir_var)).pack(
+            side=tk.LEFT)
+
+        row.pack(fill=tk.X, padx=5, pady=1)
+        partition_rows.append((row, type_var, size_var_p, label_var_p, dir_var))
+
+    def remove_partition_row() -> None:
+        if len(partition_rows) > 1:
+            row, *_ = partition_rows.pop()
+            row.destroy()
+
+    def clear_partition_rows() -> None:
+        for row, *_ in partition_rows:
+            row.destroy()
+        partition_rows.clear()
+
+    def on_scheme_change() -> None:
+        clear_partition_rows()
+        val = part_scheme_var.get()
+        if val == "gpt":
+            add_partition_row(fs="esp", label="ESP")
+        elif val == "mbr":
+            add_partition_row(fs="fat32", label="UEFITOOLS")
+        else:
+            add_partition_row(fs="fat32", size="+32M", label="UEFITOOLS")
+
+    def get_partitions() -> list[PartitionSpec]:
+        return [PartitionSpec(t.get(), s.get(), l.get() or "UEFITOOLS",
+                              d.get())
+                for _, t, s, l, d in partition_rows]
+
+    tk.Radiobutton(part_frame, text="None", variable=part_scheme_var,
+                   value="none", command=on_scheme_change).pack(side=tk.LEFT)
+    tk.Radiobutton(part_frame, text="MBR", variable=part_scheme_var,
+                   value="mbr", command=on_scheme_change).pack(
+        side=tk.LEFT, padx=10)
+    tk.Radiobutton(part_frame, text="GPT", variable=part_scheme_var,
+                   value="gpt", command=on_scheme_change).pack(
+        side=tk.LEFT, padx=10)
     ToolTip(part_frame, "None=raw filesystem, MBR=legacy boot, GPT=UEFI boot")
 
-    gpt_frame = tk.LabelFrame(options_tab, text="GPT Options", padx=5, pady=5)
-    data_dir_var = tk.StringVar()
-    data_size_var = tk.StringVar()
-    esp_label_var = tk.StringVar(value="ESP")
-    data_label_var = tk.StringVar(value="DATA")
+    # Partition list editor
+    tk.Label(options_tab, text="Partitions:").grid(
+        row=1, column=0, sticky=tk.NW, **pad)
+    part_btn_frame = tk.Frame(options_tab)
+    part_btn_frame.grid(row=1, column=1, columnspan=3, sticky=tk.W, **pad)
+    tk.Button(part_btn_frame, text="Add Partition",
+              command=add_partition_row).pack(side=tk.LEFT, padx=(0, 5))
+    tk.Button(part_btn_frame, text="Remove Last",
+              command=remove_partition_row).pack(side=tk.LEFT)
 
-    tk.Label(gpt_frame, text="Data Dir:").grid(row=0, column=0, sticky=tk.W)
-    tk.Entry(gpt_frame, textvariable=data_dir_var, width=25).grid(row=0, column=1, sticky=tk.EW, padx=2)
-    tk.Button(gpt_frame, text="Browse...", command=browse_data_dir).grid(row=0, column=2, padx=2)
-    tk.Label(gpt_frame, text="Size:").grid(row=0, column=3, padx=(8, 0))
-    tk.Entry(gpt_frame, textvariable=data_size_var, width=8).grid(row=0, column=4, padx=2)
-    tk.Label(gpt_frame, text="ESP Label:").grid(row=1, column=0, sticky=tk.W)
-    tk.Entry(gpt_frame, textvariable=esp_label_var, width=10).grid(row=1, column=1, sticky=tk.W, padx=2)
-    tk.Label(gpt_frame, text="Data Label:").grid(row=1, column=3, padx=(8, 0))
-    tk.Entry(gpt_frame, textvariable=data_label_var, width=10).grid(row=1, column=4, sticky=tk.W, padx=2)
+    # Column headers
+    header_frame = tk.Frame(options_tab)
+    header_frame.grid(row=2, column=0, columnspan=4, sticky=tk.W,
+                      padx=15, pady=(2, 0))
+    tk.Label(header_frame, text="Type", width=9, anchor=tk.W,
+             font=("Segoe UI", 8)).pack(side=tk.LEFT)
+    tk.Label(header_frame, text="Size", width=9, anchor=tk.W,
+             font=("Segoe UI", 8)).pack(side=tk.LEFT)
+    tk.Label(header_frame, text="Label", width=11, anchor=tk.W,
+             font=("Segoe UI", 8)).pack(side=tk.LEFT)
+    tk.Label(header_frame, text="Source Dir", anchor=tk.W,
+             font=("Segoe UI", 8)).pack(side=tk.LEFT, fill=tk.X,
+                                         expand=True)
+
+    # Scrollable partition row container
+    partition_frame = tk.Frame(options_tab)
+    partition_frame.grid(row=3, column=0, columnspan=4, sticky=tk.EW,
+                         padx=10, pady=2)
 
     # ISO hybrid
     hybrid_var = tk.BooleanVar(value=False)
     tk.Checkbutton(options_tab, text="Hybrid ISO (dd-writable to USB)",
-                   variable=hybrid_var).grid(row=3, column=0, columnspan=2, sticky=tk.W, **pad)
+                   variable=hybrid_var).grid(
+        row=4, column=0, columnspan=2, sticky=tk.W, **pad)
 
     # Build options
     ttk.Separator(options_tab, orient=tk.HORIZONTAL).grid(
-        row=4, column=0, columnspan=4, sticky=tk.EW, padx=10, pady=5)
+        row=5, column=0, columnspan=4, sticky=tk.EW, padx=10, pady=5)
 
     verify_var = tk.BooleanVar(value=False)
     tk.Checkbutton(options_tab, text="Verify (SHA256 after build)",
-                   variable=verify_var).grid(row=5, column=0, columnspan=2, sticky=tk.W, **pad)
+                   variable=verify_var).grid(
+        row=6, column=0, columnspan=2, sticky=tk.W, **pad)
 
     verbose_var = tk.BooleanVar(value=False)
     tk.Checkbutton(options_tab, text="Verbose output",
-                   variable=verbose_var).grid(row=6, column=0, columnspan=2, sticky=tk.W, **pad)
+                   variable=verbose_var).grid(
+        row=7, column=0, columnspan=2, sticky=tk.W, **pad)
 
     force_var = tk.BooleanVar(value=False)
     tk.Checkbutton(options_tab, text="Force (skip USB confirmation)",
-                   variable=force_var).grid(row=7, column=0, columnspan=2, sticky=tk.W, **pad)
+                   variable=force_var).grid(
+        row=8, column=0, columnspan=2, sticky=tk.W, **pad)
+
+    # Populate default partition row (None scheme = one fat32 row)
+    on_scheme_change()
 
     # ===================== LOG TAB =====================
     log_tab = ttk.Frame(notebook)

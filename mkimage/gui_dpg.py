@@ -166,13 +166,6 @@ def _on_output_selected(_s: int, app_data: dict) -> None:
     if path:
         dpg.set_value("output_path", path)
 
-def _on_data_dir_selected(_s: int, app_data: dict) -> None:
-    sel = app_data.get("selections", {})
-    path = list(sel.values())[0] if sel else app_data.get("file_path_name", "")
-    if path:
-        dpg.set_value("data_dir_path", path)
-
-
 # ---------------------------------------------------------------------------
 # UI callbacks
 # ---------------------------------------------------------------------------
@@ -184,19 +177,71 @@ def _refresh_drives() -> None:
     dpg.set_value("drive_combo", items[0])
     _set_status(f"Found {len(drives)} USB drive(s)" if drives else "No USB drives found")
 
-def _on_gpt_toggle(sender: int) -> None:
-    if dpg.get_value(sender):
-        dpg.show_item("gpt_options")
-    else:
-        dpg.hide_item("gpt_options")
+# ---------------------------------------------------------------------------
+# Partition list editor
+# ---------------------------------------------------------------------------
 
-def _on_partition_change(sender: int) -> None:
-    val = dpg.get_value(sender)
-    dpg.set_value("gpt_check", val == "GPT")
+_partition_rows: list[int] = []
+
+
+def _add_partition_row(sender: object = None, app_data: object = None,
+                       fs: str = "fat32", size: str = "",
+                       label: str = "UEFITOOLS", src: str = "") -> None:
+    """Add a partition row to the list."""
+    row_id = dpg.add_group(horizontal=True, parent="partition_list")
+    dpg.add_combo(["esp", "fat32", "exfat", "ntfs"], default_value=fs,
+                  width=75, parent=row_id)
+    dpg.add_input_text(default_value=size, width=65, hint="Size",
+                       parent=row_id)
+    dpg.add_input_text(default_value=label, width=85, hint="Label",
+                       parent=row_id)
+    dpg.add_input_text(default_value=src, width=-1, hint="Source dir",
+                       parent=row_id)
+    _partition_rows.append(row_id)
+
+
+def _remove_partition_row(sender: object = None,
+                          app_data: object = None) -> None:
+    """Remove the last partition row."""
+    if len(_partition_rows) > 1:
+        row_id = _partition_rows.pop()
+        dpg.delete_item(row_id)
+
+
+def _clear_partition_rows() -> None:
+    """Remove all partition rows."""
+    for row_id in _partition_rows:
+        dpg.delete_item(row_id)
+    _partition_rows.clear()
+
+
+def _on_partition_scheme_change(sender: object = None,
+                                app_data: object = None) -> None:
+    """Reset partition rows when scheme changes."""
+    val = dpg.get_value("partition_radio")
+    _clear_partition_rows()
     if val == "GPT":
-        dpg.show_item("gpt_options")
+        _add_partition_row(fs="esp", label="ESP")
+    elif val == "MBR":
+        _add_partition_row(fs="fat32", label="UEFITOOLS")
     else:
-        dpg.hide_item("gpt_options")
+        _add_partition_row(fs="fat32", size="+32M", label="UEFITOOLS")
+
+
+def _get_partitions() -> list[PartitionSpec]:
+    """Read partition specs from GUI rows."""
+    partitions: list[PartitionSpec] = []
+    for row_id in _partition_rows:
+        children = dpg.get_item_children(row_id, 1)
+        if len(children) >= 4:
+            partitions.append(PartitionSpec(
+                fs_type=dpg.get_value(children[0]),
+                size=dpg.get_value(children[1]),
+                label=dpg.get_value(children[2]) or "UEFITOOLS",
+                source_dir=dpg.get_value(children[3]),
+            ))
+    return partitions
+
 
 def _on_target_mode_change(sender: int) -> None:
     mode = dpg.get_value(sender)
@@ -257,8 +302,6 @@ def _do_create() -> None:
 
     includes = _get_includes()
     label = dpg.get_value("vol_label").strip() or "UEFITOOLS"
-    extra_str = dpg.get_value("extra_space").strip()
-    extra_mb = int(extra_str) if extra_str.isdigit() else 32
     target_mode = dpg.get_value("target_mode")
 
     if target_mode == "File":
@@ -270,41 +313,19 @@ def _do_create() -> None:
         output = ""
 
     # Read options from Options tab
-    fs_val = dpg.get_value("fs_radio")
-    fs_map = {"FAT32": "fat32", "exFAT": "exfat", "NTFS": "ntfs"}
-    fs_type = fs_map.get(fs_val, "fat32")
-    partition = dpg.get_value("partition_radio")
-    is_gpt = partition == "GPT"
-    is_mbr = partition == "MBR"
-    data_dir = dpg.get_value("data_dir_path").strip() if is_gpt else ""
+    partition_scheme = dpg.get_value("partition_radio")
+    is_gpt = partition_scheme == "GPT"
+    is_mbr = partition_scheme == "MBR"
+    partitions = _get_partitions()
 
     _set_building(True)
     dpg.set_value("log_text", "")
 
     def run() -> None:
-        # Read GPT-specific options
-        esp_label = dpg.get_value("esp_label_input").strip() or "ESP"
-        data_label_val = dpg.get_value("data_label_input").strip() or "DATA"
-        data_size = dpg.get_value("data_size_input").strip() if is_gpt else ""
-
-        # Build partitions list from GUI widget values
-        partitions: list[PartitionSpec] = []
-        if is_gpt and data_dir:
-            partitions = [
-                PartitionSpec("esp", "", esp_label),
-                PartitionSpec(fs_type, data_size, data_label_val, data_dir),
-            ]
-        elif is_gpt:
-            partitions = [PartitionSpec("esp", "", esp_label)]
-        elif is_mbr:
-            partitions = [PartitionSpec(fs_type, "", label)]
-        else:
-            partitions = [PartitionSpec(fs_type, f"+{extra_mb}M", label)]
-
         cfg = Config(
             verbose=dpg.get_value("verbose_check"),
             verify=dpg.get_value("verify_check"),
-            gpt=is_gpt or bool(data_dir),
+            gpt=is_gpt,
             mbr=is_mbr,
             label=label,
             force=dpg.get_value("force_check"),
@@ -406,7 +427,6 @@ def gui_main() -> None:
         ("source_dialog", "Select Source", True, _on_source_selected),
         ("include_file_dialog", "Select File", False, _on_include_file_selected),
         ("include_dir_dialog", "Select Directory", True, _on_include_dir_selected),
-        ("data_dir_dialog", "Select Data Directory", True, _on_data_dir_selected),
     ]:
         with dpg.file_dialog(label=label, callback=cb, directory_selector=dir_sel,
                              show=False, tag=tag, width=600, height=400):
@@ -499,35 +519,30 @@ def gui_main() -> None:
 
             # ===================== OPTIONS TAB =====================
             with dpg.tab(label="Options", tag="options_tab"):
-                _section("Filesystem")
-                fs_rb = dpg.add_radio_button(["FAT32", "exFAT", "NTFS"], tag="fs_radio",
-                                             horizontal=True, default_value="FAT32")
-                with dpg.tooltip(fs_rb):
-                    dpg.add_text("FAT32 is universal, exFAT for >4GB files, NTFS for Windows")
-
                 _section("Partition Scheme")
-                part_rb = dpg.add_radio_button(["None", "MBR", "GPT"], tag="partition_radio",
-                                               horizontal=True, default_value="None",
-                                               callback=_on_partition_change)
+                part_rb = dpg.add_radio_button(
+                    ["None", "MBR", "GPT"], tag="partition_radio",
+                    horizontal=True, default_value="None",
+                    callback=_on_partition_scheme_change)
                 with dpg.tooltip(part_rb):
                     dpg.add_text("None=raw filesystem, MBR=legacy boot, GPT=UEFI boot")
-                dpg.add_checkbox(tag="gpt_check", default_value=False, show=False)
 
-                with dpg.group(tag="gpt_options", show=False):
-                    with dpg.group(horizontal=True):
-                        dpg.add_text("Data Dir:")
-                        dpg.add_input_text(tag="data_dir_path", width=220,
-                                           hint="Optional data partition")
-                        dpg.add_button(label="Browse...", width=70,
-                                       callback=lambda: dpg.show_item("data_dir_dialog"))
-                        dpg.add_text("  Size:")
-                        dpg.add_input_text(tag="data_size_input", width=55, hint="e.g. 4G")
-                    with dpg.group(horizontal=True):
-                        dpg.add_text("ESP Label:")
-                        dpg.add_input_text(tag="esp_label_input", default_value="ESP", width=80)
-                        dpg.add_spacer(width=10)
-                        dpg.add_text("Data Label:")
-                        dpg.add_input_text(tag="data_label_input", default_value="DATA", width=80)
+                _section("Partitions")
+                with dpg.group(horizontal=True):
+                    dpg.add_button(label="Add Partition",
+                                   callback=_add_partition_row)
+                    dpg.add_button(label="Remove Last",
+                                   callback=_remove_partition_row)
+
+                with dpg.group(horizontal=True):
+                    dpg.add_text("Type", indent=5)
+                    dpg.add_text("Size", indent=85)
+                    dpg.add_text("Label", indent=155)
+                    dpg.add_text("Source Dir", indent=245)
+
+                with dpg.child_window(tag="partition_list", height=120,
+                                      border=True):
+                    pass  # rows added dynamically
 
                 _section("ISO")
                 c = dpg.add_checkbox(label="Hybrid ISO (dd-writable to USB)", tag="hybrid_check")
@@ -612,6 +627,9 @@ def gui_main() -> None:
                     dpg.add_text("ISOs, and USB drives.")
                     dpg.add_spacer(height=4)
                     dpg.add_text("https://github.com/mgosha/mkimage")
+
+    # Populate default partition row (None scheme = one fat32 row)
+    _on_partition_scheme_change()
 
     dpg.bind_theme("main_theme")
     dpg.setup_dearpygui()
