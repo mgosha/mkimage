@@ -369,7 +369,7 @@ def gui_main() -> None:
     # Extra includes (File mode only)
     source_includes_frame = tk.Frame(src_lf)
     source_includes_frame.pack(fill=tk.X, pady=(2, 0))
-    tk.Label(source_includes_frame, text="Includes:",
+    tk.Label(source_includes_frame, text="Additional Includes:",
              font=("Segoe UI", 8)).pack(anchor=tk.W)
     inc_btn_row = tk.Frame(source_includes_frame)
     inc_btn_row.pack(fill=tk.X)

@@ -570,7 +570,7 @@ def gui_main() -> None:
                         # Extra includes (File mode only)
                         with dpg.group(tag="source_includes_group"):
                             dpg.add_spacer(height=2)
-                            dpg.add_text("Includes:")
+                            dpg.add_text("Additional Includes:")
                             with dpg.group(horizontal=True):
                                 dpg.add_button(
                                     label="File", width=40,
@@ -655,9 +655,12 @@ def gui_main() -> None:
                                     default_value="4G", width=45)
 
                 dpg.add_spacer(height=5)
-                btn = dpg.add_button(label="Create Image", tag="action_btn",
-                                     callback=_do_create, width=-1, height=36)
-                dpg.bind_item_theme(btn, "action_theme")
+                with dpg.group(horizontal=True):
+                    btn = dpg.add_button(label="Create Image", tag="action_btn",
+                                         callback=_do_create, width=-70, height=36)
+                    dpg.bind_item_theme(btn, "action_theme")
+                    dpg.add_button(label="Exit", width=60, height=36,
+                                   callback=lambda: dpg.stop_dearpygui())
 
             # ===================== OPTIONS TAB =====================
             with dpg.tab(label="Options", tag="options_tab"):
@@ -766,12 +769,8 @@ def gui_main() -> None:
         pb = dpg.add_progress_bar(tag="progress_bar", default_value=0.0,
                                   width=-1, show=False)
         dpg.bind_item_theme(pb, "progress_theme")
-        with dpg.group(horizontal=True):
-            st = dpg.add_text("Ready", tag="status_text")
-            dpg.bind_item_theme(st, "status_theme")
-            dpg.add_spacer(width=-80)
-            dpg.add_button(label="Exit", width=60,
-                           callback=lambda: dpg.stop_dearpygui())
+        st = dpg.add_text("Ready", tag="status_text")
+        dpg.bind_item_theme(st, "status_theme")
 
     # Populate default partition row (None scheme = one fat32 row)
     _on_partition_scheme_change()
