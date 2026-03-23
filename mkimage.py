@@ -1798,7 +1798,10 @@ examples:
     args = parser.parse_args()
 
     if args.gui or len(sys.argv) == 1:
-        from mkimage_gui import gui_main
+        try:
+            from mkimage_gui_dpg import gui_main
+        except ImportError:
+            from mkimage_gui import gui_main
         gui_main()
         return
 

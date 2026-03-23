@@ -28,6 +28,7 @@ OUTPUT = os.path.join(SCRIPT_DIR, "mkimage.pyz")
 MODULES = [
     "mkimage.py",
     "mkimage_gui.py",
+    "mkimage_gui_dpg.py",
 ]
 
 
