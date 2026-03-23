@@ -58,6 +58,21 @@ mkimage.py --source <dir> --target /dev/sdb
 # Write existing image to USB
 mkimage.py --source output.img --target usb
 
+# Verify after build (SHA256 comparison)
+mkimage.py --source <dir> --target output.img --verify
+
+# Hybrid ISO (dd-writable to USB)
+mkimage.py --source <dir> --target output.iso --iso-hybrid
+
+# Compressed output
+mkimage.py --source <dir> --target output.img.gz
+
+# exFAT or NTFS filesystem
+mkimage.py --source <dir> --target output.img --fs exfat
+
+# Modify existing image (add/remove files)
+mkimage.py --modify output.img --add newfile.txt --remove old.txt
+
 # List removable drives
 mkimage.py --list-drives
 

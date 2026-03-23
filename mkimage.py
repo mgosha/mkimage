@@ -56,11 +56,12 @@ class Config:
     extra_mb: int = 32
     force: bool = False
     log: Callable[..., None] = field(default=print)
-    # Phase 2 placeholders:
     data_dir: str = ""
     data_size: str = ""
     esp_label: str = "ESP"
     data_label: str = "DATA"
+    iso_hybrid: bool = False
+    fs_type: str = "fat32"
 
 
 # ---------------------------------------------------------------------------
@@ -504,6 +505,210 @@ def _check_root(cfg: Config, operation: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Filesystem formatting (DRY — used by all builders)
+# ---------------------------------------------------------------------------
+
+def _format_partition(cfg: Config, device: str, fs_type: str,
+                      label: str) -> None:
+    """Format a partition with the specified filesystem.
+
+    Args:
+        fs_type: 'fat32', 'exfat', or 'ntfs'.
+    """
+    label = label[:11]  # FAT32/exFAT label limit
+    if fs_type == "fat32":
+        _run(cfg, [_find_tool("mkfs.vfat"), "-F", "32", "-n", label, device],
+             verbose=True, as_root=True)
+    elif fs_type == "exfat":
+        _run(cfg, [_find_tool("mkfs.exfat"), "-n", label, device],
+             verbose=True, as_root=True)
+    elif fs_type == "ntfs":
+        _run(cfg, [_find_tool("mkfs.ntfs"), "-f", "-L", label, device],
+             verbose=True, as_root=True)
+    else:
+        raise ValueError(f"Unknown filesystem type: {fs_type}")
+
+
+def check_tools_fs(fs_type: str) -> list[str]:
+    """Check tools needed for a specific filesystem. Returns missing tools."""
+    tools: dict[str, str] = {
+        "fat32": "mkfs.vfat",
+        "exfat": "mkfs.exfat",
+        "ntfs": "mkfs.ntfs",
+    }
+    tool = tools.get(fs_type)
+    if tool and not _which(tool):
+        return [tool]
+    return []
+
+
+# ---------------------------------------------------------------------------
+# Write verification
+# ---------------------------------------------------------------------------
+
+def _verify_write(cfg: Config, source_files: dict[str, str],
+                  image_path: str) -> bool:
+    """Verify written image by comparing file hashes.
+
+    Uses mcopy to extract files from the image and compares SHA256 hashes
+    to the source files. No root needed.
+
+    Returns True if all files match, False if any mismatch.
+    """
+    import hashlib
+
+    def _sha256(path: str) -> str:
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                h.update(chunk)
+        return h.hexdigest()
+
+    def _sha256_bytes(data: bytes) -> str:
+        return hashlib.sha256(data).hexdigest()
+
+    if not _which("mcopy"):
+        cfg.log("  Warning: mcopy not available, skipping verification")
+        return True
+
+    cfg.log(f"  Verifying {len(source_files)} files...")
+    failures = 0
+    for img_path, local_path in sorted(source_files.items()):
+        src_hash = _sha256(local_path)
+        r = _run(cfg, ["mcopy", "-i", image_path, f"::{img_path}", "-"],
+                 check=False)
+        if r.returncode != 0:
+            cfg.log(f"  VERIFY FAIL: {img_path} (extract failed)")
+            failures += 1
+            continue
+        # mcopy outputs to stdout as text, but we need binary comparison
+        # Re-extract with subprocess directly for binary data
+        import subprocess as _sp
+        rr = _sp.run(["mcopy", "-i", image_path, f"::{img_path}", "-"],
+                     capture_output=True)
+        img_hash = _sha256_bytes(rr.stdout)
+        if src_hash != img_hash:
+            cfg.log(f"  VERIFY FAIL: {img_path} (hash mismatch)")
+            failures += 1
+        elif cfg.verbose:
+            cfg.log(f"  VERIFY OK: {img_path}")
+
+    if failures == 0:
+        cfg.log(f"  Verification passed: all {len(source_files)} files match")
+        return True
+    cfg.log(f"  Verification FAILED: {failures} file(s) differ")
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Image compression
+# ---------------------------------------------------------------------------
+
+def _is_compressed_path(path: str) -> bool:
+    """Check if path has a compression extension."""
+    return any(path.endswith(ext) for ext in (".gz", ".zst", ".xz"))
+
+
+def _strip_compression_ext(path: str) -> str:
+    """Strip compression extension: 'foo.img.gz' -> 'foo.img'."""
+    for ext in (".gz", ".zst", ".xz"):
+        if path.endswith(ext):
+            return path[:-len(ext)]
+    return path
+
+
+def _compress_file(cfg: Config, input_path: str, output_path: str) -> None:
+    """Compress a file. Detects format from output extension."""
+    import gzip as _gzip
+    import lzma as _lzma
+
+    cfg.log(f"  Compressing to {Path(output_path).name}...")
+    if output_path.endswith(".gz"):
+        with open(input_path, "rb") as fin, _gzip.open(output_path, "wb") as fout:
+            while True:
+                chunk = fin.read(1024 * 1024)
+                if not chunk:
+                    break
+                fout.write(chunk)
+    elif output_path.endswith(".xz"):
+        with open(input_path, "rb") as fin, _lzma.open(output_path, "wb") as fout:
+            while True:
+                chunk = fin.read(1024 * 1024)
+                if not chunk:
+                    break
+                fout.write(chunk)
+    elif output_path.endswith(".zst"):
+        if not _which("zstd"):
+            raise RuntimeError("zstd not found. Install zstd or use .gz/.xz")
+        _run(cfg, ["zstd", "-f", "-o", output_path, input_path], verbose=True)
+    else:
+        raise ValueError(f"Unknown compression format: {output_path}")
+
+    in_size = os.path.getsize(input_path)
+    out_size = os.path.getsize(output_path)
+    ratio = out_size / in_size * 100 if in_size > 0 else 0
+    cfg.log(f"  Compressed: {in_size // 1024}KB -> {out_size // 1024}KB ({ratio:.0f}%)")
+
+
+def _decompress_pipe_cmd(source_path: str) -> list[str]:
+    """Return decompression command for piping to dd."""
+    if source_path.endswith(".gz"):
+        return ["gzip", "-dc", source_path]
+    if source_path.endswith(".xz"):
+        return ["xz", "-dc", source_path]
+    if source_path.endswith(".zst"):
+        return ["zstd", "-dc", source_path]
+    return ["cat", source_path]
+
+
+# ---------------------------------------------------------------------------
+# Image modify (add/remove files from existing FAT32 image)
+# ---------------------------------------------------------------------------
+
+def modify_img(cfg: Config, image: str, add_paths: list[str],
+               remove_paths: list[str]) -> None:
+    """Add or remove files from an existing FAT32 image using mtools.
+
+    No root needed. FAT32 only (mtools limitation).
+    """
+    if not _which("mcopy"):
+        raise RuntimeError("mcopy not found. Install mtools.")
+
+    img = _resolve(image)
+
+    # Remove files first
+    for path in remove_paths:
+        cfg.log(f"  Removing ::{path}")
+        _run(cfg, ["mdel", "-i", img, f"::{path}"], check=False,
+             verbose=cfg.verbose)
+
+    # Add files
+    for path in add_paths:
+        p = Path(path)
+        if not p.exists():
+            cfg.log(f"  Warning: {path} not found, skipping")
+            continue
+        if p.is_file():
+            cfg.log(f"  Adding {p.name}")
+            _run(cfg, ["mcopy", "-i", img, "-o", str(p.resolve()), f"::{p.name}"],
+                 verbose=cfg.verbose)
+        elif p.is_dir():
+            for f in sorted(p.rglob("*")):
+                if f.is_file():
+                    rel = str(PurePosixPath(f.relative_to(p)))
+                    # Create directories
+                    parts = PurePosixPath(rel).parts
+                    for i in range(1, len(parts)):
+                        d = str(PurePosixPath(*parts[:i]))
+                        _run(cfg, ["mmd", "-i", img, f"::{d}"], check=False)
+                    cfg.log(f"  Adding {rel}")
+                    _run(cfg, ["mcopy", "-i", img, "-o", str(f.resolve()),
+                               f"::{rel}"], verbose=cfg.verbose)
+
+    cfg.log(f"  [OK] Modified {image}")
+
+
+# ---------------------------------------------------------------------------
 # FAT32 .img builder
 # ---------------------------------------------------------------------------
 
@@ -619,13 +824,16 @@ def build_img(cfg: Config, files: dict[str, str], output: str) -> None:
     actual_size = os.path.getsize(output)
     cfg.log(f"  [OK] Created {output} ({actual_size // 1024}KB, FAT32)")
 
+    if cfg.verify:
+        _verify_write(cfg, files, output)
+
 
 # ---------------------------------------------------------------------------
 # ISO builder
 # ---------------------------------------------------------------------------
 
 def build_iso(cfg: Config, files: dict[str, str], output: str) -> None:
-    """Create an ISO image."""
+    """Create an ISO image. Optionally creates a hybrid ISO (dd-writable to USB)."""
     ensure_tools(cfg, "iso")
 
     with tempfile.TemporaryDirectory() as staging:
@@ -634,14 +842,48 @@ def build_iso(cfg: Config, files: dict[str, str], output: str) -> None:
         out = _resolve(output)
 
         if _which("xorriso"):
-            _run(cfg, [
+            cmd = [
                 "xorriso", "-as", "mkisofs",
                 "-o", out,
                 "-R", "-J", "-joliet-long",
                 "-V", cfg.label[:32],
-                stg_resolved,
-            ], verbose=True)
+            ]
+            if cfg.iso_hybrid:
+                # Create an EFI boot image (FAT12 with EFI files)
+                efi_img = Path(staging) / "efi.img"
+                efi_dir = Path(staging) / "EFI"
+                if efi_dir.is_dir():
+                    # Build a small FAT image containing the EFI directory
+                    _run(cfg, ["dd", "if=/dev/zero", f"of={efi_img}",
+                               "bs=1M", "count=4"], check=True)
+                    _run(cfg, [_find_tool("mkfs.vfat"), "-F", "12",
+                               str(efi_img)], check=True)
+                    # Copy EFI files into the FAT image
+                    for f in sorted(efi_dir.rglob("*")):
+                        if f.is_file():
+                            rel = str(PurePosixPath(f.relative_to(Path(staging))))
+                            parts = PurePosixPath(rel).parts
+                            for i in range(1, len(parts)):
+                                d = str(PurePosixPath(*parts[:i]))
+                                _run(cfg, ["mmd", "-i", str(efi_img),
+                                           f"::{d}"], check=False)
+                            _run(cfg, ["mcopy", "-i", str(efi_img),
+                                       str(f), f"::{rel}"], check=False)
+
+                    cmd.extend([
+                        "-eltorito-alt-boot",
+                        "-e", "efi.img",
+                        "-no-emul-boot",
+                        "-isohybrid-gpt-basdat",
+                    ])
+                    cfg.log("  Creating hybrid ISO (UEFI, dd-writable to USB)")
+                else:
+                    cfg.log("  Warning: no EFI directory found, skipping hybrid")
+            cmd.append(stg_resolved)
+            _run(cfg, cmd, verbose=True)
         else:
+            if cfg.iso_hybrid:
+                cfg.log("  Warning: ISO hybrid requires xorriso (genisoimage does not support it)")
             _run(cfg, [
                 "genisoimage",
                 "-o", out,
@@ -693,8 +935,7 @@ def build_gpt_img(cfg: Config, files: dict[str, str], output: str) -> None:
             esp_part = _wait_for_partition(cfg, loop_dev, 1)
 
             cfg.log(f"  Formatting ESP ({esp_label})...")
-            _run(cfg, ["mkfs.vfat", "-F", "32", "-n", esp_label,
-                       esp_part], verbose=True, as_root=True)
+            _format_partition(cfg, esp_part, cfg.fs_type, esp_label)
 
             cfg.log(f"  Copying {len(files)} files to ESP...")
             _populate_partition(cfg, stg_resolved, esp_part)
@@ -704,6 +945,9 @@ def build_gpt_img(cfg: Config, files: dict[str, str], output: str) -> None:
     actual_size = os.path.getsize(output)
     cfg.log(f"  [OK] Created {output} ({actual_size // (1024*1024)}MB, "
             f"GPT+ESP)")
+
+    if cfg.verify:
+        _verify_write(cfg, files, output)
 
 
 def build_gpt_data_img(cfg: Config, esp_files: dict[str, str],
@@ -764,15 +1008,13 @@ def build_gpt_data_img(cfg: Config, esp_files: dict[str, str],
 
             # Format and populate ESP
             cfg.log(f"  Formatting ESP ({esp_label})...")
-            _run(cfg, ["mkfs.vfat", "-F", "32", "-n", esp_label,
-                       esp_part], verbose=True, as_root=True)
+            _format_partition(cfg, esp_part, cfg.fs_type, esp_label)
             cfg.log(f"  Copying {len(esp_files)} files to ESP...")
             _populate_partition(cfg, esp_stg, esp_part)
 
             # Format and populate data
             cfg.log(f"  Formatting data ({data_label})...")
-            _run(cfg, ["mkfs.vfat", "-F", "32", "-n", data_label,
-                       data_part], verbose=True, as_root=True)
+            _format_partition(cfg, data_part, cfg.fs_type, data_label)
             if data_files:
                 cfg.log(f"  Copying {len(data_files)} files to data...")
                 _populate_partition(cfg, data_stg, data_part)
@@ -1089,20 +1331,23 @@ def _detect_source_type(source: str) -> str:
 def _detect_target_type(target: str) -> str:
     """Detect target type: 'img', 'iso', 'device', or 'usb-auto'.
 
+    Handles compressed extensions: .img.gz, .iso.xz, etc.
     Raises ValueError for unrecognized target.
     """
     if target.lower() == "usb":
         return "usb-auto"
     if target.startswith("/dev/") or target.startswith("\\\\.\\"):
         return "device"
-    ext = Path(target).suffix.lower()
+    # Strip compression extension for type detection
+    base = _strip_compression_ext(target)
+    ext = Path(base).suffix.lower()
     if ext == ".iso":
         return "iso"
     if ext == ".img":
         return "img"
     raise ValueError(
         f"Cannot determine target type for '{target}'. "
-        f"Use .img, .iso, /dev/sdX, or 'usb'"
+        f"Use .img, .iso, .img.gz, /dev/sdX, or 'usb'"
     )
 
 
@@ -1677,8 +1922,7 @@ def _write_gpt_to_device(cfg: Config, files: dict[str, str],
 
         esp_part = part_fmt.format(1)
         cfg.log(f"  Formatting ESP ({esp_label}) on {esp_part}...")
-        _run(cfg, ["mkfs.vfat", "-F", "32", "-n", esp_label, esp_part],
-             verbose=True, as_root=True)
+        _format_partition(cfg, esp_part, cfg.fs_type, esp_label)
         cfg.log(f"  Copying {len(files)} files to ESP...")
         _populate_partition(cfg, stg_resolved, esp_part)
 
@@ -1690,8 +1934,7 @@ def _write_gpt_to_device(cfg: Config, files: dict[str, str],
             data_stg = _resolve(str(data_staging))
 
             cfg.log(f"  Formatting data ({data_label}) on {data_part}...")
-            _run(cfg, ["mkfs.vfat", "-F", "32", "-n", data_label, data_part],
-                 verbose=True, as_root=True)
+            _format_partition(cfg, data_part, cfg.fs_type, data_label)
             cfg.log(f"  Copying {len(data_files)} files to data...")
             _populate_partition(cfg, data_stg, data_part)
 
@@ -1770,12 +2013,36 @@ examples:
         help="Data partition volume label (default: DATA)",
     )
     parser.add_argument(
+        "--fs", default="fat32", choices=["fat32", "exfat", "ntfs"],
+        help="Filesystem type (default: fat32)",
+    )
+    parser.add_argument(
+        "--verify", action="store_true",
+        help="Verify files after writing (SHA256 comparison)",
+    )
+    parser.add_argument(
+        "--iso-hybrid", action="store_true",
+        help="Create hybrid ISO that can be dd'd to USB",
+    )
+    parser.add_argument(
         "--force", action="store_true",
         help="Skip USB write confirmation prompt",
     )
     parser.add_argument(
         "--list-drives", action="store_true",
         help="List removable USB drives and exit",
+    )
+    parser.add_argument(
+        "--modify", metavar="IMAGE",
+        help="Modify existing FAT32 image (add/remove files)",
+    )
+    parser.add_argument(
+        "--add", action="append", default=[],
+        help="File or directory to add (with --modify, repeatable)",
+    )
+    parser.add_argument(
+        "--remove", action="append", default=[],
+        help="File to remove from image (with --modify, repeatable)",
     )
     parser.add_argument(
         "-v", "--verbose", action="store_true",
@@ -1816,6 +2083,7 @@ examples:
 
     cfg = Config(
         verbose=args.verbose,
+        verify=args.verify,
         label=args.label,
         extra_mb=args.extra_mb,
         gpt=args.gpt or bool(args.data_dir),
@@ -1824,7 +2092,18 @@ examples:
         data_size=args.data_size,
         esp_label=args.esp_label,
         data_label=args.data_label,
+        iso_hybrid=args.iso_hybrid,
+        fs_type=args.fs,
     )
+
+    # --modify operation
+    if args.modify:
+        try:
+            modify_img(cfg, args.modify, args.add, args.remove)
+        except (RuntimeError, FileNotFoundError) as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+        return
 
     if args.list_drives:
         drives = _list_removable_drives()
@@ -1874,23 +2153,35 @@ examples:
             for img_path in sorted(files.keys()):
                 print(f"    {img_path}")
 
+            # Determine if output needs compression
+            compressed = _is_compressed_path(target)
+            if compressed:
+                build_target = _strip_compression_ext(target)
+            else:
+                build_target = target
+
             if target_type == "img" and cfg.gpt and cfg.data_dir:
                 data_files = collect_files(cfg, cfg.data_dir, [])
                 print(f"  {len(data_files)} data files, "
                       f"{sum(os.path.getsize(p) for p in data_files.values()) // 1024}KB")
                 print("Building GPT image (ESP + data)...")
-                build_gpt_data_img(cfg, files, data_files, target)
+                build_gpt_data_img(cfg, files, data_files, build_target)
             elif target_type == "img" and cfg.gpt:
                 print("Building GPT image...")
-                build_gpt_img(cfg, files, target)
+                build_gpt_img(cfg, files, build_target)
             elif target_type == "img":
                 print("Building FAT32 image...")
-                build_img(cfg, files, target)
+                build_img(cfg, files, build_target)
             elif target_type == "iso":
                 print("Building ISO image...")
-                build_iso(cfg, files, target)
+                build_iso(cfg, files, build_target)
             elif target_type in ("device", "usb-auto"):
                 _write_usb_from_dir(cfg, files, target)
+
+            if compressed and target_type not in ("device", "usb-auto"):
+                _compress_file(cfg, build_target, target)
+                os.unlink(build_target)
+
             print("Done.")
 
         elif source_type == "image":

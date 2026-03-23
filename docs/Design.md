@@ -373,4 +373,16 @@ On macOS, install via Homebrew: `brew install dosfstools gdisk xorriso`
 | macOS partition naming | Done | /dev/diskNsM instead of /dev/loopNpM |
 | macOS tests | Done | 7 SSH-based tests (--check, img, iso, gpt, drives) |
 
+### New features
+
+| Feature | Status | Description |
+|---------|--------|-------------|
+| Write verification | Done | `--verify` SHA256 comparison after build via mcopy |
+| ISO hybrid | Done | `--iso-hybrid` creates dd-writable ISO with EFI boot image |
+| Image compression | Done | `.img.gz`, `.img.xz` output; `.zst` if zstd installed |
+| Image modify | Done | `--modify image.img --add file --remove file` via mtools |
+| NTFS/exFAT | Done | `--fs exfat\|ntfs` filesystem type for all builders |
+| `_format_partition()` | Done | DRY helper replaces inline mkfs calls everywhere |
+| Multi-boot | TODO | GRUB2 menu + multi-ISO USB (deferred — high complexity) |
+
 ### Phase 5: Integration — TODO
