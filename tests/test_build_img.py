@@ -49,7 +49,7 @@ def _minfo(img: str) -> str:
 @pytest.fixture
 def built_img(sample_dir: Path, tmp_path: Path) -> Path:
     """Build a FAT32 image from sample_dir and return its path."""
-    cfg = Config()
+    cfg = Config(partitions=[PartitionSpec()])
     files = collect_files(cfg, str(sample_dir), [])
     out = tmp_path / "test.img"
     build_img(cfg, files, str(out))
@@ -110,7 +110,8 @@ class TestBuildImg:
 
     def test_verbose_logging(self, sample_dir: Path, tmp_path: Path) -> None:
         messages: list[str] = []
-        cfg = Config(verbose=True, log=lambda msg: messages.append(msg))
+        cfg = Config(verbose=True, log=lambda msg: messages.append(msg),
+                     partitions=[PartitionSpec()])
         files = collect_files(cfg, str(sample_dir), [])
         out = tmp_path / "verbose.img"
         build_img(cfg, files, str(out))
@@ -155,7 +156,7 @@ class TestBuildImgRewrite:
         assert "ISO 9660" in ft
 
         # Overwrite with FAT32
-        cfg2 = Config(label="IMGAFTER")
+        cfg2 = Config(label="IMGAFTER", partitions=[PartitionSpec()])
         build_img(cfg2, files, out)
         ft2 = _file_type(out)
         assert "FAT" in ft2
@@ -168,7 +169,7 @@ class TestBuildImgRewrite:
     def test_img_then_iso(self, sample_dir: Path, tmp_path: Path) -> None:
         """Write FAT32 image, then overwrite same path with ISO."""
         out = str(tmp_path / "rewrite.iso")
-        cfg = Config(label="IMGFIRST")
+        cfg = Config(label="IMGFIRST", partitions=[PartitionSpec()])
         files = collect_files(cfg, str(sample_dir), [])
 
         # Write FAT32 first
@@ -240,7 +241,7 @@ class TestBuildImgRewrite:
             )
             assert os.path.getsize(out) == 50 * 1024 * 1024
 
-            cfg = Config(label="CLEANED")
+            cfg = Config(label="CLEANED", partitions=[PartitionSpec()])
             files = collect_files(cfg, str(sample_dir), [])
             build_img(cfg, files, out)
             ft = _file_type(out)
