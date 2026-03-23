@@ -650,9 +650,12 @@ def gui_main() -> None:
                     # Tips
                     t = dpg.add_text("Tips")
                     dpg.bind_item_theme(t, "header_theme")
+                    dpg.add_text("- ISO files auto-extract to bootable USB (non-hybrid)")
                     dpg.add_text("- Use .img.gz extension for compressed output")
                     dpg.add_text("- Works natively on Windows (no WSL needed)")
                     dpg.add_text("- FAT32 images don't need root; GPT/MBR do")
+                    dpg.add_text("- Check Drive button tests USB for bad blocks")
+                    dpg.add_text("- Persistent checkbox adds ext4 partition for live Linux")
                     dpg.add_text("- --modify flag (CLI only) edits images without rebuild")
                     dpg.add_text("- Volume labels are limited to 11 characters for FAT32")
 

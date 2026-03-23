@@ -77,6 +77,21 @@ mkimage.py --source <dir> --target output.img --partition exfat::BIGFILES
 # Modify existing image (add/remove files)
 mkimage.py --modify output.img --add newfile.txt --remove old.txt
 
+# Write ISO to bootable USB (auto-detects hybrid vs extraction)
+mkimage.py --source ubuntu.iso --target usb
+
+# Persistent Linux USB (adds ext4 casper-rw partition)
+mkimage.py --source ubuntu.iso --target usb --persistent 4G
+
+# Custom cluster size
+mkimage.py --source <dir> --target output.img --cluster-size 32768
+
+# Check USB drive for bad blocks (destructive)
+mkimage.py --check-usb /dev/sdb
+
+# Wipe all partition signatures from a device
+mkimage.py --wipe /dev/sdb
+
 # List removable drives
 mkimage.py --list-drives
 

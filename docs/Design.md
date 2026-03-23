@@ -386,6 +386,14 @@ On macOS, install via Homebrew: `brew install dosfstools gdisk xorriso`
 | Unified `--partition` | Done | `TYPE:SIZE:LABEL[:DIR]` replaces 6 scattered flags |
 | `PartitionSpec` | Done | Dataclass for per-partition config, N-partition support |
 | N-partition GPT | Done | `build_gpt_img` handles 1..N partitions via spec list |
+| ISO to USB extraction | Done | Non-hybrid ISOs extracted to bootable USB (EFI auto-detect) |
+| Bad block detection | Done | `--check-usb` destructive write/read test |
+| Persistent partition | Done | `--persistent 4G` adds ext4 casper-rw for Linux live USBs |
+| Cluster size | Done | `--cluster-size` or per-partition in PartitionSpec |
+| Disk wipe | Done | `--wipe` removes all partition signatures (MBR, GPT, FS) |
+| Windows native | Done | All operations via mkimage.ps1, no WSL needed |
+| macOS support | Done | hdiutil/diskutil for GPT, USB, drive detection |
+| Dear PyGui GUI | Done | Modern GPU-accelerated GUI with tabbed layout |
 | Multi-boot | TODO | GRUB2 menu + multi-ISO USB (deferred — high complexity) |
 
 ### Phase 5: Integration — TODO

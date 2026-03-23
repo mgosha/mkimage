@@ -553,9 +553,12 @@ def gui_main() -> None:
 
     help_text.insert(tk.END, "Tips\n", "header")
     help_text.insert(tk.END,
+                     "- ISO files auto-extract to bootable USB (non-hybrid)\n"
                      "- Use .img.gz extension for compressed output\n"
                      "- Works natively on Windows (no WSL needed)\n"
                      "- FAT32 images don't need root; GPT/MBR do\n"
+                     "- Check Drive button tests USB for bad blocks\n"
+                     "- Persistent checkbox adds ext4 partition for live Linux\n"
                      "- --modify flag (CLI only) edits images without rebuild\n"
                      "- Volume labels are limited to 11 characters for FAT32\n", "body")
     help_text.insert(tk.END, "\n", "sep")
