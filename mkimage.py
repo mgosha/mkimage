@@ -721,7 +721,7 @@ def build_gpt_data_img(cfg: Config, esp_files: dict[str, str],
 # USB write
 # ---------------------------------------------------------------------------
 
-MAX_USB_SIZE_GB = 300
+MAX_USB_SIZE_GB = 2048
 
 
 def _list_removable_drives_linux() -> list[dict[str, str]]:

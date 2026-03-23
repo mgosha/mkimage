@@ -61,8 +61,8 @@ class TestListDrivesLinux:
         assert len(drives) == 0
 
     def test_filter_large_drives(self) -> None:
-        # 500GB USB drive should be filtered (> 256GB limit)
-        big = f"sdb {500 * 1024**3} 1 disk Big USB usb\n"
+        # 4TB USB drive should be filtered (> 2TB limit)
+        big = f"sdb {4 * 1024**4} 1 disk Big USB usb\n"
         with patch("mkimage._run", side_effect=_make_run_mock(big).side_effect):
             drives = _list_removable_drives_linux()
         assert len(drives) == 0
@@ -109,8 +109,8 @@ class TestWriteUsbSafety:
         messages: list[str] = []
         cfg = Config(log=lambda msg: messages.append(msg))
         huge_drive = {
-            "name": "sdb", "path": "/dev/sdb", "size": "500GB",
-            "size_bytes": str(500 * 1024**3), "model": "Huge Drive",
+            "name": "sdb", "path": "/dev/sdb", "size": "4TB",
+            "size_bytes": str(4 * 1024**4), "model": "Huge Drive",
         }
         with patch("mkimage._list_removable_drives", return_value=[huge_drive]):
             write_usb(
@@ -118,7 +118,7 @@ class TestWriteUsbSafety:
                 select_drive=lambda drives: huge_drive,
                 confirm_write=lambda target: True,
             )
-        assert any("256gb" in m.lower() or "refusing" in m.lower() for m in messages)
+        assert any("2048gb" in m.lower() or "refusing" in m.lower() for m in messages)
 
     def test_reject_sda_system(self) -> None:
         messages: list[str] = []
@@ -193,8 +193,8 @@ class TestUsbSafetyChecks:
 
     def test_rejects_oversized(self) -> None:
         cfg = Config()
-        drive = {"name": "sdb", "path": "/dev/sdb", "size": "500GB",
-                 "size_bytes": str(500 * 1024**3), "model": "Big Drive"}
+        drive = {"name": "sdb", "path": "/dev/sdb", "size": "4TB",
+                 "size_bytes": str(4 * 1024**4), "model": "Big Drive"}
 
         with patch("mkimage._verify_usb_bus", return_value=True):
             assert _usb_safety_checks(cfg, drive) is False
