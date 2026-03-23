@@ -53,6 +53,19 @@ def build_iso(cfg: Config, files: dict[str, str], output: str) -> None:
 
     On Windows, delegates to mkimage.ps1 for native ISO creation.
     """
+    # Warn about files exceeding ISO 9660's 4GB per-file limit
+    _ISO9660_MAX = 4 * 1024 * 1024 * 1024  # 4 GiB
+    for img_path, local_path in files.items():
+        try:
+            size = os.path.getsize(local_path)
+        except OSError:
+            continue
+        if size >= _ISO9660_MAX:
+            size_gb = size / (1024 ** 3)
+            cfg.log(f"  WARNING: {img_path} is {size_gb:.1f}GB — exceeds "
+                    f"ISO 9660's 4GB file size limit. "
+                    f"The resulting ISO may be unreadable.")
+
     if _is_windows():
         _build_iso_windows(cfg, files, output)
         return
