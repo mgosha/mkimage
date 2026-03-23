@@ -417,15 +417,7 @@ def _animate_progress() -> None:
 # ---------------------------------------------------------------------------
 
 def gui_main() -> None:
-    # Suppress non-fatal GLFW errors on macOS (Cocoa workarea/scale queries)
-    import sys as _sys
-    import io as _io
-    _orig_stderr = _sys.stderr
-    _sys.stderr = _io.StringIO()
     dpg.create_context()
-    dpg.create_viewport(title="mkimage \u2014 Bootable Media Creator",
-                        width=720, height=620)
-    _sys.stderr = _orig_stderr
     _create_themes()
 
     # --- File dialogs ---
@@ -639,6 +631,8 @@ def gui_main() -> None:
 
     dpg.bind_theme("main_theme")
     dpg.setup_dearpygui()
+    dpg.create_viewport(title="mkimage \u2014 Bootable Media Creator",
+                        width=720, height=620)
     dpg.show_viewport()
     dpg.set_primary_window("main", True)
 
