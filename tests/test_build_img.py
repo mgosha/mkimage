@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from mkimage import Config, build_img, collect_files
+from mkimage import Config, build_img, build_iso, collect_files
 
 
 def _file_type(path: str) -> str:
@@ -132,3 +132,126 @@ class TestBuildImg:
             assert (mnt / "startup.nsh").read_text() == "echo Hello\n"
         finally:
             subprocess.run(["umount", str(mnt)], check=False)
+
+
+class TestBuildImgRewrite:
+    """Test overwriting an existing output file with a different format.
+
+    Simulates real-world scenarios where a file or device previously held
+    ISO 9660, a different-sized FAT32 image, or garbage data, and needs
+    to be cleanly rewritten.
+    """
+
+    def test_iso_then_img(self, sample_dir: Path, tmp_path: Path) -> None:
+        """Write ISO, then overwrite same path with FAT32 image."""
+        out = str(tmp_path / "rewrite.img")
+        cfg = Config(label="ISOFIRST")
+        files = collect_files(cfg, str(sample_dir), [])
+
+        # Write ISO first
+        build_iso(cfg, files, out)
+        ft = _file_type(out)
+        assert "ISO 9660" in ft
+
+        # Overwrite with FAT32
+        cfg2 = Config(label="IMGAFTER")
+        build_img(cfg2, files, out)
+        ft2 = _file_type(out)
+        assert "FAT" in ft2
+        # Verify content is correct — no ISO remnants
+        listing = _mdir(out)
+        assert "startup" in listing.lower() or "STARTUP" in listing
+        content = _mcopy_extract(out, "startup.nsh")
+        assert b"echo Hello" in content
+
+    def test_img_then_iso(self, sample_dir: Path, tmp_path: Path) -> None:
+        """Write FAT32 image, then overwrite same path with ISO."""
+        out = str(tmp_path / "rewrite.iso")
+        cfg = Config(label="IMGFIRST")
+        files = collect_files(cfg, str(sample_dir), [])
+
+        # Write FAT32 first
+        build_img(cfg, files, out)
+        ft = _file_type(out)
+        assert "FAT" in ft
+
+        # Overwrite with ISO
+        cfg2 = Config(label="ISOAFTER")
+        build_iso(cfg2, files, out)
+        ft2 = _file_type(out)
+        assert "ISO 9660" in ft2
+
+    def test_small_img_then_large_img(self, sample_dir: Path, tmp_path: Path) -> None:
+        """Write small image, then overwrite with larger image."""
+        out = str(tmp_path / "grow.img")
+        cfg = Config(label="SMALL", extra_mb=8)
+        files = collect_files(cfg, str(sample_dir), [])
+        build_img(cfg, files, out)
+        small_size = os.path.getsize(out)
+
+        # Write larger image over it
+        cfg2 = Config(label="LARGE", extra_mb=80)
+        build_img(cfg2, files, out)
+        large_size = os.path.getsize(out)
+        assert large_size > small_size
+        # Verify content
+        listing = _mdir(out)
+        assert "startup" in listing.lower() or "STARTUP" in listing
+        info = _minfo(out)
+        assert "LARGE" in info
+
+    def test_large_img_then_small_img(self, sample_dir: Path, tmp_path: Path) -> None:
+        """Write large image, then overwrite with smaller image.
+
+        Ensures the output file is truncated — no leftover data from the
+        larger image bleeds through.
+        """
+        out = str(tmp_path / "shrink.img")
+        cfg = Config(label="BIG", extra_mb=80)
+        files = collect_files(cfg, str(sample_dir), [])
+        build_img(cfg, files, out)
+        big_size = os.path.getsize(out)
+
+        # Write smaller image over it
+        cfg2 = Config(label="SMALL", extra_mb=8)
+        build_img(cfg2, files, out)
+        small_size = os.path.getsize(out)
+        assert small_size <= big_size
+        # Verify content, not garbage from old image
+        ft = _file_type(out)
+        assert "FAT" in ft
+        listing = _mdir(out)
+        assert "startup" in listing.lower() or "STARTUP" in listing
+
+    def test_garbage_then_img(self, sample_dir: Path, tmp_path: Path) -> None:
+        """Write random garbage, then create a valid FAT32 image over it."""
+        out = str(tmp_path / "garbage.img")
+        # Write 50MB of random data
+        subprocess.run(
+            ["dd", "if=/dev/urandom", f"of={out}", "bs=1M", "count=50"],
+            check=True, capture_output=True,
+        )
+        assert os.path.getsize(out) == 50 * 1024 * 1024
+
+        cfg = Config(label="CLEANED")
+        files = collect_files(cfg, str(sample_dir), [])
+        build_img(cfg, files, out)
+        ft = _file_type(out)
+        assert "FAT" in ft
+        content = _mcopy_extract(out, "startup.nsh")
+        assert b"echo Hello" in content
+
+    def test_different_label_overwrites(self, sample_dir: Path, tmp_path: Path) -> None:
+        """Verify old label doesn't persist when rewriting."""
+        out = str(tmp_path / "label.img")
+        cfg = Config(label="OLDLABEL")
+        files = collect_files(cfg, str(sample_dir), [])
+        build_img(cfg, files, out)
+        info = _minfo(out)
+        assert "OLDLABEL" in info
+
+        cfg2 = Config(label="NEWLABEL")
+        build_img(cfg2, files, out)
+        info2 = _minfo(out)
+        assert "NEWLABEL" in info2
+        assert "OLDLABEL" not in info2

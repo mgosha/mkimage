@@ -10,6 +10,7 @@ testing. Add to the QEMU command line:
 from __future__ import annotations
 
 import os
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -265,3 +266,146 @@ class TestPs1UsbWrite:
         combined = stdout + stderr
         assert "OK" in combined, f"Verify write failed:\n{combined}"
         assert "erif" in combined  # "Verify" or "Verification"
+
+
+class TestPs1UsbRewrite:
+    """Test rewriting a USB drive from one format to another.
+
+    Real-world scenario: a drive previously written with ISO 9660, GPT, or
+    MBR needs to be cleanly reformatted. Residual partition tables, filesystem
+    signatures, or GPT backup headers can cause failures if diskpart doesn't
+    fully clean them.
+    """
+
+    USB_IMG = Path.home() / "VMs" / "win11-epsa-build" / "usb-test.raw"
+
+    @pytest.fixture(autouse=True)
+    def usb_disk(self) -> int:
+        """Find the virtual USB disk or skip."""
+        disk = _find_usb_disk()
+        if disk is None:
+            pytest.skip("No USB disk found on VM (start QEMU with -device usb-storage)")
+        return disk
+
+    @pytest.fixture
+    def test_source(self) -> str:
+        """Create test source files on the VM, return the path, cleanup after."""
+        src_dir = "C:\\temp\\usb_rewrite_src"
+        winvm_ssh(f'powershell -NoProfile -Command "Remove-Item {src_dir} -Recurse -Force -ErrorAction SilentlyContinue"')
+        winvm_ssh(f'powershell -NoProfile -Command "New-Item -ItemType Directory -Path {src_dir} -Force | Out-Null"')
+        winvm_ssh(f'powershell -NoProfile -Command "\'rewrite test\' | Out-File {src_dir}\\test.txt"')
+        winvm_ssh(f'powershell -NoProfile -Command "\'echo Rewrite\' | Out-File {src_dir}\\startup.nsh"')
+        yield src_dir
+        winvm_ssh(f'powershell -NoProfile -Command "Remove-Item {src_dir} -Recurse -Force -ErrorAction SilentlyContinue"')
+
+    def _write_usb(self, disk: int, source: str, label: str,
+                   gpt: bool = False, verify: bool = False) -> str:
+        """Write to USB and return combined output. Asserts success."""
+        args = [
+            VM_MKIMAGE_PS1, "-Action", "WriteUsb",
+            "-DiskNumber", str(disk),
+            "-SourceDir", source,
+            "-Label", label,
+            "-SkipConfirm", "-Verbose",
+        ]
+        if gpt:
+            args.append("-UseGpt")
+        if verify:
+            args.append("-Verify")
+        rc, stdout, stderr = _ps_file(*args, timeout=60)
+        combined = stdout + stderr
+        assert "OK" in combined, f"Write failed (label={label}, gpt={gpt}):\n{combined}"
+        return combined
+
+    def _write_iso_to_backing(self, sample_dir: Path) -> None:
+        """Write an ISO 9660 image directly to the QEMU backing file from the Linux host.
+
+        This simulates a USB drive that was previously written with dd from an ISO.
+        """
+        from mkimage import Config, build_iso, collect_files
+
+        cfg = Config(label="OLDISO")
+        files = collect_files(cfg, str(sample_dir), [])
+        # Build ISO to a temp file
+        with tempfile.NamedTemporaryFile(suffix=".iso", delete=False) as f:
+            iso_path = f.name
+        try:
+            build_iso(cfg, files, iso_path)
+            iso_size = os.path.getsize(iso_path)
+            # dd the ISO onto the start of the USB backing image
+            subprocess.run(
+                ["dd", f"if={iso_path}", f"of={self.USB_IMG}",
+                 "bs=1M", "conv=notrunc"],
+                check=True, capture_output=True,
+            )
+        finally:
+            os.unlink(iso_path)
+
+    def _write_raw_garbage(self) -> None:
+        """Write random garbage to the backing file to simulate a corrupted drive."""
+        subprocess.run(
+            ["dd", "if=/dev/urandom", f"of={self.USB_IMG}",
+             "bs=1M", "count=4", "conv=notrunc"],
+            check=True, capture_output=True,
+        )
+
+    def _rescan_disk(self, disk: int) -> None:
+        """Tell Windows to re-read the disk after modifying the backing file."""
+        winvm_ssh(
+            f'powershell -NoProfile -Command "'
+            f"Update-Disk -Number {disk} -ErrorAction SilentlyContinue; "
+            f"Get-Disk -Number {disk} | Set-Disk -IsOffline $false -ErrorAction SilentlyContinue"
+            f'"',
+            timeout=15,
+        )
+
+    def test_iso9660_to_mbr(self, usb_disk: int, test_source: str,
+                             sample_dir: Path) -> None:
+        """Write ISO 9660 to disk, then reformat as FAT32 MBR."""
+        self._write_iso_to_backing(sample_dir)
+        self._rescan_disk(usb_disk)
+        out = self._write_usb(usb_disk, test_source, "AFTERISO", verify=True)
+        assert "Wrote" in out
+        assert "erif" in out  # verification ran
+
+    def test_iso9660_to_gpt(self, usb_disk: int, test_source: str,
+                             sample_dir: Path) -> None:
+        """Write ISO 9660 to disk, then reformat as FAT32 GPT."""
+        self._write_iso_to_backing(sample_dir)
+        self._rescan_disk(usb_disk)
+        out = self._write_usb(usb_disk, test_source, "ISOGPT", gpt=True, verify=True)
+        assert "Wrote" in out
+
+    def test_mbr_to_gpt(self, usb_disk: int, test_source: str) -> None:
+        """Write FAT32 MBR, then rewrite as FAT32 GPT."""
+        self._write_usb(usb_disk, test_source, "FIRST_MBR")
+        out = self._write_usb(usb_disk, test_source, "SECOND_GPT", gpt=True, verify=True)
+        assert "Wrote" in out
+        assert "GPT" in out
+
+    def test_gpt_to_mbr(self, usb_disk: int, test_source: str) -> None:
+        """Write FAT32 GPT, then rewrite as FAT32 MBR."""
+        self._write_usb(usb_disk, test_source, "FIRST_GPT", gpt=True)
+        out = self._write_usb(usb_disk, test_source, "SECOND_MBR", verify=True)
+        assert "Wrote" in out
+        assert "MBR" in out
+
+    def test_gpt_to_gpt(self, usb_disk: int, test_source: str) -> None:
+        """Rewrite GPT over existing GPT (backup header at end of disk)."""
+        self._write_usb(usb_disk, test_source, "GPT_ONE", gpt=True)
+        out = self._write_usb(usb_disk, test_source, "GPT_TWO", gpt=True, verify=True)
+        assert "Wrote" in out
+
+    def test_garbage_to_mbr(self, usb_disk: int, test_source: str) -> None:
+        """Write random garbage, then format as FAT32 MBR."""
+        self._write_raw_garbage()
+        self._rescan_disk(usb_disk)
+        out = self._write_usb(usb_disk, test_source, "CLEAN_MBR", verify=True)
+        assert "Wrote" in out
+
+    def test_garbage_to_gpt(self, usb_disk: int, test_source: str) -> None:
+        """Write random garbage, then format as FAT32 GPT."""
+        self._write_raw_garbage()
+        self._rescan_disk(usb_disk)
+        out = self._write_usb(usb_disk, test_source, "CLEAN_GPT", gpt=True, verify=True)
+        assert "Wrote" in out
