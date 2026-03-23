@@ -14,22 +14,26 @@ from typing import Callable
 # ---------------------------------------------------------------------------
 
 @dataclass
+class PartitionSpec:
+    """Specification for a single partition."""
+    fs_type: str = "fat32"    # fat32, exfat, ntfs, esp (= fat32 with EF00 type)
+    size: str = ""            # 64M, 4G, +32M (extra), 0 (rest), "" (auto)
+    label: str = "UEFITOOLS"
+    source_dir: str = ""      # "" = use main --source
+
+
+@dataclass
 class Config:
     """Runtime configuration threaded through all mkimage operations."""
     verbose: bool = False
     verify: bool = False
     gpt: bool = False
     mbr: bool = False
-    label: str = "UEFITOOLS"
-    extra_mb: int = 32
+    label: str = "UEFITOOLS"    # ISO label + default partition label
     force: bool = False
     log: Callable[..., None] = field(default=print)
-    data_dir: str = ""
-    data_size: str = ""
-    esp_label: str = "ESP"
-    data_label: str = "DATA"
     iso_hybrid: bool = False
-    fs_type: str = "fat32"
+    partitions: list[PartitionSpec] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -51,6 +55,7 @@ from mkimage.files import (  # noqa: E402
     _stage_files,
     _calculate_content_size,
     _parse_size,
+    _interpret_size,
 )
 from mkimage.tools import (  # noqa: E402
     check_tools_img,
@@ -89,7 +94,6 @@ from mkimage.builders import (  # noqa: E402
     build_iso,
     build_mbr_img,
     build_gpt_img,
-    build_gpt_data_img,
 )
 
 # USB operations
@@ -114,11 +118,13 @@ from mkimage.cli import main  # noqa: E402
 
 __all__ = [
     "Config",
+    "PartitionSpec",
     # platform
     "_is_windows", "_is_macos", "_run", "_which", "_resolve", "_find_tool",
     "_shell_quote", "_wsl_path",
     # files
     "collect_files", "_stage_files", "_calculate_content_size", "_parse_size",
+    "_interpret_size",
     # tools
     "check_tools_img", "check_tools_iso", "check_tools_gpt", "check_tools_mbr",
     "check_tools_fs", "ensure_tools", "_suggest_install", "_resolve_packages",
@@ -136,7 +142,7 @@ __all__ = [
     # detect
     "_detect_source_type", "_detect_target_type",
     # builders
-    "build_img", "build_iso", "build_mbr_img", "build_gpt_img", "build_gpt_data_img",
+    "build_img", "build_iso", "build_mbr_img", "build_gpt_img",
     # usb
     "write_usb", "_list_removable_drives", "_write_usb_from_dir", "_write_usb_from_image",
     "_verify_usb_bus", "_usb_safety_checks", "_unmount_device", "_resolve_usb_target",

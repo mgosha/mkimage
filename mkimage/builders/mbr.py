@@ -6,7 +6,7 @@ import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from mkimage.files import _calculate_content_size, _stage_files
+from mkimage.files import _calculate_content_size, _interpret_size, _stage_files
 from mkimage.partition import (
     _check_root,
     _format_partition,
@@ -20,19 +20,23 @@ from mkimage.tools import ensure_tools
 from mkimage.verify import _verify_write
 
 if TYPE_CHECKING:
-    from mkimage import Config
+    from mkimage import Config, PartitionSpec
 
 
 def build_mbr_img(cfg: Config, files: dict[str, str], output: str) -> None:
     """Create an MBR-partitioned disk image with a single FAT partition."""
+    from mkimage import PartitionSpec
+
     _check_root(cfg, "MBR image creation")
     ensure_tools(cfg, "mbr")
     out = _resolve(output)
 
+    part_spec = cfg.partitions[0] if cfg.partitions else PartitionSpec()
     content_mb = _calculate_content_size(files)
-    part_mb = max(int(content_mb * 1.3 + 10), 40)
+    part_mb = _interpret_size(part_spec.size, content_mb)
     total_mb = part_mb + 1  # 1MB MBR overhead
-    part_label = cfg.label[:11]
+    part_label = part_spec.label[:11]
+    fs_type = part_spec.fs_type if part_spec.fs_type != "esp" else "fat32"
     cfg.log(f"  MBR image: {total_mb}MB total ({part_mb}MB partition, "
             f"{content_mb}MB content)")
 
@@ -51,10 +55,6 @@ def build_mbr_img(cfg: Config, files: dict[str, str], output: str) -> None:
                 "bash", "-c",
                 f"echo 'y' | fdisk -i -a dos '{out}'"
             ], check=False, verbose=cfg.verbose)
-            # Use sgdisk alternative or manual sector math
-            # Actually, simpler: use sfdisk-compatible approach
-            # macOS doesn't have sfdisk, so use fdisk with a script
-            # For now, fall back to creating a raw partition table
             _run(cfg, [
                 "bash", "-c",
                 f"printf ',,0x0C,*\\n' | sfdisk '{out}'"
@@ -71,7 +71,7 @@ def build_mbr_img(cfg: Config, files: dict[str, str], output: str) -> None:
             part = _wait_for_partition(cfg, loop_dev, 1)
 
             cfg.log(f"  Formatting partition ({part_label})...")
-            _format_partition(cfg, part, cfg.fs_type, part_label)
+            _format_partition(cfg, part, fs_type, part_label)
 
             cfg.log(f"  Copying {len(files)} files...")
             _populate_partition(cfg, stg_resolved, part)

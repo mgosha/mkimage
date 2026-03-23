@@ -12,6 +12,7 @@ from pathlib import Path
 
 from mkimage import (
     Config,
+    PartitionSpec,
     _is_compressed_path,
     _is_windows,
     _list_removable_drives,
@@ -19,7 +20,6 @@ from mkimage import (
     _write_usb_from_dir,
     _write_usb_from_image,
     _compress_file,
-    build_gpt_data_img,
     build_gpt_img,
     build_mbr_img,
     build_img,
@@ -167,21 +167,40 @@ def gui_main() -> None:
         def run() -> None:
             gui_data_dir = data_dir_var.get().strip() if gpt_var.get() else ""
             fs_map = {"fat32": "fat32", "exfat": "exfat", "ntfs": "ntfs"}
+            gui_fs_type = fs_map.get(fs_var.get(), "fat32")
+            gui_esp_label = esp_label_var.get().strip() or "ESP"
+            gui_data_label = data_label_var.get().strip() or "DATA"
+            gui_data_size = data_size_var.get().strip() if gpt_var.get() else ""
+            is_gpt = gpt_var.get() or bool(gui_data_dir)
+            is_mbr = mbr_var.get()
+
+            # Build partitions list from GUI widget values
+            partitions: list[PartitionSpec] = []
+            if is_gpt and gui_data_dir:
+                partitions = [
+                    PartitionSpec("esp", "", gui_esp_label),
+                    PartitionSpec(gui_fs_type, gui_data_size, gui_data_label,
+                                  gui_data_dir),
+                ]
+            elif is_gpt:
+                partitions = [PartitionSpec("esp", "", gui_esp_label)]
+            elif is_mbr:
+                partitions = [PartitionSpec(gui_fs_type, "", gui_label)]
+            else:
+                partitions = [
+                    PartitionSpec(gui_fs_type, f"+{size_mb}M", gui_label),
+                ]
+
             cfg = Config(
                 verbose=verbose_var.get(),
                 verify=verify_var.get(),
-                gpt=gpt_var.get() or bool(gui_data_dir),
-                mbr=mbr_var.get(),
+                gpt=is_gpt,
+                mbr=is_mbr,
                 label=gui_label,
-                extra_mb=size_mb,
                 force=force_var.get(),
                 log=log,
-                data_dir=gui_data_dir,
-                data_size=data_size_var.get().strip() if gpt_var.get() else "",
-                esp_label=esp_label_var.get().strip() or "ESP",
-                data_label=data_label_var.get().strip() or "DATA",
                 iso_hybrid=hybrid_var.get(),
-                fs_type=fs_map.get(fs_var.get(), "fat32"),
+                partitions=partitions,
             )
             try:
                 if not Path(src).is_dir() and Path(src).is_file():
@@ -209,11 +228,7 @@ def gui_main() -> None:
                     ext = Path(build_target).suffix.lower()
                     is_img = ext == ".img"
 
-                    if is_img and cfg.gpt and cfg.data_dir:
-                        data_files = collect_files(cfg, cfg.data_dir, [])
-                        log("Building GPT image (ESP + data)...")
-                        build_gpt_data_img(cfg, files, data_files, build_target)
-                    elif is_img and cfg.gpt:
+                    if is_img and cfg.gpt:
                         log("Building GPT image...")
                         build_gpt_img(cfg, files, build_target)
                     elif is_img and cfg.mbr:

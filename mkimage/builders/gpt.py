@@ -1,4 +1,4 @@
-"""GPT-partitioned image builders (single ESP and ESP + data)."""
+"""GPT-partitioned image builder (N partitions from cfg.partitions)."""
 from __future__ import annotations
 
 import os
@@ -6,7 +6,12 @@ import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from mkimage.files import _calculate_content_size, _parse_size, _stage_files
+from mkimage.files import (
+    _calculate_content_size,
+    _interpret_size,
+    _stage_files,
+    collect_files,
+)
 from mkimage.partition import (
     _check_root,
     _format_partition,
@@ -20,25 +25,70 @@ from mkimage.tools import ensure_tools
 from mkimage.verify import _verify_write
 
 if TYPE_CHECKING:
-    from mkimage import Config
+    from mkimage import Config, PartitionSpec
 
 
-def build_gpt_img(cfg: Config, files: dict[str, str], output: str) -> None:
-    """Create a GPT disk image with a single EFI System Partition."""
+def build_gpt_img(cfg: Config, source_files: dict[str, str],
+                   output: str) -> None:
+    """Create a GPT disk image with N partitions from cfg.partitions."""
+    from mkimage import PartitionSpec
+
     _check_root(cfg, "GPT image creation")
     ensure_tools(cfg, "gpt")
     out = _resolve(output)
 
-    content_mb = _calculate_content_size(files)
-    esp_mb = max(int(content_mb * 1.3 + 10), 64)
-    total_mb = esp_mb + 2  # 2MB GPT overhead
-    esp_label = cfg.esp_label[:11]
-    cfg.log(f"  GPT image: {total_mb}MB total ({esp_mb}MB ESP, "
-            f"{content_mb}MB content)")
+    partitions = cfg.partitions if cfg.partitions else [PartitionSpec("esp")]
+
+    # Calculate sizes for each partition
+    part_info: list[dict[str, object]] = []
+    for i, part in enumerate(partitions):
+        if i == 0:
+            files = source_files
+        elif part.source_dir:
+            files = collect_files(cfg, part.source_dir, [])
+        else:
+            files = {}
+        content_mb = _calculate_content_size(files) if files else 1
+        is_esp = part.fs_type == "esp"
+        size_mb = _interpret_size(part.size, content_mb, is_esp=is_esp)
+        fs_type = "fat32" if part.fs_type == "esp" else part.fs_type
+        sgdisk_type = "EF00" if part.fs_type == "esp" else "0700"
+        part_info.append({
+            "spec": part,
+            "files": files,
+            "content_mb": content_mb,
+            "size_mb": size_mb,
+            "fs_type": fs_type,
+            "sgdisk_type": sgdisk_type,
+            "label": part.label[:11],
+        })
+
+    # Calculate total image size
+    sized_total = sum(
+        int(p["size_mb"]) for p in part_info if int(p["size_mb"]) > 0  # type: ignore[arg-type]
+    )
+    total_mb = sized_total + 2  # 2MB GPT overhead
+
+    # Log summary
+    parts_desc = " + ".join(
+        f"{p['size_mb']}MB {p['label']}" for p in part_info
+    )
+    content_desc = " + ".join(
+        f"{p['content_mb']}MB" for p in part_info
+    )
+    cfg.log(f"  GPT image: {total_mb}MB total ({parts_desc}, "
+            f"{content_desc} content)")
 
     with tempfile.TemporaryDirectory() as staging:
-        _stage_files(files, Path(staging))
-        stg_resolved = _resolve(staging)
+        # Stage files for each partition
+        staging_dirs: list[str] = []
+        for i, info in enumerate(part_info):
+            pdir = Path(staging) / f"part{i}"
+            pdir.mkdir()
+            files = info["files"]
+            if files:
+                _stage_files(files, pdir)  # type: ignore[arg-type]
+            staging_dirs.append(_resolve(str(pdir)))
 
         # Create sparse image
         _run(cfg, ["dd", "if=/dev/zero", f"of={out}", "bs=1M",
@@ -47,103 +97,57 @@ def build_gpt_img(cfg: Config, files: dict[str, str], output: str) -> None:
         # GPT partition table
         _run(cfg, ["sgdisk", "-Z", out], verbose=cfg.verbose)
         _run(cfg, ["sgdisk", "-o", out], verbose=cfg.verbose)
-        _run(cfg, ["sgdisk",
-                   "-n", f"1:2048:+{esp_mb}M",
-                   "-t", "1:EF00",
-                   "-c", f"1:{esp_label}",
-                   out], verbose=True)
+
+        # Create partitions
+        for i, info in enumerate(part_info):
+            pnum = i + 1
+            size_mb = int(info["size_mb"])  # type: ignore[arg-type]
+            label = str(info["label"])
+            sgdisk_type = str(info["sgdisk_type"])
+
+            if size_mb == 0 or (i == len(part_info) - 1 and size_mb > 0):
+                # Last partition or "rest of disk" -- use 0:0 for last
+                if size_mb == 0:
+                    size_spec = "0:0"
+                else:
+                    size_spec = f"+{size_mb}M" if i < len(part_info) - 1 else "0:0"
+            else:
+                size_spec = f"+{size_mb}M"
+
+            if pnum == 1:
+                start = "2048"
+            else:
+                start = "0"
+
+            _run(cfg, ["sgdisk",
+                       "-n", f"{pnum}:{start}:{size_spec}",
+                       "-t", f"{pnum}:{sgdisk_type}",
+                       "-c", f"{pnum}:{label}",
+                       out], verbose=True)
 
         loop_dev = _setup_loop_device(cfg, out)
         try:
-            esp_part = _wait_for_partition(cfg, loop_dev, 1)
+            for i, info in enumerate(part_info):
+                pnum = i + 1
+                label = str(info["label"])
+                fs_type = str(info["fs_type"])
+                files = info["files"]
 
-            cfg.log(f"  Formatting ESP ({esp_label})...")
-            _format_partition(cfg, esp_part, cfg.fs_type, esp_label)
+                part_dev = _wait_for_partition(cfg, loop_dev, pnum)
 
-            cfg.log(f"  Copying {len(files)} files to ESP...")
-            _populate_partition(cfg, stg_resolved, esp_part)
+                cfg.log(f"  Formatting partition {pnum} ({label})...")
+                _format_partition(cfg, part_dev, fs_type, label)
+
+                if files:
+                    cfg.log(f"  Copying {len(files)} files to partition {pnum}...")  # type: ignore[arg-type]
+                    _populate_partition(cfg, staging_dirs[i], part_dev)
         finally:
             _teardown_loop_device(cfg, loop_dev)
 
     actual_size = os.path.getsize(output)
+    part_names = "+".join(str(p["label"]) for p in part_info)
     cfg.log(f"  [OK] Created {output} ({actual_size // (1024*1024)}MB, "
-            f"GPT+ESP)")
+            f"GPT+{part_names})")
 
     if cfg.verify:
-        _verify_write(cfg, files, output)
-
-
-def build_gpt_data_img(cfg: Config, esp_files: dict[str, str],
-                       data_files: dict[str, str], output: str) -> None:
-    """Create a GPT disk image with ESP + data partition."""
-    _check_root(cfg, "GPT image creation")
-    ensure_tools(cfg, "gpt")
-    out = _resolve(output)
-
-    esp_content_mb = _calculate_content_size(esp_files)
-    esp_mb = max(int(esp_content_mb * 1.3 + 10), 64)
-
-    data_content_mb = _calculate_content_size(data_files) if data_files else 1
-    data_mb = (_parse_size(cfg.data_size) if cfg.data_size
-               else max(int(data_content_mb * 1.3 + 10), 34))
-
-    total_mb = esp_mb + data_mb + 2  # 2MB GPT overhead
-    esp_label = cfg.esp_label[:11]
-    data_label = cfg.data_label[:11]
-    cfg.log(f"  GPT image: {total_mb}MB total "
-            f"({esp_mb}MB ESP + {data_mb}MB data, "
-            f"{esp_content_mb}MB + {data_content_mb}MB content)")
-
-    with tempfile.TemporaryDirectory() as staging:
-        esp_staging = Path(staging) / "esp"
-        data_staging = Path(staging) / "data"
-        esp_staging.mkdir()
-        _stage_files(esp_files, esp_staging)
-        data_staging.mkdir()
-        if data_files:
-            _stage_files(data_files, data_staging)
-
-        esp_stg = _resolve(str(esp_staging))
-        data_stg = _resolve(str(data_staging))
-
-        # Create sparse image
-        _run(cfg, ["dd", "if=/dev/zero", f"of={out}", "bs=1M",
-                   "count=0", f"seek={total_mb}"], verbose=cfg.verbose)
-
-        # GPT partition table with two partitions
-        _run(cfg, ["sgdisk", "-Z", out], verbose=cfg.verbose)
-        _run(cfg, ["sgdisk", "-o", out], verbose=cfg.verbose)
-        _run(cfg, ["sgdisk",
-                   "-n", f"1:2048:+{esp_mb}M",
-                   "-t", "1:EF00",
-                   "-c", f"1:{esp_label}",
-                   out], verbose=True)
-        _run(cfg, ["sgdisk",
-                   "-n", "2:0:0",
-                   "-t", "2:0700",
-                   "-c", f"2:{data_label}",
-                   out], verbose=True)
-
-        loop_dev = _setup_loop_device(cfg, out)
-        try:
-            esp_part = _wait_for_partition(cfg, loop_dev, 1)
-            data_part = _wait_for_partition(cfg, loop_dev, 2)
-
-            # Format and populate ESP
-            cfg.log(f"  Formatting ESP ({esp_label})...")
-            _format_partition(cfg, esp_part, cfg.fs_type, esp_label)
-            cfg.log(f"  Copying {len(esp_files)} files to ESP...")
-            _populate_partition(cfg, esp_stg, esp_part)
-
-            # Format and populate data
-            cfg.log(f"  Formatting data ({data_label})...")
-            _format_partition(cfg, data_part, cfg.fs_type, data_label)
-            if data_files:
-                cfg.log(f"  Copying {len(data_files)} files to data...")
-                _populate_partition(cfg, data_stg, data_part)
-        finally:
-            _teardown_loop_device(cfg, loop_dev)
-
-    actual_size = os.path.getsize(output)
-    cfg.log(f"  [OK] Created {output} ({actual_size // (1024*1024)}MB, "
-            f"GPT+ESP+DATA)")
+        _verify_write(cfg, source_files, output)

@@ -8,7 +8,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional
 
 from mkimage.builders.img import build_img
-from mkimage.files import _calculate_content_size, _stage_files, collect_files
+from mkimage.files import (
+    _calculate_content_size,
+    _interpret_size,
+    _stage_files,
+    collect_files,
+)
 from mkimage.partition import _check_root, _format_partition, _populate_partition
 from mkimage.platform import _is_macos, _is_windows, _resolve, _run
 from mkimage.tools import ensure_tools
@@ -22,7 +27,7 @@ from mkimage.usb.safety import (
 )
 
 if TYPE_CHECKING:
-    from mkimage import Config
+    from mkimage import Config, PartitionSpec
 
 
 def write_usb(
@@ -509,38 +514,74 @@ def _write_gpt_to_device(cfg: Config, files: dict[str, str],
                           device: str) -> None:
     """Write GPT layout directly to a USB device (no intermediate image).
 
+    Iterates cfg.partitions to create N partitions on the device.
     Requires root for sgdisk on a device and mount operations.
     """
+    from mkimage import PartitionSpec
+
     _check_root(cfg, "GPT USB write")
     ensure_tools(cfg, "gpt")
 
-    content_mb = _calculate_content_size(files)
-    esp_mb = max(int(content_mb * 1.3 + 10), 64)
-    esp_label = cfg.esp_label[:11]
+    partitions = cfg.partitions if cfg.partitions else [PartitionSpec("esp")]
 
-    # Collect data files upfront if needed
-    data_files: dict[str, str] = {}
-    data_label = cfg.data_label[:11]
-    if cfg.data_dir:
-        data_files = collect_files(cfg, cfg.data_dir, [])
+    # Calculate sizes and collect files for each partition
+    part_info: list[dict[str, object]] = []
+    for i, part in enumerate(partitions):
+        if i == 0:
+            pfiles = files
+        elif part.source_dir:
+            pfiles = collect_files(cfg, part.source_dir, [])
+        else:
+            pfiles = {}
+        content_mb = _calculate_content_size(pfiles) if pfiles else 1
+        is_esp = part.fs_type == "esp"
+        size_mb = _interpret_size(part.size, content_mb, is_esp=is_esp)
+        fs_type = "fat32" if part.fs_type == "esp" else part.fs_type
+        sgdisk_type = "EF00" if part.fs_type == "esp" else "0700"
+        part_info.append({
+            "spec": part,
+            "files": pfiles,
+            "content_mb": content_mb,
+            "size_mb": size_mb,
+            "fs_type": fs_type,
+            "sgdisk_type": sgdisk_type,
+            "label": part.label[:11],
+        })
 
     with tempfile.TemporaryDirectory() as staging:
-        _stage_files(files, Path(staging))
-        stg_resolved = _resolve(staging)
+        # Stage files for each partition
+        staging_dirs: list[str] = []
+        for i, info in enumerate(part_info):
+            pdir = Path(staging) / f"part{i}"
+            pdir.mkdir()
+            pfiles = info["files"]
+            if pfiles:
+                _stage_files(pfiles, pdir)  # type: ignore[arg-type]
+            staging_dirs.append(_resolve(str(pdir)))
 
         # Partition the device directly
         cfg.log(f"  Creating GPT partition table on {device}...")
         _run(cfg, ["sgdisk", "-Z", device], verbose=cfg.verbose, as_root=True)
         _run(cfg, ["sgdisk", "-o", device], verbose=cfg.verbose, as_root=True)
-        _run(cfg, ["sgdisk",
-                   "-n", f"1:2048:+{esp_mb}M", "-t", "1:EF00",
-                   "-c", f"1:{esp_label}",
-                   device], verbose=True, as_root=True)
 
-        if cfg.data_dir:
+        for i, info in enumerate(part_info):
+            pnum = i + 1
+            size_mb = int(info["size_mb"])  # type: ignore[arg-type]
+            label = str(info["label"])
+            sgdisk_type = str(info["sgdisk_type"])
+
+            if size_mb == 0:
+                size_spec = "0:0"
+            elif i == len(part_info) - 1:
+                size_spec = "0:0"
+            else:
+                size_spec = f"+{size_mb}M"
+
+            start = "2048" if pnum == 1 else "0"
             _run(cfg, ["sgdisk",
-                       "-n", "2:0:0", "-t", "2:0700",
-                       "-c", f"2:{data_label}",
+                       "-n", f"{pnum}:{start}:{size_spec}",
+                       "-t", f"{pnum}:{sgdisk_type}",
+                       "-c", f"{pnum}:{label}",
                        device], verbose=True, as_root=True)
 
         # Re-read partition table
@@ -556,23 +597,19 @@ def _write_gpt_to_device(cfg: Config, files: dict[str, str],
         else:
             part_fmt = f"{device}p{{}}"
 
-        esp_part = part_fmt.format(1)
-        cfg.log(f"  Formatting ESP ({esp_label}) on {esp_part}...")
-        _format_partition(cfg, esp_part, cfg.fs_type, esp_label)
-        cfg.log(f"  Copying {len(files)} files to ESP...")
-        _populate_partition(cfg, stg_resolved, esp_part)
+        for i, info in enumerate(part_info):
+            pnum = i + 1
+            label = str(info["label"])
+            fs_type = str(info["fs_type"])
+            pfiles = info["files"]
 
-        if cfg.data_dir and data_files:
-            data_part = part_fmt.format(2)
-            data_staging = Path(staging) / "data"
-            data_staging.mkdir()
-            _stage_files(data_files, data_staging)
-            data_stg = _resolve(str(data_staging))
+            part_dev = part_fmt.format(pnum)
+            cfg.log(f"  Formatting partition {pnum} ({label}) on {part_dev}...")
+            _format_partition(cfg, part_dev, fs_type, label)
 
-            cfg.log(f"  Formatting data ({data_label}) on {data_part}...")
-            _format_partition(cfg, data_part, cfg.fs_type, data_label)
-            cfg.log(f"  Copying {len(data_files)} files to data...")
-            _populate_partition(cfg, data_stg, data_part)
+            if pfiles:
+                cfg.log(f"  Copying {len(pfiles)} files to partition {pnum}...")  # type: ignore[arg-type]
+                _populate_partition(cfg, staging_dirs[i], part_dev)
 
     _run(cfg, ["sync"], check=False)
     cfg.log(f"  [OK] USB drive {device} ready. You can safely remove it.")

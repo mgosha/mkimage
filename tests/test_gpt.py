@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from mkimage import (
-    Config, build_gpt_data_img, build_gpt_img, collect_files,
+    Config, PartitionSpec, build_gpt_img, collect_files,
 )
 
 
@@ -23,7 +23,7 @@ def _sgdisk_info(img: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# GPT structure tests — sgdisk works on image files without root
+# GPT structure tests -- sgdisk works on image files without root
 # ---------------------------------------------------------------------------
 
 class TestGptStructure:
@@ -71,13 +71,13 @@ class TestGptStructure:
 
 
 # ---------------------------------------------------------------------------
-# Full GPT integration tests — require root for losetup + mount
+# Full GPT integration tests -- require root for losetup + mount
 # ---------------------------------------------------------------------------
 
 class TestBuildGptImg:
     @pytest.mark.needs_root
     def test_creates_gpt_image(self, sample_dir: Path, tmp_path: Path) -> None:
-        cfg = Config()
+        cfg = Config(gpt=True, partitions=[PartitionSpec("esp", "", "ESP")])
         files = collect_files(cfg, str(sample_dir), [])
         out = str(tmp_path / "gpt.img")
         build_gpt_img(cfg, files, out)
@@ -89,7 +89,7 @@ class TestBuildGptImg:
     @pytest.mark.needs_root
     def test_minimum_esp_size(self, sample_dir: Path, tmp_path: Path) -> None:
         """ESP should be at least 64MB even for tiny content."""
-        cfg = Config()
+        cfg = Config(gpt=True, partitions=[PartitionSpec("esp", "", "ESP")])
         files = collect_files(cfg, str(sample_dir), [])
         out = str(tmp_path / "gpt.img")
         build_gpt_img(cfg, files, out)
@@ -98,7 +98,7 @@ class TestBuildGptImg:
 
     @pytest.mark.needs_root
     def test_custom_esp_label(self, sample_dir: Path, tmp_path: Path) -> None:
-        cfg = Config(esp_label="MYESP")
+        cfg = Config(gpt=True, partitions=[PartitionSpec("esp", "", "MYESP")])
         files = collect_files(cfg, str(sample_dir), [])
         out = str(tmp_path / "gpt.img")
         build_gpt_img(cfg, files, out)
@@ -108,7 +108,7 @@ class TestBuildGptImg:
     @pytest.mark.needs_root
     def test_esp_contains_files(self, sample_dir: Path, tmp_path: Path) -> None:
         """Mount the ESP and verify files are present."""
-        cfg = Config()
+        cfg = Config(gpt=True, partitions=[PartitionSpec("esp", "", "ESP")])
         files = collect_files(cfg, str(sample_dir), [])
         out = str(tmp_path / "gpt.img")
         build_gpt_img(cfg, files, out)
@@ -135,7 +135,10 @@ class TestBuildGptImg:
     @pytest.mark.needs_root
     def test_verbose_logging(self, sample_dir: Path, tmp_path: Path) -> None:
         messages: list[str] = []
-        cfg = Config(verbose=True, log=lambda msg: messages.append(msg))
+        cfg = Config(
+            verbose=True, gpt=True, log=lambda msg: messages.append(msg),
+            partitions=[PartitionSpec("esp", "", "ESP")],
+        )
         files = collect_files(cfg, str(sample_dir), [])
         out = str(tmp_path / "gpt.img")
         build_gpt_img(cfg, files, out)
@@ -151,11 +154,13 @@ class TestBuildGptDataImg:
         (data_dir / "config.txt").write_text("key=value\n")
         (data_dir / "README.md").write_text("Data partition\n")
 
-        cfg = Config()
+        cfg = Config(gpt=True, partitions=[
+            PartitionSpec("esp", "", "ESP"),
+            PartitionSpec("fat32", "", "DATA", str(data_dir)),
+        ])
         esp_files = collect_files(cfg, str(sample_dir), [])
-        data_files = collect_files(cfg, str(data_dir), [])
         out = str(tmp_path / "dual.img")
-        build_gpt_data_img(cfg, esp_files, data_files, out)
+        build_gpt_img(cfg, esp_files, out)
 
         info = _sgdisk_info(out)
         assert "EF00" in info
@@ -169,11 +174,13 @@ class TestBuildGptDataImg:
         data_dir.mkdir()
         (data_dir / "config.txt").write_text("key=value\n")
 
-        cfg = Config()
+        cfg = Config(gpt=True, partitions=[
+            PartitionSpec("esp", "", "ESP"),
+            PartitionSpec("fat32", "", "DATA", str(data_dir)),
+        ])
         esp_files = collect_files(cfg, str(sample_dir), [])
-        data_files = collect_files(cfg, str(data_dir), [])
         out = str(tmp_path / "dual.img")
-        build_gpt_data_img(cfg, esp_files, data_files, out)
+        build_gpt_img(cfg, esp_files, out)
 
         r = subprocess.run(
             ["losetup", "--find", "--show", "--partscan", out],
@@ -208,11 +215,13 @@ class TestBuildGptDataImg:
         data_dir.mkdir()
         (data_dir / "x.txt").write_text("x\n")
 
-        cfg = Config(esp_label="BOOT", data_label="FILES")
+        cfg = Config(gpt=True, partitions=[
+            PartitionSpec("esp", "", "BOOT"),
+            PartitionSpec("fat32", "", "FILES", str(data_dir)),
+        ])
         esp_files = collect_files(cfg, str(sample_dir), [])
-        data_files = collect_files(cfg, str(data_dir), [])
         out = str(tmp_path / "labels.img")
-        build_gpt_data_img(cfg, esp_files, data_files, out)
+        build_gpt_img(cfg, esp_files, out)
 
         info = _sgdisk_info(out)
         assert "BOOT" in info
@@ -220,16 +229,18 @@ class TestBuildGptDataImg:
 
     @pytest.mark.needs_root
     def test_fixed_data_size(self, sample_dir: Path, tmp_path: Path) -> None:
-        """Verify --data-size sets a fixed data partition size."""
+        """Verify fixed data partition size."""
         data_dir = tmp_path / "data"
         data_dir.mkdir()
         (data_dir / "x.txt").write_text("x\n")
 
-        cfg = Config(data_size="128M")
+        cfg = Config(gpt=True, partitions=[
+            PartitionSpec("esp", "", "ESP"),
+            PartitionSpec("fat32", "128M", "DATA", str(data_dir)),
+        ])
         esp_files = collect_files(cfg, str(sample_dir), [])
-        data_files = collect_files(cfg, str(data_dir), [])
         out = str(tmp_path / "fixed.img")
-        build_gpt_data_img(cfg, esp_files, data_files, out)
+        build_gpt_img(cfg, esp_files, out)
 
         info = _sgdisk_info(out)
         # Total should be ESP (64MB) + data (128MB) + 2MB overhead = 194MB

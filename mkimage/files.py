@@ -77,3 +77,23 @@ def _parse_size(size_str: str) -> int:
     if s.endswith("M"):
         return int(s[:-1])
     return int(s)
+
+
+def _interpret_size(spec: str, content_mb: int, is_esp: bool = False) -> int:
+    """Interpret partition size spec. Returns MB.
+
+    "" = auto (content * 1.3 + 10, min 64 for ESP, min 40 for others)
+    "+32M" = content + 32MB extra (min 40)
+    "64M" = fixed 64MB
+    "4G" = fixed 4096MB
+    "0" = rest of disk (return 0, caller handles)
+    """
+    min_size = 64 if is_esp else 40
+    if not spec:
+        return max(int(content_mb * 1.3 + 10), min_size)
+    if spec.startswith("+"):
+        extra = _parse_size(spec[1:])
+        return max(min_size, content_mb + extra)
+    if spec == "0":
+        return 0
+    return _parse_size(spec)

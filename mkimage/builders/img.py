@@ -6,13 +6,13 @@ import tempfile
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
-from mkimage.files import _calculate_content_size, _stage_files
+from mkimage.files import _calculate_content_size, _interpret_size, _stage_files
 from mkimage.platform import _is_windows, _resolve, _run, _which
 from mkimage.tools import _suggest_install, ensure_tools
 from mkimage.verify import _verify_write
 
 if TYPE_CHECKING:
-    from mkimage import Config
+    from mkimage import Config, PartitionSpec
 
 
 def _populate_img_mcopy(cfg: Config, files: dict[str, str],
@@ -34,7 +34,7 @@ def _populate_img_mcopy(cfg: Config, files: dict[str, str],
 
 
 def _populate_img_mount(cfg: Config, staging_dir: str, out: str,
-                        size_mb: int) -> bool:
+                        size_mb: int, part_label: str) -> bool:
     """Populate a FAT32 image using mount+rsync (requires root).
 
     Returns True on success, False on failure.
@@ -50,7 +50,7 @@ def _populate_img_mount(cfg: Config, staging_dir: str, out: str,
             f"set -e && "
             f"IMG=$(mktemp /tmp/mkimage.XXXXXX.img) && "
             f"dd if=/dev/zero of=$IMG bs=1M count={size_mb} 2>/dev/null && "
-            f"mkfs.vfat -F 32 -n '{cfg.label[:11]}' $IMG >/dev/null && "
+            f"mkfs.vfat -F 32 -n '{part_label}' $IMG >/dev/null && "
             f"MNTDIR=$(mktemp -d) && "
             f"mount -o loop $IMG $MNTDIR && "
             f"rsync {rsync_flags} '{staging_dir}'/ $MNTDIR/ && "
@@ -66,7 +66,7 @@ def _populate_img_mount(cfg: Config, staging_dir: str, out: str,
         if cfg.verbose:
             dd_cmd.append("status=progress")
         _run(cfg, dd_cmd, verbose=True)
-        _run(cfg, ["mkfs.vfat", "-F", "32", "-n", cfg.label[:11], out], verbose=True)
+        _run(cfg, ["mkfs.vfat", "-F", "32", "-n", part_label, out], verbose=True)
 
         r = _run(cfg, [
             "bash", "-c",
@@ -88,11 +88,15 @@ def build_img(cfg: Config, files: dict[str, str], output: str) -> None:
     Primary method uses mcopy (no root needed). Falls back to mount+rsync
     if mcopy is unavailable and root access is available.
     """
+    from mkimage import PartitionSpec
+
     ensure_tools(cfg, "img")
     out = _resolve(output)
 
+    part = cfg.partitions[0] if cfg.partitions else PartitionSpec()
     content_mb = _calculate_content_size(files)
-    size_mb = max(40, content_mb + cfg.extra_mb)
+    size_mb = _interpret_size(part.size, content_mb)
+    part_label = part.label[:11]
     cfg.log(f"  Image size: {size_mb}MB ({content_mb}MB content + {size_mb - content_mb}MB free)")
 
     with tempfile.TemporaryDirectory() as staging:
@@ -106,14 +110,14 @@ def build_img(cfg: Config, files: dict[str, str], output: str) -> None:
             if cfg.verbose:
                 dd_cmd.append("status=progress")
             _run(cfg, dd_cmd, verbose=True)
-            _run(cfg, ["mkfs.vfat", "-F", "32", "-n", cfg.label[:11], out],
+            _run(cfg, ["mkfs.vfat", "-F", "32", "-n", part_label, out],
                  verbose=True)
             _populate_img_mcopy(cfg, files, out)
         elif _which("rsync"):
             # Fallback: mount+rsync (requires root)
             cfg.log("  mcopy not found, using mount+rsync (requires root)...")
             cfg.log(f"  Copying {len(files)} files to image...")
-            if not _populate_img_mount(cfg, stg_resolved, out, size_mb):
+            if not _populate_img_mount(cfg, stg_resolved, out, size_mb, part_label):
                 raise RuntimeError(
                     "mount/rsync failed. Install mtools for rootless operation:\n"
                     f"    {_suggest_install('mcopy')}"

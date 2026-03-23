@@ -97,12 +97,9 @@ class TestCliGptFlags:
         r = run_mkimage("--help")
         assert "--gpt" in r.stdout
 
-    def test_data_dir_flag_recognized(self) -> None:
+    def test_partition_flag_recognized(self) -> None:
         r = run_mkimage("--help")
-        assert "--data-dir" in r.stdout
-        assert "--data-size" in r.stdout
-        assert "--esp-label" in r.stdout
-        assert "--data-label" in r.stdout
+        assert "--partition" in r.stdout
 
 
 class TestCliSourceTarget:

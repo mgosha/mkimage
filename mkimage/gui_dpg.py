@@ -14,6 +14,7 @@ import dearpygui.dearpygui as dpg
 
 from mkimage import (
     Config,
+    PartitionSpec,
     _is_compressed_path,
     _is_windows,
     _list_removable_drives,
@@ -21,7 +22,6 @@ from mkimage import (
     _write_usb_from_dir,
     _write_usb_from_image,
     _compress_file,
-    build_gpt_data_img,
     build_gpt_img,
     build_img,
     build_iso,
@@ -282,21 +282,35 @@ def _do_create() -> None:
     dpg.set_value("log_text", "")
 
     def run() -> None:
+        # Read GPT-specific options
+        esp_label = dpg.get_value("esp_label_input").strip() or "ESP"
+        data_label_val = dpg.get_value("data_label_input").strip() or "DATA"
+        data_size = dpg.get_value("data_size_input").strip() if is_gpt else ""
+
+        # Build partitions list from GUI widget values
+        partitions: list[PartitionSpec] = []
+        if is_gpt and data_dir:
+            partitions = [
+                PartitionSpec("esp", "", esp_label),
+                PartitionSpec(fs_type, data_size, data_label_val, data_dir),
+            ]
+        elif is_gpt:
+            partitions = [PartitionSpec("esp", "", esp_label)]
+        elif is_mbr:
+            partitions = [PartitionSpec(fs_type, "", label)]
+        else:
+            partitions = [PartitionSpec(fs_type, f"+{extra_mb}M", label)]
+
         cfg = Config(
             verbose=dpg.get_value("verbose_check"),
             verify=dpg.get_value("verify_check"),
             gpt=is_gpt or bool(data_dir),
             mbr=is_mbr,
             label=label,
-            extra_mb=extra_mb,
             force=dpg.get_value("force_check"),
             log=_log,
-            data_dir=data_dir,
-            data_size=dpg.get_value("data_size_input").strip() if is_gpt else "",
-            esp_label=dpg.get_value("esp_label_input").strip() or "ESP",
-            data_label=dpg.get_value("data_label_input").strip() or "DATA",
             iso_hybrid=dpg.get_value("hybrid_check"),
-            fs_type=fs_type,
+            partitions=partitions,
         )
         try:
             if not Path(source).is_dir() and Path(source).is_file():
@@ -330,12 +344,7 @@ def _do_create() -> None:
                 ext = Path(build_target).suffix.lower()
                 is_img = ext == ".img"
 
-                if is_img and cfg.gpt and cfg.data_dir:
-                    data_files = collect_files(cfg, cfg.data_dir, [])
-                    _set_status("Building GPT image (ESP + data)...")
-                    _log("Building GPT image (ESP + data)...")
-                    build_gpt_data_img(cfg, files, data_files, build_target)
-                elif is_img and cfg.gpt:
+                if is_img and cfg.gpt:
                     _set_status("Building GPT image...")
                     _log("Building GPT image...")
                     build_gpt_img(cfg, files, build_target)

@@ -6,8 +6,8 @@ import os
 import sys
 from pathlib import Path
 
-from mkimage import Config
-from mkimage.builders import build_gpt_data_img, build_gpt_img, build_img, build_iso
+from mkimage import Config, PartitionSpec
+from mkimage.builders import build_gpt_img, build_img, build_iso
 from mkimage.builders.mbr import build_mbr_img
 from mkimage.compress import _compress_file, _is_compressed_path, _strip_compression_ext
 from mkimage.detect import _detect_source_type, _detect_target_type
@@ -26,9 +26,20 @@ from mkimage.usb.detect import MAX_USB_SIZE_GB, _list_removable_drives
 from mkimage.usb.write import _write_usb_from_dir, _write_usb_from_image
 
 
+def _parse_partition_spec(spec: str) -> PartitionSpec:
+    """Parse a TYPE:SIZE:LABEL[:DIR] string into a PartitionSpec."""
+    parts = spec.split(":", 3)
+    return PartitionSpec(
+        fs_type=parts[0] if len(parts) > 0 and parts[0] else "fat32",
+        size=parts[1] if len(parts) > 1 else "",
+        label=parts[2] if len(parts) > 2 and parts[2] else "UEFITOOLS",
+        source_dir=parts[3] if len(parts) > 3 else "",
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="mkimage — Create bootable UEFI media images, ISOs, and USB drives.",
+        description="mkimage -- Create bootable UEFI media images, ISOs, and USB drives.",
         epilog="""\
 examples:
   # Create a FAT32 image from a directory:
@@ -38,10 +49,14 @@ examples:
   %(prog)s --source build/ --target boot.img --gpt
 
   # GPT with ESP + data partition:
-  %(prog)s --source build/ --target boot.img --gpt --data-dir ./data/
+  %(prog)s --source build/ --target boot.img --gpt \\
+    --partition esp::ESP --partition fat32:0:DATA:./data/
 
   # MBR-partitioned image:
   %(prog)s --source build/ --target boot.img --mbr
+
+  # Custom partition spec (type:size:label):
+  %(prog)s --source build/ --target boot.img --partition fat32:+64M:TEST
 
   # ISO image (hybrid for USB boot):
   %(prog)s --source build/ --target boot.iso --iso-hybrid
@@ -50,7 +65,7 @@ examples:
   %(prog)s --source build/ --target boot.img.gz
 
   # exFAT filesystem (for files >4GB):
-  %(prog)s --source build/ --target boot.img --fs exfat
+  %(prog)s --source build/ --target boot.img --partition exfat::BIGFILES
 
   # Write directly to USB (auto-detect drive):
   %(prog)s --source build/ --target usb
@@ -95,31 +110,14 @@ tips:
         help="Additional file or directory to include (repeatable)",
     )
 
-    # --- Image Options ---
-    img_group = parser.add_argument_group("Image Options")
-    img_group.add_argument(
-        "--label", default="UEFITOOLS",
-        help="Volume label (default: UEFITOOLS, 11 chars max for FAT32)",
-    )
-    img_group.add_argument(
-        "--extra", type=int, default=32, dest="extra_mb",
-        help="Extra free space in MB beyond content (default: 32)",
-    )
-    img_group.add_argument(
-        "--fs", default="fat32", choices=["fat32", "exfat", "ntfs"],
-        help="Filesystem type (default: fat32)",
-    )
-    img_group.add_argument(
-        "--iso-hybrid", action="store_true",
-        help="Create hybrid ISO (dd-writable to USB)",
-    )
-    img_group.add_argument(
-        "--verify", action="store_true",
-        help="SHA256 verification after build",
-    )
-
     # --- Partition Scheme ---
     part_group = parser.add_argument_group("Partition Scheme")
+    part_group.add_argument(
+        "--partition", action="append", default=[], metavar="TYPE:SIZE:LABEL[:DIR]",
+        help="Partition spec (repeatable). TYPE: esp/fat32/exfat/ntfs, "
+             "SIZE: 64M/4G/+32M/0/auto, LABEL: volume label, "
+             "DIR: optional source directory",
+    )
     part_group.add_argument(
         "--mbr", action="store_true",
         help="MBR partition table (legacy BIOS boot)",
@@ -128,21 +126,20 @@ tips:
         "--gpt", action="store_true",
         help="GPT partition table with EFI System Partition (UEFI boot)",
     )
-    part_group.add_argument(
-        "--data-dir",
-        help="Directory for second data partition (implies --gpt)",
+
+    # --- Image Options ---
+    img_group = parser.add_argument_group("Image Options")
+    img_group.add_argument(
+        "--label", default="UEFITOOLS",
+        help="Volume label (default: UEFITOOLS, 11 chars max for FAT32)",
     )
-    part_group.add_argument(
-        "--data-size", default="",
-        help="Fixed data partition size (e.g. 512M, 4G). Default: auto",
+    img_group.add_argument(
+        "--iso-hybrid", action="store_true",
+        help="Create hybrid ISO (dd-writable to USB)",
     )
-    part_group.add_argument(
-        "--esp-label", default="ESP",
-        help="ESP volume label (default: ESP)",
-    )
-    part_group.add_argument(
-        "--data-label", default="DATA",
-        help="Data partition volume label (default: DATA)",
+    img_group.add_argument(
+        "--verify", action="store_true",
+        help="SHA256 verification after build",
     )
 
     # --- USB Options ---
@@ -186,10 +183,17 @@ tips:
         help="Check tool availability and exit",
     )
 
-    # --- Hidden backward compat ---
+    # --- Hidden backward compat flags ---
     parser.add_argument("source_dir", nargs="?", help=argparse.SUPPRESS)
     parser.add_argument("-o", "--output", help=argparse.SUPPRESS)
     parser.add_argument("--write-usb", metavar="IMAGE", help=argparse.SUPPRESS)
+    parser.add_argument("--extra", type=int, default=32, dest="extra_mb",
+                        help=argparse.SUPPRESS)
+    parser.add_argument("--fs", default="fat32", help=argparse.SUPPRESS)
+    parser.add_argument("--data-dir", default="", help=argparse.SUPPRESS)
+    parser.add_argument("--data-size", default="", help=argparse.SUPPRESS)
+    parser.add_argument("--esp-label", default="ESP", help=argparse.SUPPRESS)
+    parser.add_argument("--data-label", default="DATA", help=argparse.SUPPRESS)
 
     args = parser.parse_args()
 
@@ -210,20 +214,34 @@ tips:
         source = source or args.write_usb
         target = target or "usb"
 
+    # Build partitions list from --partition or legacy flags
+    if args.partition:
+        partitions = [_parse_partition_spec(s) for s in args.partition]
+        # Infer --gpt if any partition is esp type
+        if any(p.fs_type == "esp" for p in partitions):
+            args.gpt = True
+    elif args.gpt and args.data_dir:
+        partitions = [
+            PartitionSpec("esp", "", args.esp_label or "ESP"),
+            PartitionSpec(args.fs, args.data_size, args.data_label or "DATA",
+                          args.data_dir),
+        ]
+    elif args.gpt:
+        partitions = [PartitionSpec("esp", "", args.esp_label or "ESP")]
+    elif args.mbr:
+        partitions = [PartitionSpec(args.fs, "", args.label)]
+    else:
+        partitions = [PartitionSpec(args.fs, f"+{args.extra_mb}M", args.label)]
+
     cfg = Config(
         verbose=args.verbose,
         verify=args.verify,
         label=args.label,
-        extra_mb=args.extra_mb,
         gpt=args.gpt or bool(args.data_dir),
         mbr=args.mbr,
         force=args.force,
-        data_dir=args.data_dir or "",
-        data_size=args.data_size,
-        esp_label=args.esp_label,
-        data_label=args.data_label,
         iso_hybrid=args.iso_hybrid,
-        fs_type=args.fs,
+        partitions=partitions,
     )
 
     # --modify operation
@@ -292,13 +310,7 @@ tips:
             else:
                 build_target = target
 
-            if target_type == "img" and cfg.gpt and cfg.data_dir:
-                data_files = collect_files(cfg, cfg.data_dir, [])
-                print(f"  {len(data_files)} data files, "
-                      f"{sum(os.path.getsize(p) for p in data_files.values()) // 1024}KB")
-                print("Building GPT image (ESP + data)...")
-                build_gpt_data_img(cfg, files, data_files, build_target)
-            elif target_type == "img" and cfg.gpt:
+            if target_type == "img" and cfg.gpt:
                 print("Building GPT image...")
                 build_gpt_img(cfg, files, build_target)
             elif target_type == "img" and cfg.mbr:

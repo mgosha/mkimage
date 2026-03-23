@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from mkimage import Config, build_img, build_iso, collect_files
+from mkimage import Config, PartitionSpec, build_img, build_iso, collect_files
 
 
 def _file_type(path: str) -> str:
@@ -86,7 +86,8 @@ class TestBuildImg:
         assert content == b"\x90" * 1024
 
     def test_custom_label(self, sample_dir: Path, tmp_path: Path) -> None:
-        cfg = Config(label="MYTOOLS")
+        cfg = Config(label="MYTOOLS",
+                     partitions=[PartitionSpec("fat32", "", "MYTOOLS")])
         files = collect_files(cfg, str(sample_dir), [])
         out = tmp_path / "labeled.img"
         build_img(cfg, files, str(out))
@@ -94,13 +95,13 @@ class TestBuildImg:
         assert "MYTOOLS" in info
 
     def test_auto_size_scales(self, tmp_path: Path) -> None:
-        """Larger input produces larger image when extra_mb pushes it above minimum."""
+        """Larger input produces larger image when extra is above minimum."""
         src = tmp_path / "src"
         src.mkdir()
         # Create a 5MB file
         (src / "big.bin").write_bytes(b"\x00" * (5 * 1024 * 1024))
 
-        cfg = Config(extra_mb=50)
+        cfg = Config(partitions=[PartitionSpec("fat32", "+50M")])
         files = collect_files(cfg, str(src), [])
         out = tmp_path / "big.img"
         build_img(cfg, files, str(out))
@@ -184,13 +185,15 @@ class TestBuildImgRewrite:
     def test_small_img_then_large_img(self, sample_dir: Path, tmp_path: Path) -> None:
         """Write small image, then overwrite with larger image."""
         out = str(tmp_path / "grow.img")
-        cfg = Config(label="SMALL", extra_mb=8)
+        cfg = Config(label="SMALL",
+                     partitions=[PartitionSpec("fat32", "+8M", "SMALL")])
         files = collect_files(cfg, str(sample_dir), [])
         build_img(cfg, files, out)
         small_size = os.path.getsize(out)
 
         # Write larger image over it
-        cfg2 = Config(label="LARGE", extra_mb=80)
+        cfg2 = Config(label="LARGE",
+                      partitions=[PartitionSpec("fat32", "+80M", "LARGE")])
         build_img(cfg2, files, out)
         large_size = os.path.getsize(out)
         assert large_size > small_size
@@ -203,17 +206,19 @@ class TestBuildImgRewrite:
     def test_large_img_then_small_img(self, sample_dir: Path, tmp_path: Path) -> None:
         """Write large image, then overwrite with smaller image.
 
-        Ensures the output file is truncated — no leftover data from the
+        Ensures the output file is truncated -- no leftover data from the
         larger image bleeds through.
         """
         out = str(tmp_path / "shrink.img")
-        cfg = Config(label="BIG", extra_mb=80)
+        cfg = Config(label="BIG",
+                     partitions=[PartitionSpec("fat32", "+80M", "BIG")])
         files = collect_files(cfg, str(sample_dir), [])
         build_img(cfg, files, out)
         big_size = os.path.getsize(out)
 
         # Write smaller image over it
-        cfg2 = Config(label="SMALL", extra_mb=8)
+        cfg2 = Config(label="SMALL",
+                      partitions=[PartitionSpec("fat32", "+8M", "SMALL")])
         build_img(cfg2, files, out)
         small_size = os.path.getsize(out)
         assert small_size <= big_size
@@ -246,13 +251,15 @@ class TestBuildImgRewrite:
     def test_different_label_overwrites(self, sample_dir: Path, tmp_path: Path) -> None:
         """Verify old label doesn't persist when rewriting."""
         out = str(tmp_path / "label.img")
-        cfg = Config(label="OLDLABEL")
+        cfg = Config(label="OLDLABEL",
+                     partitions=[PartitionSpec("fat32", "", "OLDLABEL")])
         files = collect_files(cfg, str(sample_dir), [])
         build_img(cfg, files, out)
         info = _minfo(out)
         assert "OLDLABEL" in info
 
-        cfg2 = Config(label="NEWLABEL")
+        cfg2 = Config(label="NEWLABEL",
+                      partitions=[PartitionSpec("fat32", "", "NEWLABEL")])
         build_img(cfg2, files, out)
         info2 = _minfo(out)
         assert "NEWLABEL" in info2

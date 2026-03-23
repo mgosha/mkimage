@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 
 from mkimage import (
-    Config, _calculate_content_size, _parse_size, _resolve, _shell_quote,
-    _stage_files, collect_files,
+    Config, PartitionSpec, _calculate_content_size, _interpret_size,
+    _parse_size, _resolve, _shell_quote, _stage_files, collect_files,
 )
 
 
@@ -23,19 +23,17 @@ class TestConfig:
         assert cfg.verify is False
         assert cfg.gpt is False
         assert cfg.label == "UEFITOOLS"
-        assert cfg.extra_mb == 32
         assert cfg.force is False
-        assert cfg.data_dir == ""
-        assert cfg.data_size == ""
-        assert cfg.esp_label == "ESP"
-        assert cfg.data_label == "DATA"
+        assert cfg.partitions == []
 
     def test_custom_values(self) -> None:
-        cfg = Config(verbose=True, label="MYTOOLS", extra_mb=64, gpt=True)
+        parts = [PartitionSpec("esp", "", "ESP")]
+        cfg = Config(verbose=True, label="MYTOOLS", gpt=True, partitions=parts)
         assert cfg.verbose is True
         assert cfg.label == "MYTOOLS"
-        assert cfg.extra_mb == 64
         assert cfg.gpt is True
+        assert len(cfg.partitions) == 1
+        assert cfg.partitions[0].fs_type == "esp"
 
     def test_log_default_is_print(self) -> None:
         cfg = Config()
@@ -47,6 +45,52 @@ class TestConfig:
         cfg.log("hello")
         cfg.log("world")
         assert messages == ["hello", "world"]
+
+
+class TestPartitionSpec:
+    def test_defaults(self) -> None:
+        ps = PartitionSpec()
+        assert ps.fs_type == "fat32"
+        assert ps.size == ""
+        assert ps.label == "UEFITOOLS"
+        assert ps.source_dir == ""
+
+    def test_esp(self) -> None:
+        ps = PartitionSpec("esp", "64M", "ESP")
+        assert ps.fs_type == "esp"
+        assert ps.size == "64M"
+        assert ps.label == "ESP"
+
+    def test_with_source_dir(self) -> None:
+        ps = PartitionSpec("fat32", "0", "DATA", "/tmp/data")
+        assert ps.source_dir == "/tmp/data"
+
+
+class TestInterpretSize:
+    def test_auto_esp(self) -> None:
+        result = _interpret_size("", 10, is_esp=True)
+        assert result >= 64  # min for ESP
+
+    def test_auto_regular(self) -> None:
+        result = _interpret_size("", 10, is_esp=False)
+        assert result >= 40  # min for non-ESP
+
+    def test_extra(self) -> None:
+        result = _interpret_size("+32M", 10)
+        assert result == 42  # 10 + 32
+
+    def test_extra_min(self) -> None:
+        result = _interpret_size("+1M", 1)
+        assert result >= 40  # min 40
+
+    def test_fixed_mb(self) -> None:
+        assert _interpret_size("64M", 10) == 64
+
+    def test_fixed_gb(self) -> None:
+        assert _interpret_size("4G", 10) == 4096
+
+    def test_rest_of_disk(self) -> None:
+        assert _interpret_size("0", 10) == 0
 
 
 # ---------------------------------------------------------------------------
