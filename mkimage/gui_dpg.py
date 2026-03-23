@@ -146,18 +146,30 @@ def _create_themes() -> None:
 # Native file dialog helper
 # ---------------------------------------------------------------------------
 
+_dialog_open = False
+
+
 def _open_native_dialog(
     mode: str, title: str, callback: object,
     filetypes: list[tuple[str, str]] | None = None,
     multiple: bool = False,
 ) -> None:
-    """Open a native OS file dialog in a background thread."""
+    """Open a native OS file dialog in a background thread. Only one at a time."""
+    global _dialog_open
+    if _dialog_open:
+        return
+    _dialog_open = True
+
     def run() -> None:
-        from mkimage.native_dialog import native_file_dialog
-        results = native_file_dialog(
-            mode=mode, title=title, filetypes=filetypes, multiple=multiple)
-        if results:
-            callback(results)
+        global _dialog_open
+        try:
+            from mkimage.native_dialog import native_file_dialog
+            results = native_file_dialog(
+                mode=mode, title=title, filetypes=filetypes, multiple=multiple)
+            if results:
+                callback(results)
+        finally:
+            _dialog_open = False
     threading.Thread(target=run, daemon=True).start()
 
 
