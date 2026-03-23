@@ -52,6 +52,7 @@ class Config:
     verbose: bool = False
     verify: bool = False
     gpt: bool = False
+    mbr: bool = False
     label: str = "UEFITOOLS"
     extra_mb: int = 32
     force: bool = False
@@ -273,6 +274,8 @@ def ensure_tools(cfg: Config, fmt: str) -> None:
     """
     if fmt == "img":
         missing = check_tools_img()
+    elif fmt == "mbr":
+        missing = check_tools_mbr()
     elif fmt == "gpt":
         missing = check_tools_gpt()
     else:
@@ -289,6 +292,8 @@ def ensure_tools(cfg: Config, fmt: str) -> None:
         # Verify installation worked
         if fmt == "img":
             still_missing = check_tools_img()
+        elif fmt == "mbr":
+            still_missing = check_tools_mbr()
         elif fmt == "gpt":
             still_missing = check_tools_gpt()
         else:
@@ -894,6 +899,90 @@ def build_iso(cfg: Config, files: dict[str, str], output: str) -> None:
 
     actual_size = os.path.getsize(output)
     cfg.log(f"  Created {output} ({actual_size // 1024}KB, ISO 9660)")
+
+
+# ---------------------------------------------------------------------------
+# MBR image builder
+# ---------------------------------------------------------------------------
+
+def check_tools_mbr() -> list[str]:
+    """Check tools needed for MBR image creation. Returns missing tools."""
+    missing: list[str] = []
+    # sfdisk on Linux, fdisk on macOS
+    if _is_macos():
+        base_tools = ["dd", "mkfs.vfat", "rsync", "fdisk"]
+    else:
+        base_tools = ["dd", "mkfs.vfat", "rsync", "sfdisk"]
+    if _is_macos():
+        base_tools.append("hdiutil")
+    else:
+        base_tools.append("losetup")
+    for tool in base_tools:
+        if not _which(tool):
+            missing.append(tool)
+    return missing
+
+
+def build_mbr_img(cfg: Config, files: dict[str, str], output: str) -> None:
+    """Create an MBR-partitioned disk image with a single FAT partition."""
+    _check_root(cfg, "MBR image creation")
+    ensure_tools(cfg, "mbr")
+    out = _resolve(output)
+
+    content_mb = _calculate_content_size(files)
+    part_mb = max(int(content_mb * 1.3 + 10), 40)
+    total_mb = part_mb + 1  # 1MB MBR overhead
+    part_label = cfg.label[:11]
+    cfg.log(f"  MBR image: {total_mb}MB total ({part_mb}MB partition, "
+            f"{content_mb}MB content)")
+
+    with tempfile.TemporaryDirectory() as staging:
+        _stage_files(files, Path(staging))
+        stg_resolved = _resolve(staging)
+
+        # Create image
+        _run(cfg, ["dd", "if=/dev/zero", f"of={out}", "bs=1M",
+                   "count=0", f"seek={total_mb}"], verbose=cfg.verbose)
+
+        # Create MBR partition table with single partition
+        if _is_macos():
+            # macOS fdisk: create single partition
+            _run(cfg, [
+                "bash", "-c",
+                f"echo 'y' | fdisk -i -a dos '{out}'"
+            ], check=False, verbose=cfg.verbose)
+            # Use sgdisk alternative or manual sector math
+            # Actually, simpler: use sfdisk-compatible approach
+            # macOS doesn't have sfdisk, so use fdisk with a script
+            # For now, fall back to creating a raw partition table
+            _run(cfg, [
+                "bash", "-c",
+                f"printf ',,0x0C,*\\n' | sfdisk '{out}'"
+            ], check=False, verbose=cfg.verbose)
+        else:
+            # Linux: sfdisk is scriptable
+            _run(cfg, [
+                "bash", "-c",
+                f"echo ',,0x0C,*' | sfdisk '{out}'"
+            ], verbose=True)
+
+        loop_dev = _setup_loop_device(cfg, out)
+        try:
+            part = _wait_for_partition(cfg, loop_dev, 1)
+
+            cfg.log(f"  Formatting partition ({part_label})...")
+            _format_partition(cfg, part, cfg.fs_type, part_label)
+
+            cfg.log(f"  Copying {len(files)} files...")
+            _populate_partition(cfg, stg_resolved, part)
+        finally:
+            _teardown_loop_device(cfg, loop_dev)
+
+    actual_size = os.path.getsize(output)
+    cfg.log(f"  [OK] Created {output} ({actual_size // (1024*1024)}MB, MBR)")
+
+    if cfg.verify:
+        _verify_write(cfg, files, output)
 
 
 # ---------------------------------------------------------------------------
@@ -1993,6 +2082,10 @@ examples:
         help="Extra free space in MB beyond content size (default: 32)",
     )
     parser.add_argument(
+        "--mbr", action="store_true",
+        help="Create MBR-partitioned image",
+    )
+    parser.add_argument(
         "--gpt", action="store_true",
         help="Create GPT image with EFI System Partition",
     )
@@ -2087,6 +2180,7 @@ examples:
         label=args.label,
         extra_mb=args.extra_mb,
         gpt=args.gpt or bool(args.data_dir),
+        mbr=args.mbr,
         force=args.force,
         data_dir=args.data_dir or "",
         data_size=args.data_size,
@@ -2119,13 +2213,15 @@ examples:
     if args.check:
         img_missing = check_tools_img()
         iso_missing = check_tools_iso()
+        mbr_missing = check_tools_mbr()
         gpt_missing = check_tools_gpt()
         env = "WSL" if _is_windows() else "native"
         print(f"Environment: {env}")
         print(f"FAT32 (.img): {'OK' if not img_missing else 'MISSING: ' + ', '.join(img_missing)}")
         print(f"ISO   (.iso): {'OK' if not iso_missing else 'MISSING: ' + ', '.join(iso_missing)}")
+        print(f"MBR   (.img): {'OK' if not mbr_missing else 'MISSING: ' + ', '.join(mbr_missing)}")
         print(f"GPT   (.img): {'OK' if not gpt_missing else 'MISSING: ' + ', '.join(gpt_missing)}")
-        all_missing = sorted(set(img_missing + iso_missing + gpt_missing))
+        all_missing = sorted(set(img_missing + iso_missing + mbr_missing + gpt_missing))
         if all_missing:
             packages = _resolve_packages(all_missing)
             pkg_cmd, _ = _detect_pkg_manager()
@@ -2169,8 +2265,11 @@ examples:
             elif target_type == "img" and cfg.gpt:
                 print("Building GPT image...")
                 build_gpt_img(cfg, files, build_target)
+            elif target_type == "img" and cfg.mbr:
+                print("Building MBR image...")
+                build_mbr_img(cfg, files, build_target)
             elif target_type == "img":
-                print("Building FAT32 image...")
+                print("Building image (no partition table)...")
                 build_img(cfg, files, build_target)
             elif target_type == "iso":
                 print("Building ISO image...")

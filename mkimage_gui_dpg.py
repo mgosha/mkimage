@@ -191,6 +191,14 @@ def _on_gpt_toggle(sender: int) -> None:
     else:
         dpg.hide_item("gpt_options")
 
+def _on_partition_change(sender: int) -> None:
+    val = dpg.get_value(sender)
+    dpg.set_value("gpt_check", val == "GPT")
+    if val == "GPT":
+        dpg.show_item("gpt_options")
+    else:
+        dpg.hide_item("gpt_options")
+
 def _on_target_mode_change(sender: int) -> None:
     mode = dpg.get_value(sender)
     if mode == "USB Drive":
@@ -266,7 +274,9 @@ def _do_create() -> None:
     fs_val = dpg.get_value("fs_radio")
     fs_map = {"FAT32": "fat32", "exFAT": "exfat", "NTFS": "ntfs"}
     fs_type = fs_map.get(fs_val, "fat32")
-    is_gpt = dpg.get_value("gpt_check")
+    partition = dpg.get_value("partition_radio")
+    is_gpt = partition == "GPT"
+    is_mbr = partition == "MBR"
     data_dir = dpg.get_value("data_dir_path").strip() if is_gpt else ""
 
     _set_building(True)
@@ -277,6 +287,7 @@ def _do_create() -> None:
             verbose=dpg.get_value("verbose_check"),
             verify=dpg.get_value("verify_check"),
             gpt=is_gpt or bool(data_dir),
+            mbr=is_mbr,
             label=label,
             extra_mb=extra_mb,
             force=dpg.get_value("force_check"),
@@ -329,9 +340,14 @@ def _do_create() -> None:
                     _set_status("Building GPT image...")
                     _log("Building GPT image...")
                     build_gpt_img(cfg, files, build_target)
+                elif is_img and cfg.mbr:
+                    _set_status("Building MBR image...")
+                    _log("Building MBR image...")
+                    from mkimage import build_mbr_img
+                    build_mbr_img(cfg, files, build_target)
                 elif is_img:
-                    _set_status("Building FAT32 image...")
-                    _log("Building FAT32 image...")
+                    _set_status("Building image...")
+                    _log("Building image...")
                     build_img(cfg, files, build_target)
                 else:
                     _set_status("Building ISO image...")
@@ -427,9 +443,9 @@ def gui_main() -> None:
                 _section("Output")
                 with dpg.group(horizontal=True):
                     dpg.add_text("Format:")
-                    dpg.add_radio_button(["FAT32 (.img)", "ISO (.iso)"],
+                    dpg.add_radio_button(["Image (.img)", "ISO (.iso)"],
                                          tag="fmt_radio", horizontal=True,
-                                         default_value="FAT32 (.img)")
+                                         default_value="Image (.img)")
                 with dpg.group(horizontal=True):
                     dpg.add_text("Label:")
                     dpg.add_input_text(tag="vol_label", default_value="UEFITOOLS", width=110)
@@ -464,11 +480,11 @@ def gui_main() -> None:
                 dpg.add_radio_button(["FAT32", "exFAT", "NTFS"], tag="fs_radio",
                                      horizontal=True, default_value="FAT32")
 
-                _section("Partitioning")
-                c = dpg.add_checkbox(label="GPT (EFI System Partition)", tag="gpt_check",
-                                     callback=_on_gpt_toggle)
-                with dpg.tooltip(c):
-                    dpg.add_text("Create GPT partition table with ESP")
+                _section("Partition Scheme")
+                dpg.add_radio_button(["None", "MBR", "GPT"], tag="partition_radio",
+                                     horizontal=True, default_value="None",
+                                     callback=_on_partition_change)
+                dpg.add_checkbox(tag="gpt_check", default_value=False, show=False)
 
                 with dpg.group(tag="gpt_options", show=False):
                     with dpg.group(horizontal=True):

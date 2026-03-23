@@ -22,6 +22,7 @@ from mkimage import (
     _compress_file,
     build_gpt_data_img,
     build_gpt_img,
+    build_mbr_img,
     build_img,
     build_iso,
     collect_files,
@@ -149,6 +150,7 @@ def gui_main() -> None:
                 verbose=verbose_var.get(),
                 verify=verify_var.get(),
                 gpt=gpt_var.get() or bool(gui_data_dir),
+                mbr=mbr_var.get(),
                 label=gui_label,
                 extra_mb=size_mb,
                 force=force_var.get(),
@@ -193,8 +195,11 @@ def gui_main() -> None:
                     elif is_img and cfg.gpt:
                         log("Building GPT image...")
                         build_gpt_img(cfg, files, build_target)
+                    elif is_img and cfg.mbr:
+                        log("Building MBR image...")
+                        build_mbr_img(cfg, files, build_target)
                     elif is_img:
-                        log("Building FAT32 image...")
+                        log("Building image...")
                         build_img(cfg, files, build_target)
                     else:
                         log("Building ISO image...")
@@ -248,7 +253,7 @@ def gui_main() -> None:
     fmt_frame = tk.Frame(build_tab)
     fmt_frame.grid(row=3, column=1, columnspan=2, sticky=tk.W, **pad)
     fmt_var = tk.StringVar(value="img")
-    tk.Radiobutton(fmt_frame, text="FAT32 (.img)", variable=fmt_var, value="img").pack(side=tk.LEFT)
+    tk.Radiobutton(fmt_frame, text="Image (.img)", variable=fmt_var, value="img").pack(side=tk.LEFT)
     tk.Radiobutton(fmt_frame, text="ISO (.iso)", variable=fmt_var, value="iso").pack(side=tk.LEFT, padx=10)
 
     tk.Label(build_tab, text="Label:").grid(row=4, column=0, sticky=tk.W, **pad)
@@ -300,11 +305,26 @@ def gui_main() -> None:
     tk.Radiobutton(fs_frame, text="exFAT", variable=fs_var, value="exfat").pack(side=tk.LEFT, padx=10)
     tk.Radiobutton(fs_frame, text="NTFS", variable=fs_var, value="ntfs").pack(side=tk.LEFT, padx=10)
 
-    # GPT
+    # Partition scheme
+    tk.Label(options_tab, text="Partition:").grid(row=1, column=0, sticky=tk.W, **pad)
+    part_frame = tk.Frame(options_tab)
+    part_frame.grid(row=1, column=1, columnspan=3, sticky=tk.W, **pad)
+    partition_var = tk.StringVar(value="none")
     gpt_var = tk.BooleanVar(value=False)
-    tk.Checkbutton(options_tab, text="GPT (EFI System Partition)",
-                   variable=gpt_var, command=on_gpt_toggle).grid(
-        row=1, column=0, columnspan=2, sticky=tk.W, **pad)
+    mbr_var = tk.BooleanVar(value=False)
+
+    def on_partition_change() -> None:
+        val = partition_var.get()
+        gpt_var.set(val == "gpt")
+        mbr_var.set(val == "mbr")
+        on_gpt_toggle()
+
+    tk.Radiobutton(part_frame, text="None", variable=partition_var,
+                   value="none", command=on_partition_change).pack(side=tk.LEFT)
+    tk.Radiobutton(part_frame, text="MBR", variable=partition_var,
+                   value="mbr", command=on_partition_change).pack(side=tk.LEFT, padx=10)
+    tk.Radiobutton(part_frame, text="GPT", variable=partition_var,
+                   value="gpt", command=on_partition_change).pack(side=tk.LEFT, padx=10)
 
     gpt_frame = tk.LabelFrame(options_tab, text="GPT Options", padx=5, pady=5)
     data_dir_var = tk.StringVar()
