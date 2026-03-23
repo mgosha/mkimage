@@ -1,0 +1,146 @@
+"""mkimage -- Create bootable UEFI media images from a directory.
+
+Generates FAT32 disk images (.img) or ISO images (.iso) containing
+UEFI applications. Runs natively on Linux/macOS or via WSL on Windows.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Callable
+
+
+# ---------------------------------------------------------------------------
+# Configuration (core data structure everything depends on)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Config:
+    """Runtime configuration threaded through all mkimage operations."""
+    verbose: bool = False
+    verify: bool = False
+    gpt: bool = False
+    mbr: bool = False
+    label: str = "UEFITOOLS"
+    extra_mb: int = 32
+    force: bool = False
+    log: Callable[..., None] = field(default=print)
+    data_dir: str = ""
+    data_size: str = ""
+    esp_label: str = "ESP"
+    data_label: str = "DATA"
+    iso_hybrid: bool = False
+    fs_type: str = "fat32"
+
+
+# ---------------------------------------------------------------------------
+# Re-exports: public API surface
+# ---------------------------------------------------------------------------
+
+from mkimage.platform import (  # noqa: E402
+    _is_windows,
+    _is_macos,
+    _run,
+    _which,
+    _resolve,
+    _find_tool,
+    _shell_quote,
+    _wsl_path,
+)
+from mkimage.files import (  # noqa: E402
+    collect_files,
+    _stage_files,
+    _calculate_content_size,
+    _parse_size,
+)
+from mkimage.tools import (  # noqa: E402
+    check_tools_img,
+    check_tools_iso,
+    check_tools_gpt,
+    check_tools_mbr,
+    check_tools_fs,
+    ensure_tools,
+    _suggest_install,
+    _resolve_packages,
+    _detect_pkg_manager,
+    _install_packages,
+    _TOOL_PACKAGES,
+)
+from mkimage.partition import (  # noqa: E402
+    _format_partition,
+    _setup_loop_device,
+    _wait_for_partition,
+    _teardown_loop_device,
+    _check_root,
+    _populate_partition,
+)
+from mkimage.compress import (  # noqa: E402
+    _compress_file,
+    _decompress_pipe_cmd,
+    _is_compressed_path,
+    _strip_compression_ext,
+)
+from mkimage.verify import _verify_write  # noqa: E402
+from mkimage.modify import modify_img  # noqa: E402
+from mkimage.detect import _detect_source_type, _detect_target_type  # noqa: E402
+
+# Builders (imported via builders __init__)
+from mkimage.builders import (  # noqa: E402
+    build_img,
+    build_iso,
+    build_mbr_img,
+    build_gpt_img,
+    build_gpt_data_img,
+)
+
+# USB operations
+from mkimage.usb import (  # noqa: E402
+    write_usb,
+    _list_removable_drives,
+    _write_usb_from_dir,
+    _write_usb_from_image,
+)
+from mkimage.usb.detect import MAX_USB_SIZE_GB  # noqa: E402
+from mkimage.usb.safety import (  # noqa: E402
+    _verify_usb_bus,
+    _usb_safety_checks,
+    _unmount_device,
+    _resolve_usb_target,
+    _cli_select_drive,
+    _cli_confirm_write,
+)
+
+# CLI entry point
+from mkimage.cli import main  # noqa: E402
+
+__all__ = [
+    "Config",
+    # platform
+    "_is_windows", "_is_macos", "_run", "_which", "_resolve", "_find_tool",
+    "_shell_quote", "_wsl_path",
+    # files
+    "collect_files", "_stage_files", "_calculate_content_size", "_parse_size",
+    # tools
+    "check_tools_img", "check_tools_iso", "check_tools_gpt", "check_tools_mbr",
+    "check_tools_fs", "ensure_tools", "_suggest_install", "_resolve_packages",
+    "_detect_pkg_manager", "_install_packages", "_TOOL_PACKAGES",
+    # partition
+    "_format_partition", "_setup_loop_device", "_wait_for_partition",
+    "_teardown_loop_device", "_check_root", "_populate_partition",
+    # compress
+    "_compress_file", "_decompress_pipe_cmd", "_is_compressed_path",
+    "_strip_compression_ext",
+    # verify
+    "_verify_write",
+    # modify
+    "modify_img",
+    # detect
+    "_detect_source_type", "_detect_target_type",
+    # builders
+    "build_img", "build_iso", "build_mbr_img", "build_gpt_img", "build_gpt_data_img",
+    # usb
+    "write_usb", "_list_removable_drives", "_write_usb_from_dir", "_write_usb_from_image",
+    "_verify_usb_bus", "_usb_safety_checks", "_unmount_device", "_resolve_usb_target",
+    "_cli_select_drive", "_cli_confirm_write",
+    # cli
+    "main",
+]

@@ -7,16 +7,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from mkimage import (
-    Config,
-    MAX_USB_SIZE_GB,
-    _detect_source_type,
-    _detect_target_type,
-    _list_removable_drives_linux,
-    _usb_safety_checks,
-    _verify_usb_bus,
-    write_usb,
-)
+from mkimage import Config, _detect_source_type, _detect_target_type, _usb_safety_checks, _verify_usb_bus, write_usb
+from mkimage.usb.detect import MAX_USB_SIZE_GB, _list_removable_drives_linux
 
 # Sample lsblk output for mocking
 LSBLK_OUTPUT = """\
@@ -44,7 +36,7 @@ def _make_run_mock(lsblk_output: str = LSBLK_OUTPUT,
 
 class TestListDrivesLinux:
     def test_parse_lsblk(self) -> None:
-        with patch("mkimage._run", side_effect=_make_run_mock().side_effect):
+        with patch("mkimage.usb.detect._run", side_effect=_make_run_mock().side_effect):
             drives = _list_removable_drives_linux()
         names = [d["name"] for d in drives]
         # sdb and sdc are removable USB, sda is not removable, nvme is not
@@ -56,14 +48,14 @@ class TestListDrivesLinux:
     def test_filter_non_removable(self) -> None:
         # sda has removable=0 and non-USB transport
         lsblk = "sda 500107862016 0 disk Samsung SSD sata\n"
-        with patch("mkimage._run", side_effect=_make_run_mock(lsblk).side_effect):
+        with patch("mkimage.usb.detect._run", side_effect=_make_run_mock(lsblk).side_effect):
             drives = _list_removable_drives_linux()
         assert len(drives) == 0
 
     def test_filter_large_drives(self) -> None:
         # 4TB USB drive should be filtered (> 2TB limit)
         big = f"sdb {4 * 1024**4} 1 disk Big USB usb\n"
-        with patch("mkimage._run", side_effect=_make_run_mock(big).side_effect):
+        with patch("mkimage.usb.detect._run", side_effect=_make_run_mock(big).side_effect):
             drives = _list_removable_drives_linux()
         assert len(drives) == 0
 
@@ -77,7 +69,7 @@ class TestListDrivesLinux:
                 return subprocess.CompletedProcess(cmd, 0, stdout="/\n", stderr="")
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-        with patch("mkimage._run", side_effect=fake_run):
+        with patch("mkimage.usb.detect._run", side_effect=fake_run):
             drives = _list_removable_drives_linux()
         assert len(drives) == 0
 
@@ -86,7 +78,7 @@ class TestWriteUsbSafety:
     def test_abort_no_drives(self) -> None:
         messages: list[str] = []
         cfg = Config(log=lambda msg: messages.append(msg))
-        with patch("mkimage._list_removable_drives", return_value=[]):
+        with patch("mkimage.usb.write._list_removable_drives", return_value=[]):
             write_usb(cfg, "fake.img")
         assert any("no removable" in m.lower() for m in messages)
 
@@ -97,7 +89,7 @@ class TestWriteUsbSafety:
             "name": "sdb", "path": "/dev/sdb", "size": "16GB",
             "size_bytes": str(16 * 1024**3), "model": "Test USB",
         }
-        with patch("mkimage._list_removable_drives", return_value=[fake_drive]):
+        with patch("mkimage.usb.write._list_removable_drives", return_value=[fake_drive]):
             write_usb(
                 cfg, "fake.img",
                 select_drive=lambda drives: fake_drive,
@@ -112,7 +104,7 @@ class TestWriteUsbSafety:
             "name": "sdb", "path": "/dev/sdb", "size": "4TB",
             "size_bytes": str(4 * 1024**4), "model": "Huge Drive",
         }
-        with patch("mkimage._list_removable_drives", return_value=[huge_drive]):
+        with patch("mkimage.usb.write._list_removable_drives", return_value=[huge_drive]):
             write_usb(
                 cfg, "fake.img",
                 select_drive=lambda drives: huge_drive,
@@ -133,8 +125,8 @@ class TestWriteUsbSafety:
                 return subprocess.CompletedProcess(cmd, 0, stdout="/\n/boot\n", stderr="")
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-        with patch("mkimage._list_removable_drives", return_value=[sda_drive]), \
-             patch("mkimage._run", side_effect=fake_run):
+        with patch("mkimage.usb.write._list_removable_drives", return_value=[sda_drive]), \
+             patch("mkimage.usb.write._run", side_effect=fake_run):
             write_usb(
                 cfg, "fake.img",
                 select_drive=lambda drives: sda_drive,
@@ -155,7 +147,7 @@ class TestVerifyUsbBus:
                 return subprocess.CompletedProcess(cmd, 0, stdout=udevadm_output, stderr="")
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-        with patch("mkimage._run", side_effect=fake_run):
+        with patch("mkimage.usb.safety._run", side_effect=fake_run):
             assert _verify_usb_bus(cfg, "/dev/sdb") is True
 
     def test_rejects_sata(self) -> None:
@@ -169,7 +161,7 @@ class TestVerifyUsbBus:
                 return subprocess.CompletedProcess(cmd, 0, stdout=udevadm_output, stderr="")
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-        with patch("mkimage._run", side_effect=fake_run):
+        with patch("mkimage.usb.safety._run", side_effect=fake_run):
             assert _verify_usb_bus(cfg, "/dev/sda") is False
 
     def test_skips_if_unavailable(self) -> None:
@@ -178,7 +170,7 @@ class TestVerifyUsbBus:
         def fake_which(tool: str) -> bool:
             return tool != "udevadm"
 
-        with patch("mkimage._which", side_effect=fake_which):
+        with patch("mkimage.usb.safety._which", side_effect=fake_which):
             assert _verify_usb_bus(cfg, "/dev/sdb") is True
 
 
@@ -188,7 +180,7 @@ class TestUsbSafetyChecks:
         drive = {"name": "sdb", "path": "/dev/sdb", "size": "16GB",
                  "size_bytes": str(16 * 1024**3), "model": "SSD"}
 
-        with patch("mkimage._verify_usb_bus", return_value=False):
+        with patch("mkimage.usb.safety._verify_usb_bus", return_value=False):
             assert _usb_safety_checks(cfg, drive) is False
 
     def test_rejects_oversized(self) -> None:
@@ -196,7 +188,7 @@ class TestUsbSafetyChecks:
         drive = {"name": "sdb", "path": "/dev/sdb", "size": "4TB",
                  "size_bytes": str(4 * 1024**4), "model": "Big Drive"}
 
-        with patch("mkimage._verify_usb_bus", return_value=True):
+        with patch("mkimage.usb.safety._verify_usb_bus", return_value=True):
             assert _usb_safety_checks(cfg, drive) is False
 
     def test_accepts_valid_usb(self) -> None:
@@ -204,7 +196,7 @@ class TestUsbSafetyChecks:
         drive = {"name": "sdb", "path": "/dev/sdb", "size": "16GB",
                  "size_bytes": str(16 * 1024**3), "model": "USB Flash"}
 
-        with patch("mkimage._verify_usb_bus", return_value=True):
+        with patch("mkimage.usb.safety._verify_usb_bus", return_value=True):
             assert _usb_safety_checks(cfg, drive) is True
 
 

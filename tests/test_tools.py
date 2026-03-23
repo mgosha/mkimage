@@ -28,7 +28,7 @@ class TestCheckTools:
                 return False
             return original_which(tool)
 
-        with patch("mkimage._which", side_effect=fake_which):
+        with patch("mkimage.tools._which", side_effect=fake_which):
             missing = check_tools_img()
         assert "mkfs.vfat" in missing
 
@@ -39,7 +39,7 @@ class TestCheckTools:
                 return False
             return True
 
-        with patch("mkimage._which", side_effect=fake_which):
+        with patch("mkimage.tools._which", side_effect=fake_which):
             missing = check_tools_iso()
         assert missing == ["xorriso"]
 
@@ -58,8 +58,8 @@ class TestEnsureTools:
             return True
 
         cfg = Config()
-        with patch("mkimage._which", side_effect=fake_which), \
-             patch("mkimage._install_packages", return_value=False):
+        with patch("mkimage.tools._which", side_effect=fake_which), \
+             patch("mkimage.tools._install_packages", return_value=False):
             with pytest.raises(RuntimeError, match="install"):
                 ensure_tools(cfg, "img")
 
@@ -77,6 +77,6 @@ class TestCheckToolsGpt:
                 return False
             return original_which(tool)
 
-        with patch("mkimage._which", side_effect=fake_which):
+        with patch("mkimage.tools._which", side_effect=fake_which):
             missing = check_tools_gpt()
         assert "sgdisk" in missing

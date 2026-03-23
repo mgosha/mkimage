@@ -1,5 +1,4 @@
-#!/usr/bin/env python3
-"""mkimage GUI — Tkinter interface with tabbed layout.
+"""mkimage GUI -- Tkinter interface with tabbed layout.
 
 Fallback GUI when Dear PyGui is not installed.
 """

@@ -1,5 +1,4 @@
-#!/usr/bin/env python3
-"""mkimage GUI — Dear PyGui interface with tabbed layout.
+"""mkimage GUI -- Dear PyGui interface with tabbed layout.
 
 Modern GPU-accelerated GUI. Falls back to Tkinter if dearpygui is not
 installed. Requires: pip install dearpygui
@@ -389,7 +388,7 @@ def _animate_progress() -> None:
 
 def gui_main() -> None:
     dpg.create_context()
-    dpg.create_viewport(title="mkimage — Bootable Media Creator",
+    dpg.create_viewport(title="mkimage \u2014 Bootable Media Creator",
                         width=720, height=620)
     _create_themes()
 
