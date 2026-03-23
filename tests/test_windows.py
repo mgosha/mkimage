@@ -120,8 +120,8 @@ class TestPs1GetUsbDrives:
 
 
 class TestPs1IsoCreation:
-    def test_iso_imapi2(self) -> None:
-        """Create an ISO via IMAPI2 COM on Windows."""
+    def test_iso_cli(self) -> None:
+        """Create an ISO via -Action CreateIso on Windows."""
         # Create test files on the VM
         setup_cmds = [
             "if (Test-Path C:\\temp\\mkimage_test) { Remove-Item C:\\temp\\mkimage_test -Recurse -Force }",
@@ -132,52 +132,36 @@ class TestPs1IsoCreation:
         for cmd in setup_cmds:
             winvm_ssh(f'powershell -NoProfile -Command "{cmd}"')
 
-        # Create a harness script that calls New-IsoImage
-        harness = r"""
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
-. C:\Users\mike\mkimage\mkimage.ps1
-
-# Create a mock LogBox
-$logBox = New-Object System.Windows.Forms.TextBox
-$logBox.Multiline = $true
-
-$result = New-IsoImage -SourceDir 'C:\temp\mkimage_test\source' `
-    -Includes @() -OutputFile 'C:\temp\mkimage_test\output.iso' `
-    -Label 'TESTISO' -LogBox $logBox
-
-if (Test-Path 'C:\temp\mkimage_test\output.iso') {
-    $size = (Get-Item 'C:\temp\mkimage_test\output.iso').Length
-    Write-Host "ISO_OK:$size"
-} else {
-    Write-Host "ISO_FAIL"
-}
-Write-Host "LOG:$($logBox.Text)"
-"""
-        # Write harness to a temp file and SCP it
-        with tempfile.NamedTemporaryFile(suffix=".ps1", mode="w", delete=False) as f:
-            f.write(harness)
-            harness_path = f.name
-
         try:
-            winvm_scp_to(harness_path, "C:/temp/mkimage_test/harness.ps1")
             rc, stdout, stderr = _ps_file(
-                "C:\\temp\\mkimage_test\\harness.ps1", timeout=30,
+                VM_MKIMAGE_PS1,
+                "-Action", "CreateIso",
+                "-SourceDir", "C:\\temp\\mkimage_test\\source",
+                "-OutputFile", "C:\\temp\\mkimage_test\\output.iso",
+                "-Label", "TESTISO",
+                timeout=30,
             )
             combined = stdout + stderr
 
-            # The ISO creation might fail if IMAPI2 has issues, but it should
-            # at least attempt it
-            if "ISO_OK" in stdout:
-                # Verify ISO was created with non-zero size
-                size_str = stdout.split("ISO_OK:")[1].split("\n")[0].strip()
-                assert int(size_str) > 0
+            # The ISO creation may fail if IMAPI2 COM has issues on this VM,
+            # but the script should at least attempt it and report clearly
+            if rc == 0:
+                # Check the file was created and has content
+                check_r = winvm_ssh(
+                    'powershell -NoProfile -Command "'
+                    "if (Test-Path 'C:\\temp\\mkimage_test\\output.iso') {"
+                    "  $s = (Get-Item 'C:\\temp\\mkimage_test\\output.iso').Length;"
+                    "  Write-Host SIZE:$s"
+                    '}"',
+                    timeout=10,
+                )
+                assert "SIZE:" in check_r.stdout
+                size_str = check_r.stdout.split("SIZE:")[1].strip()
+                assert int(size_str) > 0, f"ISO created but 0 bytes. Output: {combined}"
             else:
-                # If it failed, it should have produced log output explaining why
-                assert "ISO_FAIL" in stdout or "ERROR" in combined
+                # If it failed, it should have produced output explaining why
+                assert "ERROR" in combined, f"Exit {rc} with no error message: {combined}"
         finally:
-            os.unlink(harness_path)
-            # Cleanup on VM
             winvm_ssh('powershell -NoProfile -Command "Remove-Item C:\\temp\\mkimage_test -Recurse -Force -ErrorAction SilentlyContinue"')
 
 

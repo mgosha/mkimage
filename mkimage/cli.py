@@ -285,7 +285,10 @@ tips:
         iso_missing = check_tools_iso()
         mbr_missing = check_tools_mbr()
         gpt_missing = check_tools_gpt()
-        env = "WSL" if _is_windows() else "native"
+        if _is_windows():
+            env = "Windows (native)"
+        else:
+            env = "native"
         print(f"Environment: {env}")
         print(f"FAT32 (.img): {'OK' if not img_missing else 'MISSING: ' + ', '.join(img_missing)}")
         print(f"ISO   (.iso): {'OK' if not iso_missing else 'MISSING: ' + ', '.join(iso_missing)}")

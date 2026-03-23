@@ -100,6 +100,18 @@ def _find_tool(tool: str) -> str:
     return tool  # return as-is, let PATH handle it
 
 
+def _find_ps1() -> str:
+    """Find mkimage.ps1 relative to this package."""
+    candidates = [
+        Path(__file__).parent.parent / "mkimage.ps1",  # next to mkimage/ package
+        Path(__file__).parent / "mkimage.ps1",          # inside package (zipapp)
+    ]
+    for c in candidates:
+        if c.exists():
+            return str(c)
+    return ""
+
+
 def _resolve(path: str) -> str:
     """Resolve a path for the execution environment (WSL or native)."""
     if _is_windows():

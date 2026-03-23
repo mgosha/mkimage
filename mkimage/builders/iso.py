@@ -2,20 +2,61 @@
 from __future__ import annotations
 
 import os
+import subprocess as _sp
 import tempfile
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
 from mkimage.files import _stage_files
-from mkimage.platform import _find_tool, _resolve, _run, _which
+from mkimage.platform import _find_ps1, _find_tool, _is_windows, _resolve, _run, _which
 from mkimage.tools import ensure_tools
 
 if TYPE_CHECKING:
     from mkimage import Config
 
 
+def _build_iso_windows(cfg: Config, files: dict[str, str], output: str) -> None:
+    """Create ISO image on Windows via mkimage.ps1 (IMAPI2, no WSL needed)."""
+    ps1 = _find_ps1()
+    if not ps1:
+        raise RuntimeError("mkimage.ps1 not found. Cannot create ISOs on Windows.")
+
+    with tempfile.TemporaryDirectory() as staging:
+        _stage_files(files, Path(staging))
+
+        cmd = [
+            "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+            "-File", ps1,
+            "-Action", "CreateIso",
+            "-SourceDir", staging,
+            "-OutputFile", str(Path(output).resolve()),
+            "-Label", cfg.label[:32],
+        ]
+        if cfg.verbose:
+            cmd.append("-Verbose")
+
+        cfg.log("  Creating ISO via PowerShell...")
+        r = _sp.run(cmd, capture_output=True, text=True)
+        if r.stdout.strip():
+            for line in r.stdout.strip().splitlines():
+                cfg.log(f"  {line}")
+        if r.returncode != 0:
+            err = r.stderr.strip() or r.stdout.strip()
+            raise RuntimeError(f"ISO creation failed: {err}")
+
+    actual_size = os.path.getsize(output)
+    cfg.log(f"  [OK] Created {output} ({actual_size // 1024}KB, ISO)")
+
+
 def build_iso(cfg: Config, files: dict[str, str], output: str) -> None:
-    """Create an ISO image. Optionally creates a hybrid ISO (dd-writable to USB)."""
+    """Create an ISO image. Optionally creates a hybrid ISO (dd-writable to USB).
+
+    On Windows, delegates to mkimage.ps1 for native ISO creation.
+    """
+    if _is_windows():
+        _build_iso_windows(cfg, files, output)
+        return
+
     ensure_tools(cfg, "iso")
 
     with tempfile.TemporaryDirectory() as staging:

@@ -1,10 +1,12 @@
 param(
-    [ValidateSet('', 'WriteUsb')]
+    [ValidateSet('', 'WriteUsb', 'CreateImg', 'CreateIso')]
     [string]$Action = '',
     [int]$DiskNumber = -1,
     [string]$SourceDir = '',
     [string[]]$Includes = @(),
     [string]$Label = 'UEFITOOLS',
+    [string]$OutputFile = '',
+    [int]$SizeMB = 32,
     [switch]$UseGpt,
     [switch]$SkipConfirm,
     [switch]$Verbose,
@@ -29,6 +31,8 @@ param(
 
     CLI mode (called from mkimage.py):
     - mkimage.ps1 -Action WriteUsb -DiskNumber 2 -SourceDir C:\files -Label TOOLS -SkipConfirm
+    - mkimage.ps1 -Action CreateImg -SourceDir C:\files -OutputFile C:\out.img -Label TOOLS -SizeMB 64
+    - mkimage.ps1 -Action CreateIso -SourceDir C:\files -OutputFile C:\out.iso -Label TOOLS
     - mkimage.ps1  (no args = launch WinForms GUI)
 
 .EXAMPLE
@@ -77,8 +81,19 @@ function New-UefiImage {
         [string]$Label = "UEFITOOLS",
         [int]$SizeMB = 32,
         [switch]$Verbose,
-        [System.Windows.Forms.TextBox]$LogBox
+        $LogBox = $null
     )
+
+    function Write-Log([string]$Message) {
+        if ($LogBox) {
+            $LogBox.AppendText("$Message`r`n")
+        } else {
+            Write-Host $Message
+        }
+    }
+    function Refresh-Log() {
+        if ($LogBox -and $LogBox.Parent) { $LogBox.Parent.Refresh() }
+    }
 
     $ext = [System.IO.Path]::GetExtension($OutputFile).ToLower()
     $isImg = ($ext -eq ".img")
@@ -97,7 +112,7 @@ function New-UefiImage {
     }
 
     if ($allFiles.Count -eq 0) {
-        $LogBox.AppendText("[ERROR] No files found in source directory.`r`n")
+        Write-Log "[ERROR] No files found in source directory."
         return $false
     }
 
@@ -108,9 +123,9 @@ function New-UefiImage {
     # Auto-size: content + extra space (default 32MB)
     # FAT32 minimum is ~36MB usable; VHD overhead needs ~4MB extra, so 40MB floor
     $SizeMB = [math]::Max(40, $totalMB + $SizeMB)
-    $LogBox.AppendText("Image size: ${SizeMB}MB (${totalMB}MB content + $($SizeMB - $totalMB)MB free)`r`n")
-    $LogBox.AppendText("$fileCount files ($([math]::Round($totalBytes/1024))KB) to include`r`n")
-    $LogBox.Parent.Refresh()
+    Write-Log "Image size: ${SizeMB}MB (${totalMB}MB content + $($SizeMB - $totalMB)MB free)"
+    Write-Log "$fileCount files ($([math]::Round($totalBytes/1024))KB) to include"
+    Refresh-Log
 
     if ($isImg) {
         return New-Fat32Image -SourceDir $SourceDir -Includes $Includes `
@@ -134,26 +149,37 @@ function New-Fat32Image {
         [string]$Label,
         [int]$SizeMB,
         [switch]$Verbose,
-        [System.Windows.Forms.TextBox]$LogBox
+        $LogBox = $null
     )
+
+    function Write-Log([string]$Message) {
+        if ($LogBox) {
+            $LogBox.AppendText("$Message`r`n")
+        } else {
+            Write-Host $Message
+        }
+    }
+    function Refresh-Log() {
+        if ($LogBox -and $LogBox.Parent) { $LogBox.Parent.Refresh() }
+    }
 
     $labelTrim = $Label.Substring(0, [Math]::Min($Label.Length, 11))
     $vhdPath = [System.IO.Path]::GetTempFileName() -replace '\.tmp$', '.vhd'
 
     try {
-        $LogBox.AppendText("Creating VHD ($SizeMB MB)...`r`n")
-        $LogBox.Parent.Refresh()
+        Write-Log "Creating VHD ($SizeMB MB)..."
+        Refresh-Log
 
         # Create fixed-size VHD
         New-VHD -Path $vhdPath -SizeBytes ($SizeMB * 1MB) -Fixed | Out-Null
 
         # Mount it
-        $LogBox.AppendText("Mounting VHD...`r`n")
+        Write-Log "Mounting VHD..."
         Mount-VHD -Path $vhdPath
         $disk = Get-VHD -Path $vhdPath | Get-Disk
 
         # Initialize, partition, format
-        $LogBox.AppendText("Initializing and formatting FAT32...`r`n")
+        Write-Log "Initializing and formatting FAT32..."
         Initialize-Disk -Number $disk.Number -PartitionStyle MBR -ErrorAction SilentlyContinue
         $part = New-Partition -DiskNumber $disk.Number -UseMaximumSize -AssignDriveLetter -IsActive
         $driveLetter = $part.DriveLetter
@@ -165,11 +191,11 @@ function New-Fat32Image {
         if ($fmtText -notmatch "Format complete") {
             throw "format.com failed: $fmtText"
         }
-        $LogBox.AppendText("  Format complete`r`n")
+        Write-Log "  Format complete"
 
         $destRoot = "${driveLetter}:\"
-        $LogBox.AppendText("Copying files to ${driveLetter}:...`r`n")
-        $LogBox.Parent.Refresh()
+        Write-Log "Copying files to ${driveLetter}:..."
+        Refresh-Log
 
         # Copy source directory
         if (Test-Path $SourceDir -PathType Container) {
@@ -178,7 +204,7 @@ function New-Fat32Image {
                 $rcOut = robocopy $srcNorm $destRoot /S /E /NP /NJH /NJS 2>&1
                 foreach ($line in $rcOut) {
                     $t = ("$line").Trim()
-                    if ($t) { $LogBox.AppendText("  $t`r`n") }
+                    if ($t) { Write-Log "  $t" }
                 }
             } else {
                 robocopy $srcNorm $destRoot /S /E /NP /NFL /NDL /NJH /NJS 2>&1 | Out-Null
@@ -191,7 +217,7 @@ function New-Fat32Image {
             if (Test-Path $inc -PathType Leaf) {
                 $fileName = Split-Path $inc -Leaf
                 $srcDir = Split-Path $inc -Parent
-                if ($Verbose) { $LogBox.AppendText("  $fileName`r`n") }
+                if ($Verbose) { Write-Log "  $fileName" }
                 robocopy $srcDir $destRoot $fileName /NJH /NJS /NP 2>&1 | Out-Null
             } elseif (Test-Path $inc -PathType Container) {
                 $incNorm = $inc.TrimEnd('\', '/')
@@ -199,7 +225,7 @@ function New-Fat32Image {
                     $rcOut = robocopy $incNorm $destRoot /S /E /NP /NJH /NJS 2>&1
                     foreach ($line in $rcOut) {
                         $t = ("$line").Trim()
-                        if ($t) { $LogBox.AppendText("  $t`r`n") }
+                        if ($t) { Write-Log "  $t" }
                     }
                 } else {
                     robocopy $incNorm $destRoot /S /E /NP /NFL /NDL /NJH /NJS 2>&1 | Out-Null
@@ -208,14 +234,14 @@ function New-Fat32Image {
         }
 
         $copiedCount = (Get-ChildItem $destRoot -Recurse -File).Count
-        $LogBox.AppendText("Copied $copiedCount files to image`r`n")
+        Write-Log "Copied $copiedCount files to image"
 
         # Dismount VHD
-        $LogBox.AppendText("Dismounting VHD...`r`n")
+        Write-Log "Dismounting VHD..."
         Dismount-VHD -Path $vhdPath
 
         # Strip the 512-byte VHD footer to produce a raw FAT32 image
-        $LogBox.AppendText("Converting to raw image...`r`n")
+        Write-Log "Converting to raw image..."
         $vhdSize = (Get-Item $vhdPath).Length
         $rawSize = $vhdSize - 512  # VHD fixed footer is exactly 512 bytes
         $fs = [System.IO.File]::OpenRead($vhdPath)
@@ -232,11 +258,11 @@ function New-Fat32Image {
         $outFs.Close()
 
         $size = (Get-Item $OutputFile).Length
-        $LogBox.AppendText("[OK] Created $OutputFile ($([math]::Round($size/1KB))KB, FAT32)`r`n")
+        Write-Log "[OK] Created $OutputFile ($([math]::Round($size/1KB))KB, FAT32)"
         return $true
 
     } catch {
-        $LogBox.AppendText("[ERROR] $_`r`n")
+        Write-Log "[ERROR] $_"
         # Cleanup: dismount if still mounted
         Dismount-VHD -Path $vhdPath -ErrorAction SilentlyContinue
         return $false
@@ -254,8 +280,19 @@ function New-IsoImage {
         [string]$OutputFile,
         [string]$Label,
         [switch]$Verbose,
-        [System.Windows.Forms.TextBox]$LogBox
+        $LogBox = $null
     )
+
+    function Write-Log([string]$Message) {
+        if ($LogBox) {
+            $LogBox.AppendText("$Message`r`n")
+        } else {
+            Write-Host $Message
+        }
+    }
+    function Refresh-Log() {
+        if ($LogBox -and $LogBox.Parent) { $LogBox.Parent.Refresh() }
+    }
 
     $isoLabel = $Label.Substring(0, [Math]::Min($Label.Length, 32))
 
@@ -264,8 +301,8 @@ function New-IsoImage {
     New-Item -ItemType Directory -Path $staging -Force | Out-Null
 
     try {
-        $LogBox.AppendText("Staging files for ISO...`r`n")
-        $LogBox.Parent.Refresh()
+        Write-Log "Staging files for ISO..."
+        Refresh-Log
 
         if (Test-Path $SourceDir -PathType Container) {
             $srcNorm = $SourceDir.TrimEnd('\', '/')
@@ -281,7 +318,7 @@ function New-IsoImage {
         }
 
         $stagedCount = (Get-ChildItem $staging -Recurse -File).Count
-        $LogBox.AppendText("Staged $stagedCount files`r`n")
+        Write-Log "Staged $stagedCount files"
 
         # Try oscdimg.exe (from Windows ADK)
         $oscdimg = $null
@@ -294,20 +331,20 @@ function New-IsoImage {
         }
 
         if ($oscdimg) {
-            $LogBox.AppendText("Creating ISO with oscdimg.exe...`r`n")
-            $LogBox.Parent.Refresh()
+            Write-Log "Creating ISO with oscdimg.exe..."
+            Refresh-Log
             $args = "-l$isoLabel", "-o", "-m", $staging, $OutputFile
             $proc = Start-Process -FilePath $oscdimg -ArgumentList $args `
                 -NoNewWindow -Wait -PassThru
             if ($proc.ExitCode -ne 0) {
-                $LogBox.AppendText("[ERROR] oscdimg.exe failed (exit $($proc.ExitCode))`r`n")
+                Write-Log "[ERROR] oscdimg.exe failed (exit $($proc.ExitCode))"
                 return $false
             }
         } else {
-            # No ISO tool found — create ISO using .NET (basic ISO 9660)
-            $LogBox.AppendText("oscdimg.exe not found (install Windows ADK for ISO support)`r`n")
-            $LogBox.AppendText("Creating ISO with built-in writer...`r`n")
-            $LogBox.Parent.Refresh()
+            # No ISO tool found -- create ISO using .NET (basic ISO 9660)
+            Write-Log "oscdimg.exe not found (install Windows ADK for ISO support)"
+            Write-Log "Creating ISO with built-in writer..."
+            Refresh-Log
 
             # Use IMAPI2 COM object (available on Windows 7+)
             $fsi = New-Object -ComObject IMAPI2FS.MsftFileSystemImage
@@ -320,25 +357,47 @@ function New-IsoImage {
             $resultStream = $fsi.CreateResultImage()
             $isoStream = $resultStream.ImageStream
 
-            # Write stream to file
-            $outFs = [System.IO.File]::Create($OutputFile)
-            $buffer = New-Object byte[] (64 * 1024)
-            do {
-                $bytesRead = [uint32]0
-                $isoStream.Read($buffer, $buffer.Length, [ref]$bytesRead)
-                if ($bytesRead -gt 0) { $outFs.Write($buffer, 0, $bytesRead) }
-            } while ($bytesRead -gt 0)
-            $outFs.Close()
+            # Write IStream to file using .NET COM interop helper
+            # (IStream::Read is not directly callable from PowerShell)
+            if (-not ([System.Management.Automation.PSTypeName]'IStreamCopier').Type) {
+                Add-Type -TypeDefinition @"
+using System;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.ComTypes;
+
+public static class IStreamCopier {
+    public static void CopyToFile(object comStream, string path) {
+        IStream src = (IStream)comStream;
+        using (FileStream dst = File.Create(path)) {
+            byte[] buf = new byte[65536];
+            while (true) {
+                IntPtr pcbRead = Marshal.AllocHGlobal(sizeof(int));
+                try {
+                    src.Read(buf, buf.Length, pcbRead);
+                    int cbRead = Marshal.ReadInt32(pcbRead);
+                    if (cbRead <= 0) break;
+                    dst.Write(buf, 0, cbRead);
+                } finally {
+                    Marshal.FreeHGlobal(pcbRead);
+                }
+            }
+        }
+    }
+}
+"@
+            }
+            [IStreamCopier]::CopyToFile($isoStream, $OutputFile)
             [System.Runtime.InteropServices.Marshal]::ReleaseComObject($isoStream) | Out-Null
             [System.Runtime.InteropServices.Marshal]::ReleaseComObject($fsi) | Out-Null
         }
 
         $size = (Get-Item $OutputFile).Length
-        $LogBox.AppendText("[OK] Created $OutputFile ($([math]::Round($size/1KB))KB, ISO)`r`n")
+        Write-Log "[OK] Created $OutputFile ($([math]::Round($size/1KB))KB, ISO)"
         return $true
 
     } catch {
-        $LogBox.AppendText("[ERROR] $_`r`n")
+        Write-Log "[ERROR] $_"
         return $false
     } finally {
         Remove-Item $staging -Recurse -Force -ErrorAction SilentlyContinue
@@ -1094,7 +1153,7 @@ function Show-MainForm {
 
 # --- Entry point ---
 if ($Action) {
-    # CLI mode — called from mkimage.py or command line
+    # CLI mode -- called from mkimage.py or command line
     switch ($Action) {
         'WriteUsb' {
             if ($DiskNumber -lt 0) {
@@ -1116,13 +1175,28 @@ if ($Action) {
                 -UseGpt:$UseGpt -Verbose:$Verbose -Verify:$Verify `
                 -SkipConfirm:$SkipConfirm -CliProgressFile $ProgressFile
         }
+        'CreateImg' {
+            if (-not $OutputFile) { Write-Error "OutputFile required for CreateImg"; exit 1 }
+            if (-not $SourceDir) { Write-Error "SourceDir required for CreateImg"; exit 1 }
+            $result = New-UefiImage -SourceDir $SourceDir -Includes $Includes `
+                -OutputFile $OutputFile -Label $Label -SizeMB $SizeMB `
+                -Verbose:$Verbose
+            if (-not $result) { exit 1 }
+        }
+        'CreateIso' {
+            if (-not $OutputFile) { Write-Error "OutputFile required for CreateIso"; exit 1 }
+            if (-not $SourceDir) { Write-Error "SourceDir required for CreateIso"; exit 1 }
+            $result = New-IsoImage -SourceDir $SourceDir -Includes $Includes `
+                -OutputFile $OutputFile -Label $Label -Verbose:$Verbose
+            if (-not $result) { exit 1 }
+        }
         default {
             Write-Error "Unknown action: $Action"
             exit 1
         }
     }
 } else {
-    # GUI mode — launch WinForms interface
+    # GUI mode -- launch WinForms interface
     Add-Type -AssemblyName System.Windows.Forms
     Add-Type -AssemblyName System.Drawing
     Show-MainForm

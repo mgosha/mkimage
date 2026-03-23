@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import os
+import subprocess as _sp
 import tempfile
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
 from mkimage.files import _calculate_content_size, _interpret_size, _stage_files
-from mkimage.platform import _is_windows, _resolve, _run, _which
+from mkimage.platform import _find_ps1, _is_windows, _resolve, _run, _which
 from mkimage.tools import _suggest_install, ensure_tools
 from mkimage.verify import _verify_write
 
@@ -82,12 +83,59 @@ def _populate_img_mount(cfg: Config, staging_dir: str, out: str,
     return r.returncode == 0
 
 
+def _build_img_windows(cfg: Config, files: dict[str, str], output: str) -> None:
+    """Create FAT32 image on Windows via mkimage.ps1 (no WSL needed)."""
+    from mkimage import PartitionSpec
+
+    ps1 = _find_ps1()
+    if not ps1:
+        raise RuntimeError("mkimage.ps1 not found. Cannot create images on Windows.")
+
+    with tempfile.TemporaryDirectory() as staging:
+        _stage_files(files, Path(staging))
+        part = cfg.partitions[0] if cfg.partitions else PartitionSpec()
+        content_mb = _calculate_content_size(files)
+        size_mb = _interpret_size(part.size, content_mb)
+
+        cmd = [
+            "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+            "-File", ps1,
+            "-Action", "CreateImg",
+            "-SourceDir", staging,
+            "-OutputFile", str(Path(output).resolve()),
+            "-Label", part.label[:11],
+            "-SizeMB", str(size_mb),
+        ]
+        if cfg.verbose:
+            cmd.append("-Verbose")
+
+        cfg.log(f"  Creating FAT32 image via PowerShell ({size_mb}MB)...")
+        r = _sp.run(cmd, capture_output=True, text=True)
+        if r.stdout.strip():
+            for line in r.stdout.strip().splitlines():
+                cfg.log(f"  {line}")
+        if r.returncode != 0:
+            err = r.stderr.strip() or r.stdout.strip()
+            raise RuntimeError(f"Image creation failed: {err}")
+
+    actual_size = os.path.getsize(output)
+    cfg.log(f"  [OK] Created {output} ({actual_size // 1024}KB, FAT32)")
+
+    if cfg.verify:
+        _verify_write(cfg, files, output)
+
+
 def build_img(cfg: Config, files: dict[str, str], output: str) -> None:
     """Create a FAT32 disk image (no partition table).
 
     Primary method uses mcopy (no root needed). Falls back to mount+rsync
     if mcopy is unavailable and root access is available.
+    On Windows, delegates to mkimage.ps1 for native image creation.
     """
+    if _is_windows():
+        _build_img_windows(cfg, files, output)
+        return
+
     from mkimage import PartitionSpec
 
     ensure_tools(cfg, "img")

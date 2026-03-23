@@ -75,6 +75,9 @@ def _resolve_packages(tools: list[str]) -> list[str]:
 
 def check_tools_img() -> list[str]:
     """Check tools needed for FAT32 .img creation. Returns missing tools."""
+    if _is_windows():
+        from mkimage.platform import _find_ps1
+        return [] if _find_ps1() else ["mkimage.ps1"]
     missing: list[str] = []
     for tool in ["dd", "mkfs.vfat", "mcopy"]:
         if not _which(tool):
@@ -84,6 +87,9 @@ def check_tools_img() -> list[str]:
 
 def check_tools_iso() -> list[str]:
     """Check tools needed for ISO creation. Returns missing tools."""
+    if _is_windows():
+        from mkimage.platform import _find_ps1
+        return [] if _find_ps1() else ["mkimage.ps1"]
     if _which("xorriso"):
         return []
     if _which("genisoimage"):
@@ -93,6 +99,9 @@ def check_tools_iso() -> list[str]:
 
 def check_tools_gpt() -> list[str]:
     """Check tools needed for GPT image creation. Returns missing tools."""
+    if _is_windows():
+        from mkimage.platform import _find_ps1
+        return [] if _find_ps1() else ["mkimage.ps1"]
     missing: list[str] = []
     base_tools = ["dd", "mkfs.vfat", "rsync", "sgdisk"]
     # macOS uses hdiutil instead of losetup for loop devices
@@ -108,6 +117,9 @@ def check_tools_gpt() -> list[str]:
 
 def check_tools_mbr() -> list[str]:
     """Check tools needed for MBR image creation. Returns missing tools."""
+    if _is_windows():
+        from mkimage.platform import _find_ps1
+        return [] if _find_ps1() else ["mkimage.ps1"]
     missing: list[str] = []
     # sfdisk on Linux, fdisk on macOS
     if _is_macos():

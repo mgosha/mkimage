@@ -47,6 +47,7 @@ from mkimage.platform import (  # noqa: E402
     _which,
     _resolve,
     _find_tool,
+    _find_ps1,
     _shell_quote,
     _wsl_path,
 )
@@ -122,7 +123,7 @@ __all__ = [
     "PartitionSpec",
     # platform
     "_is_windows", "_is_macos", "_run", "_which", "_resolve", "_find_tool",
-    "_shell_quote", "_wsl_path",
+    "_find_ps1", "_shell_quote", "_wsl_path",
     # files
     "collect_files", "_stage_files", "_calculate_content_size", "_parse_size",
     "_interpret_size",
