@@ -23,7 +23,12 @@ from mkimage.tools import (
     _detect_pkg_manager,
 )
 from mkimage.usb.detect import MAX_USB_SIZE_GB, _list_removable_drives
-from mkimage.usb.write import _write_usb_from_dir, _write_usb_from_image
+from mkimage.usb.write import (
+    _clone_usb_to_image,
+    _clone_usb_to_usb,
+    _write_usb_from_dir,
+    _write_usb_from_image,
+)
 
 
 def _parse_partition_spec(spec: str) -> PartitionSpec:
@@ -84,6 +89,15 @@ examples:
 
   # Custom cluster size for FAT32:
   %(prog)s --source build/ --target boot.img --cluster-size 32768
+
+  # Clone USB to image file:
+  %(prog)s --source /dev/sdb --target backup.img
+
+  # Clone USB to compressed image:
+  %(prog)s --source /dev/sdb --target backup.img.gz
+
+  # Clone USB to another USB:
+  %(prog)s --source /dev/sdb --target /dev/sdc
 
   # Check USB drive for bad blocks:
   %(prog)s --check-usb /dev/sdb
@@ -418,6 +432,20 @@ tips:
                 print(f"Error: cannot write image to file target '{target}'",
                       file=sys.stderr)
                 sys.exit(1)
+
+        elif source_type in ("device", "usb-auto"):
+            if target_type in ("device", "usb-auto"):
+                print(f"Cloning {source} to USB...")
+                _clone_usb_to_usb(cfg, source, target)
+            elif target_type in ("img",):
+                compressed = _is_compressed_path(target)
+                print(f"Cloning {source} to {target}...")
+                _clone_usb_to_image(cfg, source, target)
+            else:
+                print(f"Error: cannot clone device to '{target}'",
+                      file=sys.stderr)
+                sys.exit(1)
+            print("Done.")
 
     except (RuntimeError, FileNotFoundError, ValueError) as e:
         print(f"Error: {e}", file=sys.stderr)

@@ -24,6 +24,7 @@ from mkimage.usb.safety import (
     _unmount_device,
     _usb_safety_checks,
     _resolve_usb_target,
+    _verify_usb_bus,
     _wipe_device,
 )
 
@@ -732,3 +733,236 @@ def _write_gpt_to_device(cfg: Config, files: dict[str, str],
 
     _run(cfg, ["sync"], check=False)
     cfg.log(f"  [OK] USB drive {device} ready. You can safely remove it.")
+
+
+def _get_device_size(cfg: Config, device: str) -> int:
+    """Get the size of a block device in bytes.
+
+    Uses blockdev --getsize64 on Linux, diskutil info on macOS.
+    Returns 0 if the size cannot be determined.
+    """
+    if _is_macos():
+        r = _run(cfg, ["diskutil", "info", device], check=False)
+        if r.returncode == 0:
+            for line in r.stdout.splitlines():
+                if "Disk Size:" in line or "Total Size:" in line:
+                    # Extract byte count from parenthetical, e.g. "(15728640000 Bytes)"
+                    import re
+                    m = re.search(r"\((\d+)\s+[Bb]ytes", line)
+                    if m:
+                        return int(m.group(1))
+        return 0
+
+    r = _run(cfg, ["blockdev", "--getsize64", device],
+             check=False, as_root=True)
+    if r.returncode == 0 and r.stdout.strip():
+        try:
+            return int(r.stdout.strip())
+        except ValueError:
+            pass
+    return 0
+
+
+def _clone_usb_to_image(cfg: Config, source_device: str,
+                         output_path: str) -> None:
+    """Clone a USB drive to an image file (or compressed image).
+
+    Reads the entire device via dd and writes to the output path.
+    If the output path has a compression extension (.gz, .xz), the
+    data is piped through the appropriate compressor.
+    """
+    from mkimage.compress import _is_compressed_path
+
+    if not _verify_usb_bus(cfg, source_device):
+        cfg.log(f"Error: {source_device} is not on the USB bus. Refusing.")
+        return
+
+    dev_size = _get_device_size(cfg, source_device)
+    if dev_size > 0:
+        cfg.log(f"  Source device size: {dev_size // (1024 * 1024)}MB")
+
+    _unmount_device(cfg, source_device)
+
+    compressed = _is_compressed_path(output_path)
+    if compressed:
+        ext = Path(output_path).suffix.lower()
+        if ext == ".gz":
+            compressor = "gzip -c"
+        elif ext == ".xz":
+            compressor = "xz -c"
+        elif ext == ".zst":
+            compressor = "zstd -c"
+        else:
+            compressor = "gzip -c"
+
+        cfg.log(f"  Cloning {source_device} to {output_path} (compressed)...")
+        pipe_cmd = f"dd if={source_device} bs=4M status=progress | {compressor} > '{output_path}'"
+        r = _run(cfg, ["bash", "-c", pipe_cmd],
+                 check=False, verbose=True, as_root=True)
+    else:
+        cfg.log(f"  Cloning {source_device} to {output_path}...")
+        r = _run(cfg, ["dd", f"if={source_device}", f"of={output_path}",
+                        "bs=4M", "status=progress"],
+                 check=False, verbose=True, as_root=True)
+
+    if r.returncode != 0:
+        cfg.log(f"[ERROR] Clone failed: {r.stderr.strip()}")
+        return
+
+    _run(cfg, ["sync"], check=False)
+
+    out_size = os.path.getsize(output_path) if os.path.isfile(output_path) else 0
+    cfg.log(f"  Output file: {out_size // (1024 * 1024)}MB")
+
+    if cfg.verify and not compressed:
+        cfg.log("  Verifying clone (SHA256 checksums)...")
+        import hashlib
+        bs = 4 * 1024 * 1024
+
+        src_hash = hashlib.sha256()
+        with open(source_device, "rb") as f:
+            while True:
+                chunk = f.read(bs)
+                if not chunk:
+                    break
+                src_hash.update(chunk)
+
+        dst_hash = hashlib.sha256()
+        with open(output_path, "rb") as f:
+            while True:
+                chunk = f.read(bs)
+                if not chunk:
+                    break
+                dst_hash.update(chunk)
+
+        if src_hash.hexdigest() == dst_hash.hexdigest():
+            cfg.log(f"  [OK] Verification passed: {src_hash.hexdigest()[:16]}...")
+        else:
+            cfg.log(f"  [FAIL] Verification FAILED!")
+            cfg.log(f"    Source: {src_hash.hexdigest()}")
+            cfg.log(f"    Output: {dst_hash.hexdigest()}")
+            return
+    elif cfg.verify and compressed:
+        cfg.log("  Note: verification skipped for compressed output (decompress first)")
+
+    cfg.log(f"  [OK] Cloned {source_device} to {output_path}.")
+
+
+def _clone_usb_to_usb(cfg: Config, source_device: str,
+                       target_device: str) -> None:
+    """Clone one USB drive to another via dd.
+
+    Both source and target must be USB devices. The target must be
+    at least as large as the source. All data on the target is destroyed.
+    """
+    # Resolve "usb" auto-detect for source
+    if source_device.lower() == "usb":
+        src_drive = _resolve_usb_target(cfg, source_device)
+        if src_drive is None:
+            return
+        source_device = src_drive["path"]
+
+    # Resolve "usb" auto-detect for target
+    if target_device.lower() == "usb":
+        tgt_drive = _resolve_usb_target(cfg, target_device)
+        if tgt_drive is None:
+            return
+        target_device = tgt_drive["path"]
+
+    if source_device == target_device:
+        cfg.log("Error: source and target are the same device.")
+        return
+
+    # Safety checks on both devices
+    if not _verify_usb_bus(cfg, source_device):
+        cfg.log(f"Error: {source_device} is not on the USB bus. Refusing.")
+        return
+    if not _verify_usb_bus(cfg, target_device):
+        cfg.log(f"Error: {target_device} is not on the USB bus. Refusing.")
+        return
+
+    src_size = _get_device_size(cfg, source_device)
+    tgt_size = _get_device_size(cfg, target_device)
+
+    if src_size > 0:
+        cfg.log(f"  Source: {source_device} ({src_size // (1024 * 1024)}MB)")
+    if tgt_size > 0:
+        cfg.log(f"  Target: {target_device} ({tgt_size // (1024 * 1024)}MB)")
+
+    if src_size > 0 and tgt_size > 0 and tgt_size < src_size:
+        cfg.log(f"Error: target ({tgt_size // (1024 * 1024)}MB) is smaller "
+                f"than source ({src_size // (1024 * 1024)}MB). Refusing.")
+        return
+
+    # Check target is not a system disk
+    tgt_drive_info = _resolve_usb_target(cfg, target_device)
+    if tgt_drive_info is not None and not _usb_safety_checks(cfg, tgt_drive_info):
+        return
+
+    # Confirm destructive write
+    if not cfg.force:
+        print(f"\n  WARNING: ALL DATA on {target_device} WILL BE DESTROYED.\n")
+        try:
+            confirm = input(f"  Type 'yes' to clone {source_device} -> {target_device}: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            confirm = ""
+        if confirm != "yes":
+            cfg.log("Aborted.")
+            return
+
+    _unmount_device(cfg, source_device)
+    _unmount_device(cfg, target_device)
+    _wipe_device(cfg, target_device)
+
+    cfg.log(f"  Cloning {source_device} to {target_device}...")
+    r = _run(cfg, ["dd", f"if={source_device}", f"of={target_device}",
+                    "bs=4M", "conv=fsync", "status=progress"],
+             check=False, verbose=True, as_root=True)
+
+    if r.returncode != 0:
+        cfg.log(f"[ERROR] Clone failed: {r.stderr.strip()}")
+        return
+
+    _run(cfg, ["sync"], check=False)
+
+    if cfg.verify:
+        cfg.log("  Verifying clone (SHA256 checksums)...")
+        read_size = src_size if src_size > 0 else tgt_size
+        if read_size <= 0:
+            cfg.log("  Warning: cannot determine device size, skipping verification")
+        else:
+            import hashlib
+            bs = 4 * 1024 * 1024
+
+            src_hash = hashlib.sha256()
+            bytes_read = 0
+            with open(source_device, "rb") as f:
+                while bytes_read < read_size:
+                    to_read = min(bs, read_size - bytes_read)
+                    chunk = f.read(to_read)
+                    if not chunk:
+                        break
+                    src_hash.update(chunk)
+                    bytes_read += len(chunk)
+
+            tgt_hash = hashlib.sha256()
+            bytes_read = 0
+            with open(target_device, "rb") as f:
+                while bytes_read < read_size:
+                    to_read = min(bs, read_size - bytes_read)
+                    chunk = f.read(to_read)
+                    if not chunk:
+                        break
+                    tgt_hash.update(chunk)
+                    bytes_read += len(chunk)
+
+            if src_hash.hexdigest() == tgt_hash.hexdigest():
+                cfg.log(f"  [OK] Verification passed: {src_hash.hexdigest()[:16]}...")
+            else:
+                cfg.log(f"  [FAIL] Verification FAILED!")
+                cfg.log(f"    Source: {src_hash.hexdigest()}")
+                cfg.log(f"    Target: {tgt_hash.hexdigest()}")
+                return
+
+    cfg.log(f"  [OK] Cloned {source_device} to {target_device}. "
+            f"You can safely remove the target drive.")

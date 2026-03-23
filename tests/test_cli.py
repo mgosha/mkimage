@@ -142,3 +142,7 @@ class TestCliPhase3Flags:
         r = run_mkimage("--help")
         assert "--source" in r.stdout
         assert "--target" in r.stdout
+
+    def test_clone_examples_in_help(self) -> None:
+        r = run_mkimage("--help")
+        assert "Clone" in r.stdout or "clone" in r.stdout.lower()

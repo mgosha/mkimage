@@ -218,6 +218,13 @@ class TestDetectSourceType:
         with pytest.raises(ValueError):
             _detect_source_type("/nonexistent/path")
 
+    def test_device(self) -> None:
+        assert _detect_source_type("/dev/sdb") == "device"
+
+    def test_usb_auto(self) -> None:
+        assert _detect_source_type("usb") == "usb-auto"
+        assert _detect_source_type("USB") == "usb-auto"
+
 
 class TestDetectTargetType:
     def test_img(self) -> None:

@@ -274,7 +274,7 @@ def gui_main() -> None:
     source_var = tk.StringVar()
     source_entry = tk.Entry(build_tab, textvariable=source_var, width=50)
     source_entry.grid(row=0, column=1, columnspan=2, sticky=tk.EW, **pad)
-    ToolTip(source_entry, "Path to directory with files, or existing .img/.iso")
+    ToolTip(source_entry, "Directory, image file, /dev/sdX device, or 'usb' to auto-detect")
     tk.Button(build_tab, text="Browse...", command=browse_source).grid(row=0, column=3, **pad)
 
     # Includes
@@ -560,7 +560,8 @@ def gui_main() -> None:
                      "- Check Drive button tests USB for bad blocks\n"
                      "- Persistent checkbox adds ext4 partition for live Linux\n"
                      "- --modify flag (CLI only) edits images without rebuild\n"
-                     "- Volume labels are limited to 11 characters for FAT32\n", "body")
+                     "- Volume labels are limited to 11 characters for FAT32\n"
+                     "- Clone USB drives: use /dev/sdX or 'usb' as source\n", "body")
     help_text.insert(tk.END, "\n", "sep")
 
     help_text.insert(tk.END, "About\n", "header")

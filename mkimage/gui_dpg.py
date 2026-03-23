@@ -498,7 +498,7 @@ def gui_main() -> None:
                     src_inp = dpg.add_input_text(tag="source_path", width=-1,
                                                 hint="Directory or existing .img/.iso")
                     with dpg.tooltip(src_inp):
-                        dpg.add_text("Path to directory with files, or existing .img/.iso")
+                        dpg.add_text("Directory, image file, /dev/sdX device, or 'usb' to auto-detect")
 
                 # Extra includes
                 dpg.add_spacer(height=2)
@@ -658,6 +658,7 @@ def gui_main() -> None:
                     dpg.add_text("- Persistent checkbox adds ext4 partition for live Linux")
                     dpg.add_text("- --modify flag (CLI only) edits images without rebuild")
                     dpg.add_text("- Volume labels are limited to 11 characters for FAT32")
+                    dpg.add_text("- Clone USB drives: use /dev/sdX or 'usb' as source")
 
                     dpg.add_spacer(height=1)
                     dpg.add_separator()

@@ -102,6 +102,8 @@ from mkimage.builders import (  # noqa: E402
 from mkimage.usb import (  # noqa: E402
     write_usb,
     _list_removable_drives,
+    _clone_usb_to_image,
+    _clone_usb_to_usb,
     _write_usb_from_dir,
     _write_usb_from_image,
     _is_hybrid_iso,
@@ -150,7 +152,9 @@ __all__ = [
     # builders
     "build_img", "build_iso", "build_mbr_img", "build_gpt_img",
     # usb
-    "write_usb", "_list_removable_drives", "_write_usb_from_dir", "_write_usb_from_image",
+    "write_usb", "_list_removable_drives",
+    "_clone_usb_to_image", "_clone_usb_to_usb",
+    "_write_usb_from_dir", "_write_usb_from_image",
     "_is_hybrid_iso", "_extract_iso_to_usb",
     "_verify_usb_bus", "_usb_safety_checks", "_unmount_device", "_resolve_usb_target",
     "_cli_select_drive", "_cli_confirm_write", "_check_bad_blocks",

@@ -18,6 +18,8 @@ from mkimage.usb.safety import (
     _verify_usb_bus,
 )
 from mkimage.usb.write import (
+    _clone_usb_to_image,
+    _clone_usb_to_usb,
     _extract_iso_to_usb,
     _is_hybrid_iso,
     _poll_progress,
@@ -42,6 +44,8 @@ __all__ = [
     "_unmount_device",
     "_usb_safety_checks",
     "_verify_usb_bus",
+    "_clone_usb_to_image",
+    "_clone_usb_to_usb",
     "_extract_iso_to_usb",
     "_is_hybrid_iso",
     "_poll_progress",

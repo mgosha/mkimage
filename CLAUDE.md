@@ -89,6 +89,12 @@ mkimage.py --source <dir> --target output.img --cluster-size 32768
 # Check USB drive for bad blocks (destructive)
 mkimage.py --check-usb /dev/sdb
 
+# Clone USB to image
+mkimage.py --source /dev/sdb --target backup.img
+
+# Clone USB to compressed image
+mkimage.py --source /dev/sdb --target backup.img.gz
+
 # Wipe all partition signatures from a device
 mkimage.py --wipe /dev/sdb
 

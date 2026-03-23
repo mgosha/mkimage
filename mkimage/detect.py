@@ -7,10 +7,14 @@ from mkimage.compress import _strip_compression_ext
 
 
 def _detect_source_type(source: str) -> str:
-    """Detect source type: 'directory' or 'image'.
+    """Detect source type: 'directory', 'image', 'device', or 'usb-auto'.
 
     Raises ValueError for unrecognized source.
     """
+    if source.lower() == "usb":
+        return "usb-auto"
+    if source.startswith("/dev/") or source.startswith("\\\\.\\"):
+        return "device"
     p = Path(source)
     if p.is_dir():
         return "directory"
@@ -18,7 +22,7 @@ def _detect_source_type(source: str) -> str:
         return "image"
     if p.is_file():
         return "image"  # treat any file as image for dd
-    raise ValueError(f"Source '{source}' is not a directory or file")
+    raise ValueError(f"Source '{source}' is not a directory, file, or device")
 
 
 def _detect_target_type(target: str) -> str:
