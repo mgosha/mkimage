@@ -256,6 +256,7 @@ def gui_main() -> None:
                 force=force_var.get(),
                 log=log,
                 iso_hybrid=hybrid_var.get(),
+                udf_bridge=udf_bridge_var.get(),
                 partitions=partitions,
             )
             try:
@@ -590,24 +591,29 @@ def gui_main() -> None:
                    variable=hybrid_var).grid(
         row=4, column=0, columnspan=2, sticky=tk.W, **pad)
 
+    udf_bridge_var = tk.BooleanVar(value=False)
+    tk.Checkbutton(options_tab, text="UDF Bridge (ISO 9660 + UDF, >4GB files)",
+                   variable=udf_bridge_var).grid(
+        row=5, column=0, columnspan=2, sticky=tk.W, **pad)
+
     # Build options
     ttk.Separator(options_tab, orient=tk.HORIZONTAL).grid(
-        row=5, column=0, columnspan=4, sticky=tk.EW, padx=10, pady=5)
+        row=6, column=0, columnspan=4, sticky=tk.EW, padx=10, pady=5)
 
     verify_var = tk.BooleanVar(value=False)
     tk.Checkbutton(options_tab, text="Verify (SHA256 after build)",
                    variable=verify_var).grid(
-        row=6, column=0, columnspan=2, sticky=tk.W, **pad)
+        row=7, column=0, columnspan=2, sticky=tk.W, **pad)
 
     verbose_var = tk.BooleanVar(value=False)
     tk.Checkbutton(options_tab, text="Verbose output",
                    variable=verbose_var).grid(
-        row=7, column=0, columnspan=2, sticky=tk.W, **pad)
+        row=8, column=0, columnspan=2, sticky=tk.W, **pad)
 
     force_var = tk.BooleanVar(value=False)
     tk.Checkbutton(options_tab, text="Force (skip USB confirmation)",
                    variable=force_var).grid(
-        row=8, column=0, columnspan=2, sticky=tk.W, **pad)
+        row=9, column=0, columnspan=2, sticky=tk.W, **pad)
 
     # Populate default partition row (None scheme = one fat32 row)
     on_scheme_change()

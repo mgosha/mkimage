@@ -438,6 +438,7 @@ def _do_create() -> None:
             force=dpg.get_value("force_check"),
             log=_log,
             iso_hybrid=dpg.get_value("hybrid_check"),
+            udf_bridge=dpg.get_value("udf_bridge_check"),
             partitions=partitions,
         )
         try:
@@ -683,6 +684,9 @@ def gui_main() -> None:
                 c = dpg.add_checkbox(label="Hybrid ISO (dd-writable to USB)", tag="hybrid_check")
                 with dpg.tooltip(c):
                     dpg.add_text("Embed EFI boot image so the ISO can be\nwritten directly to USB with dd")
+                c = dpg.add_checkbox(label="UDF Bridge (ISO 9660 + UDF, >4GB files)", tag="udf_bridge_check")
+                with dpg.tooltip(c):
+                    dpg.add_text("Create dual ISO 9660 + UDF filesystem.\nSupports files larger than 4GB.")
 
                 _section("Build Options")
                 c = dpg.add_checkbox(label="Verify (SHA256 after build)", tag="verify_check")

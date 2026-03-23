@@ -69,6 +69,9 @@ examples:
   # ISO image (hybrid for USB boot):
   %(prog)s --source build/ --target boot.iso --iso-hybrid
 
+  # UDF bridge ISO (supports files >4GB):
+  %(prog)s --source build/ --target boot.iso --udf-bridge
+
   # Compressed output:
   %(prog)s --source build/ --target boot.img.gz
 
@@ -171,6 +174,10 @@ tips:
     img_group.add_argument(
         "--iso-hybrid", action="store_true",
         help="Create hybrid ISO (dd-writable to USB)",
+    )
+    img_group.add_argument(
+        "--udf-bridge", action="store_true",
+        help="Create UDF bridge ISO (ISO 9660 + UDF, supports files >4GB)",
     )
     img_group.add_argument(
         "--verify", action="store_true",
@@ -290,6 +297,7 @@ tips:
         mbr=args.mbr,
         force=args.force,
         iso_hybrid=args.iso_hybrid,
+        udf_bridge=args.udf_bridge,
         partitions=partitions,
     )
 

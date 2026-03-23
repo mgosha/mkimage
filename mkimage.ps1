@@ -433,6 +433,7 @@ function Write-UsbDrive {
         [string]$SourceDir,
         [string[]]$Includes,
         [string]$Label = "UEFITOOLS",
+        [string]$FileSystem = "FAT32",
         [switch]$UseGpt,
         [switch]$Verbose,
         [switch]$Verify,
@@ -556,14 +557,14 @@ convert $($partStyle.ToLower())
 select disk __DISKNUM__
 create partition primary
 select partition 1
-format fs=fat32 quick label=__LABEL__
+format fs=__FILESYSTEM__ quick label=__LABEL__
 "@
     } else {
         $dpSetup = @"
 select disk __DISKNUM__
 create partition primary
 active
-format fs=fat32 quick label=__LABEL__
+format fs=__FILESYSTEM__ quick label=__LABEL__
 "@
     }
     "  diskpart: create + format..." | Out-File -Append __PROGRESS__
@@ -737,6 +738,7 @@ format fs=fat32 quick label=__LABEL__
     $writeScript = $writeScript.Replace('__PROGRESS__', "'$($progressFile -replace "'","''")'")
     $writeScript = $writeScript.Replace('__DISKNUM__', "$diskNum")
     $writeScript = $writeScript.Replace('__LABEL__', $labelTrim)
+    $writeScript = $writeScript.Replace('__FILESYSTEM__', $FileSystem.ToLower())
     $writeScript = $writeScript.Replace('__SOURCES__', $fileSourcesStr)
     $writeScript = $writeScript.Replace('__VERBOSE__', "$(if ($Verbose) { '$true' } else { '$false' })")
     $writeScript = $writeScript.Replace('__VERIFY__', "$(if ($Verify) { '$true' } else { '$false' })")
@@ -954,6 +956,21 @@ function Show-MainForm {
     $txtLabel.Size = New-Object System.Drawing.Size(150, 23)
     $form.Controls.Add($txtLabel)
 
+    # Filesystem
+    $lblFs = New-Object System.Windows.Forms.Label
+    $lblFs.Text = "Filesystem:"
+    $lblFs.Location = New-Object System.Drawing.Point(290, $y)
+    $lblFs.AutoSize = $true
+    $form.Controls.Add($lblFs)
+
+    $cmbFs = New-Object System.Windows.Forms.ComboBox
+    $cmbFs.DropDownStyle = "DropDownList"
+    $cmbFs.Items.AddRange(@("FAT32", "NTFS", "exFAT"))
+    $cmbFs.SelectedIndex = 0
+    $cmbFs.Location = New-Object System.Drawing.Point(370, ($y - 2))
+    $cmbFs.Size = New-Object System.Drawing.Size(80, 23)
+    $form.Controls.Add($cmbFs)
+
     # Image size
     $y += 30
     $lblSize = New-Object System.Windows.Forms.Label
@@ -1160,8 +1177,10 @@ function Show-MainForm {
             if ($chkVerbose.Checked) { $optSwitches['Verbose'] = $true }
             if ($chkVerify.Checked) { $optSwitches['Verify'] = $true }
             if ($chkGpt.Checked) { $optSwitches['UseGpt'] = $true }
+            $fs = $cmbFs.SelectedItem
             Write-UsbDrive -TargetDrive $targetDrive -SourceDir $src `
-                -Includes $includes -Label $label -LogBox $txtLog @optSwitches
+                -Includes $includes -Label $label -FileSystem $fs `
+                -LogBox $txtLog @optSwitches
         } else {
             $verboseSwitch = if ($chkVerbose.Checked) { @{Verbose=$true} } else { @{} }
             New-UefiImage -SourceDir $src -Includes $includes -OutputFile $out `

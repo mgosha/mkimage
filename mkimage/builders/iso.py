@@ -77,7 +77,15 @@ def build_iso(cfg: Config, files: dict[str, str], output: str) -> None:
         stg_resolved = _resolve(staging)
         out = _resolve(output)
 
-        if _which("xorriso"):
+        # UDF bridge: prefer genisoimage (xorriso mkisofs mode lacks -udf)
+        use_xorriso = _which("xorriso") and not cfg.udf_bridge
+        if cfg.udf_bridge and not _which("genisoimage") and _which("xorriso"):
+            # No genisoimage — fall back to xorriso without UDF
+            cfg.log("  Warning: xorriso does not support -udf in mkisofs mode.")
+            cfg.log("  Install genisoimage for UDF bridge support.")
+            use_xorriso = True
+
+        if use_xorriso:
             cmd = [
                 "xorriso", "-as", "mkisofs",
                 "-o", out,
@@ -120,13 +128,18 @@ def build_iso(cfg: Config, files: dict[str, str], output: str) -> None:
         else:
             if cfg.iso_hybrid:
                 cfg.log("  Warning: ISO hybrid requires xorriso (genisoimage does not support it)")
-            _run(cfg, [
+            giso_cmd = [
                 "genisoimage",
                 "-o", out,
                 "-R", "-J", "-joliet-long",
                 "-V", cfg.label[:32],
-                stg_resolved,
-            ], verbose=True)
+            ]
+            if cfg.udf_bridge:
+                giso_cmd.append("-udf")
+                cfg.log("  Creating UDF bridge ISO (ISO 9660 + UDF)")
+            giso_cmd.append(stg_resolved)
+            _run(cfg, giso_cmd, verbose=True)
 
     actual_size = os.path.getsize(output)
-    cfg.log(f"  Created {output} ({actual_size // 1024}KB, ISO 9660)")
+    fmt_desc = "ISO 9660 + UDF" if cfg.udf_bridge else "ISO 9660"
+    cfg.log(f"  Created {output} ({actual_size // 1024}KB, {fmt_desc})")

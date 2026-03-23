@@ -34,6 +34,7 @@ class Config:
     force: bool = False
     log: Callable[..., None] = field(default=print)
     iso_hybrid: bool = False
+    udf_bridge: bool = False
     partitions: list[PartitionSpec] = field(default_factory=list)
 
 

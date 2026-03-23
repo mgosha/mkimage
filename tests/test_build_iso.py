@@ -81,3 +81,30 @@ class TestBuildIso:
         if not content:
             content = _isoinfo_extract(str(built_iso), "/STARTUP.NSH;1")
         assert b"echo Hello" in content
+
+
+class TestBuildIsoUdfBridge:
+    def test_udf_bridge_creates_file(self, sample_dir: Path, tmp_path: Path) -> None:
+        cfg = Config(udf_bridge=True)
+        files = collect_files(cfg, str(sample_dir), [])
+        out = tmp_path / "bridge.iso"
+        build_iso(cfg, files, str(out))
+        assert out.exists()
+        assert out.stat().st_size > 0
+
+    def test_udf_bridge_format(self, sample_dir: Path, tmp_path: Path) -> None:
+        cfg = Config(udf_bridge=True)
+        files = collect_files(cfg, str(sample_dir), [])
+        out = tmp_path / "bridge.iso"
+        build_iso(cfg, files, str(out))
+        ft = _file_type(str(out))
+        assert "ISO 9660" in ft
+
+    def test_udf_bridge_with_hybrid(self, sample_dir: Path, tmp_path: Path) -> None:
+        cfg = Config(udf_bridge=True, iso_hybrid=True)
+        files = collect_files(cfg, str(sample_dir), [])
+        out = tmp_path / "hybrid_bridge.iso"
+        build_iso(cfg, files, str(out))
+        assert out.exists()
+        ft = _file_type(str(out))
+        assert "ISO 9660" in ft

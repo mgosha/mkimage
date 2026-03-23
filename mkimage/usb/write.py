@@ -220,7 +220,14 @@ def _write_usb_windows(
     disk_num = target_path.rsplit("PhysicalDrive", 1)[-1]
     label_trim = cfg.label[:11]
 
-    cfg.log(f"Formatting disk {disk_num} as FAT32 and copying files...")
+    # Determine filesystem from first partition spec
+    fs_type = "FAT32"
+    if cfg.partitions:
+        fs_map = {"fat32": "FAT32", "ntfs": "NTFS", "exfat": "exFAT",
+                  "esp": "FAT32"}
+        fs_type = fs_map.get(cfg.partitions[0].fs_type, "FAT32")
+
+    cfg.log(f"Formatting disk {disk_num} as {fs_type} and copying files...")
 
     fd, progress_file = tempfile.mkstemp(suffix=".txt")
     os.close(fd)
@@ -264,19 +271,20 @@ try {{
     Start-Sleep -Seconds 1
 
     # Step 4: create + format (separate session)
+    $fsType = "{fs_type.lower()}"
     if ($useGpt) {{
         $dpCreate = @"
 select disk {disk_num}
 create partition primary
 select partition 1
-format fs=fat32 quick label={label_trim}
+format fs=$fsType quick label={label_trim}
 "@
     }} else {{
         $dpCreate = @"
 select disk {disk_num}
 create partition primary
 active
-format fs=fat32 quick label={label_trim}
+format fs=$fsType quick label={label_trim}
 "@
     }}
     "  diskpart: create + format..." | Out-File -Append '{prg_esc}'
