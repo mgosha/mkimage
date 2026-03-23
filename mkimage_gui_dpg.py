@@ -141,10 +141,22 @@ def _create_themes() -> None:
         with dpg.theme_component(dpg.mvText):
             dpg.add_theme_color(dpg.mvThemeCol_Text, _TEXT_DIM)
 
-    # Progress bar
+    # Progress bar — building (blue)
     with dpg.theme(tag="progress_theme"):
         with dpg.theme_component(dpg.mvProgressBar):
             dpg.add_theme_color(dpg.mvThemeCol_PlotHistogram, _ACCENT)
+            dpg.add_theme_color(dpg.mvThemeCol_FrameBg, (35, 35, 42))
+
+    # Progress bar — success (green)
+    with dpg.theme(tag="progress_success"):
+        with dpg.theme_component(dpg.mvProgressBar):
+            dpg.add_theme_color(dpg.mvThemeCol_PlotHistogram, _SUCCESS)
+            dpg.add_theme_color(dpg.mvThemeCol_FrameBg, (35, 35, 42))
+
+    # Progress bar — error (red)
+    with dpg.theme(tag="progress_error"):
+        with dpg.theme_component(dpg.mvProgressBar):
+            dpg.add_theme_color(dpg.mvThemeCol_PlotHistogram, _ERROR)
             dpg.add_theme_color(dpg.mvThemeCol_FrameBg, (35, 35, 42))
 
 
@@ -257,16 +269,32 @@ def _get_includes() -> list[str]:
     return includes
 
 
-def _set_building(active: bool) -> None:
-    """Enable/disable form during build."""
+def _set_building(active: bool, result: str = "") -> None:
+    """Enable/disable form during build.
+
+    Args:
+        active: True to start building, False to finish.
+        result: "success" or "error" when finishing (active=False).
+    """
     global _building
     _building = active
     dpg.configure_item("action_btn", enabled=not active)
     if active:
+        dpg.bind_item_theme("progress_bar", "progress_theme")
+        dpg.set_value("progress_bar", 0.0)
         dpg.show_item("progress_bar")
         _set_status("Building...")
     else:
-        dpg.hide_item("progress_bar")
+        if result == "success":
+            dpg.bind_item_theme("progress_bar", "progress_success")
+            dpg.set_value("progress_bar", 1.0)
+            # Leave visible to show green completion
+        elif result == "error":
+            dpg.bind_item_theme("progress_bar", "progress_error")
+            dpg.set_value("progress_bar", 1.0)
+            # Leave visible to show red error
+        else:
+            dpg.hide_item("progress_bar")
 
 
 # ---------------------------------------------------------------------------
@@ -332,12 +360,14 @@ def _do_create() -> None:
             if not Path(source).is_dir() and Path(source).is_file():
                 if target_mode != "USB Drive":
                     _log("Error: Image source can only target USB.")
+                    _set_building(False, "error")
                     return
                 _set_status("Writing image to USB...")
                 _log(f"Writing {source} to USB...")
                 _write_usb_from_image(cfg, source, "usb")
                 _log("Done.")
                 _set_status("Complete")
+                _set_building(False, "success")
                 return
 
             _set_status("Collecting files...")
@@ -346,6 +376,7 @@ def _do_create() -> None:
             if not files:
                 _log("Error: no files found.")
                 _set_status("Error: no files")
+                _set_building(False, "error")
                 return
             _log(f"  {len(files)} files")
             for p in sorted(files.keys()):
@@ -378,11 +409,14 @@ def _do_create() -> None:
                     build_iso(cfg, files, output)
             _log("Done.")
             _set_status("Complete")
+            _set_building(False, "success")
+            return
         except Exception as e:
             _log(f"Error: {e}")
             _set_status(f"Error: {e}")
-        finally:
-            _set_building(False)
+            _set_building(False, "error")
+            return
+        _set_building(False)
 
     threading.Thread(target=run, daemon=True).start()
 
