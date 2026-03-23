@@ -504,7 +504,7 @@ def _animate_progress() -> None:
 
 def gui_main() -> None:
     dpg.create_context()
-    dpg.create_viewport(title="mkimage \u2014 Bootable Media Creator",
+    dpg.create_viewport(title="mkimage - Bootable Media Creator",
                         width=800, height=620)
     _create_themes()
 

@@ -310,7 +310,7 @@ def gui_main() -> None:
 
     # --- Build the window ---
     root = tk.Tk()
-    root.title("mkimage \u2014 Bootable Media Creator")
+    root.title("mkimage - Bootable Media Creator")
     root.geometry("800x520")
     root.resizable(False, False)
 
