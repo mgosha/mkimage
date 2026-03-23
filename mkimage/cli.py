@@ -206,7 +206,7 @@ tips:
             print("Dear PyGui not found. Attempting install...")
             r = _sp.run([sys.executable, "-m", "pip", "install",
                          "dearpygui", "--quiet"],
-                        capture_output=True, text=True)
+                        capture_output=True, text=True, timeout=120)
             if r.returncode == 0:
                 try:
                     from mkimage.gui_dpg import gui_main

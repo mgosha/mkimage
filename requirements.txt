@@ -1,0 +1,2 @@
+# Optional: modern GPU-accelerated GUI (falls back to Tkinter if not installed)
+dearpygui>=2.0
