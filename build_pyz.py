@@ -40,6 +40,11 @@ def build() -> None:
             ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
         )
 
+        # Bundle mkimage.ps1 for Windows native operations
+        ps1_src = os.path.join(SCRIPT_DIR, "mkimage.ps1")
+        if os.path.exists(ps1_src):
+            shutil.copy2(ps1_src, os.path.join(tmp, "mkimage", "mkimage.ps1"))
+
         # Create __main__.py entry point at top level
         main_py = os.path.join(tmp, "__main__.py")
         with open(main_py, "w") as f:

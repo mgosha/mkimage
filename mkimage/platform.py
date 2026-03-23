@@ -100,15 +100,59 @@ def _find_tool(tool: str) -> str:
     return tool  # return as-is, let PATH handle it
 
 
+_ps1_cache: str = ""
+
+
 def _find_ps1() -> str:
-    """Find mkimage.ps1 relative to this package."""
+    """Find mkimage.ps1 relative to this package.
+
+    Checks filesystem paths first, then extracts from the package
+    (zipapp) if needed. Extracted file is cached for the session.
+    """
+    global _ps1_cache
+    if _ps1_cache:
+        return _ps1_cache
+
+    # Check filesystem paths (normal install)
     candidates = [
         Path(__file__).parent.parent / "mkimage.ps1",  # next to mkimage/ package
-        Path(__file__).parent / "mkimage.ps1",          # inside package (zipapp)
+        Path(__file__).parent / "mkimage.ps1",          # inside package dir
     ]
     for c in candidates:
         if c.exists():
-            return str(c)
+            _ps1_cache = str(c)
+            return _ps1_cache
+
+    # Try extracting from package data (zipapp)
+    try:
+        import importlib.resources as pkg_resources
+        try:
+            # Python 3.9+
+            ref = pkg_resources.files("mkimage").joinpath("mkimage.ps1")
+            ps1_path = str(ref)
+            if Path(ps1_path).exists():
+                _ps1_cache = ps1_path
+                return _ps1_cache
+        except (AttributeError, TypeError):
+            pass
+
+        # Fallback: read and write to temp file
+        try:
+            data = pkg_resources.read_text("mkimage", "mkimage.ps1")
+        except (FileNotFoundError, ModuleNotFoundError):
+            data = None
+
+        if data:
+            import tempfile
+            fd, tmp_path = tempfile.mkstemp(suffix=".ps1", prefix="mkimage_")
+            import os
+            os.write(fd, data.encode("utf-8"))
+            os.close(fd)
+            _ps1_cache = tmp_path
+            return _ps1_cache
+    except Exception:
+        pass
+
     return ""
 
 
