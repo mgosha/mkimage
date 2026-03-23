@@ -85,6 +85,14 @@ examples:
   # Check tool availability:
   %(prog)s --check
 
+partition spec format:
+  --partition TYPE:SIZE:LABEL[:SOURCE_DIR]
+    TYPE:  esp, fat32, exfat, ntfs
+    SIZE:  64M (fixed), 4G (fixed), +32M (content + extra),
+           0 (rest of disk), empty (auto-sized)
+    LABEL: volume label (11 chars max for FAT)
+    DIR:   optional source directory (default: use --source)
+
 tips:
   - FAT32 images (.img) don't need root; GPT/MBR images do
   - Use .img.gz or .img.xz extension for automatic compression

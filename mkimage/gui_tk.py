@@ -449,17 +449,18 @@ def gui_main() -> None:
 
     help_text.insert(tk.END, "Options Reference\n", "header")
     help_text.insert(tk.END,
-                     "Filesystem    FAT32 (default), exFAT (>4GB files), NTFS\n"
                      "Partition     None (raw), MBR (legacy BIOS), GPT (UEFI boot)\n"
                      "ISO Hybrid    Makes ISO dd-writable to USB\n"
                      "Verify        SHA256 check after build\n"
                      "Verbose       Show per-file output\n"
                      "Force         Skip USB confirmation prompt\n"
                      "\n"
-                     "GPT Options (when GPT selected):\n"
-                     "  Data Dir      Second partition with separate files\n"
-                     "  Data Size     Fixed size (e.g. 512M, 4G) or auto\n"
-                     "  ESP/Data Label  Volume labels for partitions\n", "body")
+                     "Partition Spec (CLI: --partition TYPE:SIZE:LABEL[:DIR]):\n"
+                     "  TYPE:  esp, fat32, exfat, ntfs\n"
+                     "  SIZE:  64M (fixed), +32M (content + extra),\n"
+                     "         0 (rest of disk), empty (auto)\n"
+                     "  LABEL: volume label (11 chars max)\n"
+                     "  DIR:   optional source directory\n", "body")
     help_text.insert(tk.END, "\n", "sep")
 
     help_text.insert(tk.END, "Tips\n", "header")

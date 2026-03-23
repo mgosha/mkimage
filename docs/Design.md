@@ -381,8 +381,11 @@ On macOS, install via Homebrew: `brew install dosfstools gdisk xorriso`
 | ISO hybrid | Done | `--iso-hybrid` creates dd-writable ISO with EFI boot image |
 | Image compression | Done | `.img.gz`, `.img.xz` output; `.zst` if zstd installed |
 | Image modify | Done | `--modify image.img --add file --remove file` via mtools |
-| NTFS/exFAT | Done | `--fs exfat\|ntfs` filesystem type for all builders |
+| NTFS/exFAT | Done | Per-partition filesystem via `--partition exfat::LABEL` |
 | `_format_partition()` | Done | DRY helper replaces inline mkfs calls everywhere |
+| Unified `--partition` | Done | `TYPE:SIZE:LABEL[:DIR]` replaces 6 scattered flags |
+| `PartitionSpec` | Done | Dataclass for per-partition config, N-partition support |
+| N-partition GPT | Done | `build_gpt_img` handles 1..N partitions via spec list |
 | Multi-boot | TODO | GRUB2 menu + multi-ISO USB (deferred — high complexity) |
 
 ### Phase 5: Integration — TODO

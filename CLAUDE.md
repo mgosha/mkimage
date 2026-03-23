@@ -44,7 +44,8 @@ mkimage.py --source <dir> --target output.img
 mkimage.py --source <dir> --target output.img --gpt
 
 # GPT with ESP + data partition
-mkimage.py --source <dir> --target output.img --gpt --data-dir ./data/
+mkimage.py --source <dir> --target output.img --gpt \
+    --partition esp::BOOT --partition fat32:0:DATA:./data/
 
 # ISO image
 mkimage.py --source <dir> --target output.iso
@@ -67,8 +68,11 @@ mkimage.py --source <dir> --target output.iso --iso-hybrid
 # Compressed output
 mkimage.py --source <dir> --target output.img.gz
 
-# exFAT or NTFS filesystem
-mkimage.py --source <dir> --target output.img --fs exfat
+# Custom partition (type:size:label)
+mkimage.py --source <dir> --target output.img --partition fat32:+64M:TOOLS
+
+# exFAT or NTFS partition
+mkimage.py --source <dir> --target output.img --partition exfat::BIGFILES
 
 # Modify existing image (add/remove files)
 mkimage.py --modify output.img --add newfile.txt --remove old.txt
