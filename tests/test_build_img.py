@@ -223,23 +223,25 @@ class TestBuildImgRewrite:
         listing = _mdir(out)
         assert "startup" in listing.lower() or "STARTUP" in listing
 
-    def test_garbage_then_img(self, sample_dir: Path, tmp_path: Path) -> None:
+    def test_garbage_then_img(self, sample_dir: Path) -> None:
         """Write random garbage, then create a valid FAT32 image over it."""
-        out = str(tmp_path / "garbage.img")
-        # Write 50MB of random data
-        subprocess.run(
-            ["dd", "if=/dev/urandom", f"of={out}", "bs=1M", "count=50"],
-            check=True, capture_output=True,
-        )
-        assert os.path.getsize(out) == 50 * 1024 * 1024
+        import tempfile as _tf
+        with _tf.TemporaryDirectory() as out_dir:
+            out = str(Path(out_dir) / "garbage.img")
+            # Write 50MB of random data
+            subprocess.run(
+                ["dd", "if=/dev/urandom", f"of={out}", "bs=1M", "count=50"],
+                check=True, capture_output=True,
+            )
+            assert os.path.getsize(out) == 50 * 1024 * 1024
 
-        cfg = Config(label="CLEANED")
-        files = collect_files(cfg, str(sample_dir), [])
-        build_img(cfg, files, out)
-        ft = _file_type(out)
-        assert "FAT" in ft
-        content = _mcopy_extract(out, "startup.nsh")
-        assert b"echo Hello" in content
+            cfg = Config(label="CLEANED")
+            files = collect_files(cfg, str(sample_dir), [])
+            build_img(cfg, files, out)
+            ft = _file_type(out)
+            assert "FAT" in ft
+            content = _mcopy_extract(out, "startup.nsh")
+            assert b"echo Hello" in content
 
     def test_different_label_overwrites(self, sample_dir: Path, tmp_path: Path) -> None:
         """Verify old label doesn't persist when rewriting."""
