@@ -84,7 +84,12 @@ def _populate_img_mount(cfg: Config, staging_dir: str, out: str,
 
 
 def _build_img_windows(cfg: Config, files: dict[str, str], output: str) -> None:
-    """Create FAT32 image on Windows via mkimage.ps1 (no WSL needed)."""
+    """Create FAT32 image on Windows via mkimage.ps1 (no WSL needed).
+
+    Requires admin for diskpart VHD operations. Uses elevation via
+    Start-Process -Verb RunAs with a progress file for log output.
+    """
+    import time
     from mkimage import PartitionSpec
 
     ps1 = _find_ps1()
@@ -97,6 +102,9 @@ def _build_img_windows(cfg: Config, files: dict[str, str], output: str) -> None:
         content_mb = _calculate_content_size(files)
         size_mb = _interpret_size(part.size, content_mb)
 
+        cfg.log(f"  Creating FAT32 image via PowerShell ({size_mb}MB)...")
+
+        # First try without elevation (works if already admin)
         cmd = [
             "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
             "-File", ps1,
@@ -109,20 +117,92 @@ def _build_img_windows(cfg: Config, files: dict[str, str], output: str) -> None:
         if cfg.verbose:
             cmd.append("-Verbose")
 
-        cfg.log(f"  Creating FAT32 image via PowerShell ({size_mb}MB)...")
         r = _sp.run(cmd, capture_output=True, text=True)
-        if r.stdout.strip():
-            for line in r.stdout.strip().splitlines():
-                cfg.log(f"  {line}")
-        if r.returncode != 0:
-            err = r.stderr.strip() or r.stdout.strip()
-            raise RuntimeError(f"Image creation failed: {err}")
+        if r.returncode == 0 and os.path.isfile(output):
+            if r.stdout.strip():
+                for line in r.stdout.strip().splitlines():
+                    cfg.log(f"  {line}")
+            actual_size = os.path.getsize(output)
+            cfg.log(f"  [OK] Created {output} ({actual_size // 1024}KB, FAT32)")
+            if cfg.verify:
+                _verify_write(cfg, files, output)
+            return
 
-    actual_size = os.path.getsize(output)
-    cfg.log(f"  [OK] Created {output} ({actual_size // 1024}KB, FAT32)")
+        # Non-elevated failed — retry with elevation via progress file
+        cfg.log("  Requesting Administrator access (diskpart requires elevation)...")
+        fd, progress_file = tempfile.mkstemp(suffix=".txt")
+        os.close(fd)
 
-    if cfg.verify:
-        _verify_write(cfg, files, output)
+        args_list = [
+            "-NoProfile", "-ExecutionPolicy", "Bypass",
+            "-File", ps1,
+            "-Action", "CreateImg",
+            "-SourceDir", staging,
+            "-OutputFile", str(Path(output).resolve()),
+            "-Label", part.label[:11],
+            "-SizeMB", str(size_mb),
+            "-ProgressFile", progress_file,
+        ]
+        if cfg.verbose:
+            args_list.append("-Verbose")
+        args_str = " ".join(f"'{a}'" for a in args_list)
+
+        try:
+            proc = _sp.Popen([
+                "powershell", "-NoProfile", "-Command",
+                f"Start-Process -FilePath 'powershell.exe' "
+                f"-ArgumentList {args_str} "
+                f"-Verb RunAs -Wait"
+            ], stdout=_sp.PIPE, stderr=_sp.PIPE)
+
+            lines_read = 0
+            while proc.poll() is None:
+                time.sleep(0.3)
+                if os.path.exists(progress_file):
+                    try:
+                        with open(progress_file, "r", encoding="utf-8",
+                                  errors="replace") as pf:
+                            all_lines = pf.readlines()
+                        for line in all_lines[lines_read:]:
+                            stripped = line.rstrip()
+                            if stripped:
+                                cfg.log(f"  {stripped}")
+                        lines_read = len(all_lines)
+                    except OSError:
+                        pass
+
+            # Read remaining output
+            time.sleep(0.5)
+            if os.path.exists(progress_file):
+                try:
+                    with open(progress_file, "r", encoding="utf-8",
+                              errors="replace") as pf:
+                        all_lines = pf.readlines()
+                    for line in all_lines[lines_read:]:
+                        stripped = line.rstrip()
+                        if stripped:
+                            cfg.log(f"  {stripped}")
+                except OSError:
+                    pass
+
+            if not os.path.isfile(output):
+                raise RuntimeError("Image creation failed: output file not created")
+
+            actual_size = os.path.getsize(output)
+            cfg.log(f"  [OK] Created {output} ({actual_size // 1024}KB, FAT32)")
+
+            if cfg.verify:
+                _verify_write(cfg, files, output)
+
+        except Exception as exc:
+            if "canceled by the user" in str(exc):
+                raise RuntimeError("Administrator access denied")
+            raise
+        finally:
+            try:
+                os.unlink(progress_file)
+            except OSError:
+                pass
 
 
 def build_img(cfg: Config, files: dict[str, str], output: str) -> None:

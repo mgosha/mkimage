@@ -81,11 +81,14 @@ function New-UefiImage {
         [string]$Label = "UEFITOOLS",
         [int]$SizeMB = 32,
         [switch]$Verbose,
+        [string]$ProgressFile = "",
         $LogBox = $null
     )
 
     function Write-Log([string]$Message) {
-        if ($LogBox) {
+        if ($ProgressFile) {
+            $Message | Out-File -Append $ProgressFile
+        } elseif ($LogBox) {
             $LogBox.AppendText("$Message`r`n")
         } else {
             Write-Host $Message
@@ -130,7 +133,7 @@ function New-UefiImage {
     if ($isImg) {
         return New-Fat32Image -SourceDir $SourceDir -Includes $Includes `
             -OutputFile $OutputFile -Label $Label -SizeMB $SizeMB `
-            -Verbose:$Verbose -LogBox $LogBox
+            -Verbose:$Verbose -ProgressFile $ProgressFile -LogBox $LogBox
     } else {
         return New-IsoImage -SourceDir $SourceDir -Includes $Includes `
             -OutputFile $OutputFile -Label $Label `
@@ -149,11 +152,14 @@ function New-Fat32Image {
         [string]$Label,
         [int]$SizeMB,
         [switch]$Verbose,
+        [string]$ProgressFile = "",
         $LogBox = $null
     )
 
     function Write-Log([string]$Message) {
-        if ($LogBox) {
+        if ($ProgressFile) {
+            $Message | Out-File -Append $ProgressFile
+        } elseif ($LogBox) {
             $LogBox.AppendText("$Message`r`n")
         } else {
             Write-Host $Message
@@ -172,7 +178,11 @@ function New-Fat32Image {
 
         # Create fixed-size VHD via diskpart (works on all Windows editions,
         # no Hyper-V required — unlike New-VHD which needs Hyper-V)
-        $dpCreate = @"
+        # Use a script file instead of pipe to avoid broken stdin in
+        # non-elevated or subprocess contexts.
+        $dpScript = [System.IO.Path]::GetTempFileName() -replace '\.tmp$', '.txt'
+        try {
+            @"
 create vdisk file="$vhdPath" maximum=$SizeMB type=fixed
 select vdisk file="$vhdPath"
 attach vdisk
@@ -180,11 +190,14 @@ create partition primary
 active
 format fs=fat32 quick label=$labelTrim
 assign
-"@
-        Write-Log "  diskpart: create + attach + format..."
-        $dpOut = ($dpCreate | diskpart 2>&1) | Out-String
-        if ($dpOut -notmatch "successfully formatted" -and $dpOut -notmatch "DiskPart successfully") {
-            throw "diskpart failed: $($dpOut.Trim() -replace '[\r\n]+', ' | ')"
+"@ | Set-Content -Path $dpScript -Encoding ASCII
+            Write-Log "  diskpart: create + attach + format..."
+            $dpOut = (diskpart /s $dpScript 2>&1) | Out-String
+            if ($dpOut -notmatch "successfully formatted" -and $dpOut -notmatch "DiskPart successfully") {
+                throw "diskpart failed: $($dpOut.Trim() -replace '[\r\n]+', ' | ')"
+            }
+        } finally {
+            Remove-Item $dpScript -ErrorAction SilentlyContinue
         }
         Start-Sleep -Seconds 1
 
@@ -250,13 +263,18 @@ assign
         $copiedCount = (Get-ChildItem $destRoot -Recurse -File).Count
         Write-Log "Copied $copiedCount files to image"
 
-        # Detach VHD via diskpart
+        # Detach VHD via diskpart (script file, not pipe)
         Write-Log "Detaching VHD..."
-        $dpDetach = @"
+        $dpScript2 = [System.IO.Path]::GetTempFileName() -replace '\.tmp$', '.txt'
+        try {
+            @"
 select vdisk file="$vhdPath"
 detach vdisk
-"@
-        ($dpDetach | diskpart 2>&1) | Out-Null
+"@ | Set-Content -Path $dpScript2 -Encoding ASCII
+            (diskpart /s $dpScript2 2>&1) | Out-Null
+        } finally {
+            Remove-Item $dpScript2 -ErrorAction SilentlyContinue
+        }
         Start-Sleep -Seconds 1
 
         # Strip the 512-byte VHD footer to produce a raw FAT32 image
@@ -283,11 +301,16 @@ detach vdisk
     } catch {
         Write-Log "[ERROR] $_"
         # Cleanup: detach if still attached
-        $dpCleanup = @"
+        $dpScript3 = [System.IO.Path]::GetTempFileName() -replace '\.tmp$', '.txt'
+        try {
+            @"
 select vdisk file="$vhdPath"
 detach vdisk
-"@
-        ($dpCleanup | diskpart 2>&1) | Out-Null
+"@ | Set-Content -Path $dpScript3 -Encoding ASCII
+            (diskpart /s $dpScript3 2>&1) | Out-Null
+        } finally {
+            Remove-Item $dpScript3 -ErrorAction SilentlyContinue
+        }
         return $false
     } finally {
         Remove-Item $vhdPath -ErrorAction SilentlyContinue
@@ -1222,7 +1245,7 @@ if ($Action) {
             if (-not $SourceDir) { Write-Error "SourceDir required for CreateImg"; exit 1 }
             $result = New-UefiImage -SourceDir $SourceDir -Includes $Includes `
                 -OutputFile $OutputFile -Label $Label -SizeMB $SizeMB `
-                -Verbose:$Verbose
+                -Verbose:$Verbose -ProgressFile $ProgressFile
             if (-not $result) { exit 1 }
         }
         'CreateIso' {
