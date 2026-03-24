@@ -1,24 +1,69 @@
-"""FAT32 .img builder (no partition table)."""
+"""FAT32 image builder — no partition table."""
 from __future__ import annotations
 
 import os
 import subprocess as _sp
 import tempfile
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING
 
-from mkimage.files import _calculate_content_size, _interpret_size, _stage_files
-from mkimage.platform import _find_ps1, _is_windows, _resolve, _run, _which
-from mkimage.tools import _suggest_install, ensure_tools
+from mkimage.platform import _is_windows, _run, _which, _resolve
+from mkimage.tools import ensure_tools, _suggest_install
 from mkimage.verify import _verify_write
 
-if TYPE_CHECKING:
-    from mkimage import Config, PartitionSpec
+
+def _find_ps1() -> str | None:
+    """Locate mkimage.ps1 — bundled alongside the package or in cwd."""
+    candidates = [
+        Path(__file__).resolve().parent.parent / "mkimage.ps1",
+        Path(__file__).resolve().parent.parent.parent / "mkimage.ps1",
+        Path.cwd() / "mkimage.ps1",
+    ]
+    for p in candidates:
+        if p.is_file():
+            return str(p)
+    # Check if bundled inside zipapp
+    import sys
+    if hasattr(sys, '_MEIPASS'):
+        p = Path(sys._MEIPASS) / "mkimage.ps1"
+        if p.is_file():
+            return str(p)
+    return None
 
 
-def _populate_img_mcopy(cfg: Config, files: dict[str, str],
-                        out: str) -> None:
-    """Populate a FAT32 image using mcopy/mmd (no root needed)."""
+def _stage_files(files: dict[str, str], staging: Path) -> None:
+    """Stage files into a temp directory preserving structure."""
+    import shutil
+    for img_path, local_path in files.items():
+        dest = staging / img_path
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(local_path, dest)
+
+
+def _calculate_content_size(files: dict[str, str]) -> int:
+    """Return total content size in MB (ceiling)."""
+    total_bytes = sum(os.path.getsize(lp) for lp in files.values())
+    return max(1, -(-total_bytes // (1024 * 1024)))
+
+
+def _interpret_size(size_str: str, content_mb: int) -> int:
+    """Interpret a size string into total MB.
+
+    '+32M' means content + 32MB extra.  '100M' means exactly 100MB.
+    Empty means content + 32MB.  '0' means content + 32MB.
+    Minimum is 40MB (FAT32 requirement).
+    """
+    from mkimage import _parse_size
+    if not size_str or size_str == "0":
+        return max(40, content_mb + 32)
+    if size_str.startswith("+"):
+        extra = _parse_size(size_str[1:]) // (1024 * 1024)
+        return max(40, content_mb + extra)
+    absolute = _parse_size(size_str) // (1024 * 1024)
+    return max(40, absolute)
+
+
+def _populate_img_mcopy(cfg: object, files: dict[str, str], out: str) -> None:
+    """Populate a FAT32 image using mcopy (no root needed)."""
     dirs_created: set[str] = set()
     for img_path in sorted(files.keys()):
         parts = PurePosixPath(img_path).parts
@@ -34,61 +79,42 @@ def _populate_img_mcopy(cfg: Config, files: dict[str, str],
     cfg.log(f"  Copied {len(files)} files via mcopy")
 
 
-def _populate_img_mount(cfg: Config, staging_dir: str, out: str,
-                        size_mb: int, part_label: str) -> bool:
-    """Populate a FAT32 image using mount+rsync (requires root).
-
-    Returns True on success, False on failure.
-    """
+def _populate_img_mount(
+    cfg: object, stg_resolved: str, out: str, size_mb: int, label: str,
+) -> bool:
+    """Populate a FAT32 image via mount+rsync (requires root)."""
     if cfg.verbose:
         rsync_flags = "-av --no-owner --no-group"
     else:
         rsync_flags = "-a --no-owner --no-group --info=progress2"
 
-    if _is_windows():
-        r = _run(cfg, [
-            "bash", "-c",
-            f"set -e && "
-            f"IMG=$(mktemp /tmp/mkimage.XXXXXX.img) && "
-            f"dd if=/dev/zero of=$IMG bs=1M count={size_mb} 2>/dev/null && "
-            f"mkfs.vfat -F 32 -n '{part_label}' $IMG >/dev/null && "
-            f"MNTDIR=$(mktemp -d) && "
-            f"mount -o loop $IMG $MNTDIR && "
-            f"rsync {rsync_flags} '{staging_dir}'/ $MNTDIR/ && "
-            f"TOTAL=$(find $MNTDIR -type f | wc -l) && "
-            f"echo \"Copied $TOTAL files\" && "
-            f"umount $MNTDIR && "
-            f"rmdir $MNTDIR && "
-            f"cp $IMG '{out}' && "
-            f"rm -f $IMG"
-        ], check=False, verbose=True, as_root=True)
-    else:
-        dd_cmd = ["dd", "if=/dev/zero", f"of={out}", "bs=1M", f"count={size_mb}"]
-        if cfg.verbose:
-            dd_cmd.append("status=progress")
-        _run(cfg, dd_cmd, verbose=True)
-        _run(cfg, ["mkfs.vfat", "-F", "32", "-n", part_label, out], verbose=True)
+    dd_cmd = ["dd", "if=/dev/zero", f"of={out}", "bs=1M", f"count={size_mb}"]
+    if cfg.verbose:
+        dd_cmd.append("status=progress")
+    _run(cfg, dd_cmd, verbose=True)
+    _run(cfg, ["mkfs.vfat", "-F", "32", "-n", label, out], verbose=True)
 
-        r = _run(cfg, [
-            "bash", "-c",
-            f"MNTDIR=$(mktemp -d) && "
-            f"mount -o loop '{out}' $MNTDIR && "
-            f"rsync {rsync_flags} '{staging_dir}'/ $MNTDIR/ && "
-            f"TOTAL=$(find $MNTDIR -type f | wc -l) && "
-            f"echo \"Copied $TOTAL files\" && "
-            f"umount $MNTDIR && "
-            f"rmdir $MNTDIR"
-        ], check=False, verbose=True, as_root=True)
-
+    r = _run(cfg, [
+        "bash", "-c",
+        f"MNTDIR=$(mktemp -d) && "
+        f"mount -o loop '{out}' $MNTDIR && "
+        f"rsync {rsync_flags} '{stg_resolved}'/ $MNTDIR/ && "
+        f"TOTAL=$(find $MNTDIR -type f | wc -l) && "
+        f"echo \"Copied $TOTAL files\" && "
+        f"umount $MNTDIR && "
+        f"rmdir $MNTDIR"
+    ], check=False, verbose=True, as_root=True)
     return r.returncode == 0
 
 
-def _build_img_windows(cfg: Config, files: dict[str, str], output: str) -> None:
+def _build_img_windows(cfg: object, files: dict[str, str], output: str) -> None:
     """Create FAT32 image on Windows via mkimage.ps1 (no WSL needed).
 
-    Requires admin for diskpart VHD operations. Uses elevation via
+    diskpart requires admin for VHD operations. Runs elevated via
     Start-Process -Verb RunAs with a progress file for log output.
+    Staging dir is managed manually so it survives the elevated subprocess.
     """
+    import shutil
     import time
     from mkimage import PartitionSpec
 
@@ -96,42 +122,18 @@ def _build_img_windows(cfg: Config, files: dict[str, str], output: str) -> None:
     if not ps1:
         raise RuntimeError("mkimage.ps1 not found. Cannot create images on Windows.")
 
-    with tempfile.TemporaryDirectory() as staging:
+    staging = tempfile.mkdtemp(prefix="mkimage-")
+    fd, progress_file = tempfile.mkstemp(suffix=".txt")
+    os.close(fd)
+
+    try:
         _stage_files(files, Path(staging))
         part = cfg.partitions[0] if cfg.partitions else PartitionSpec()
         content_mb = _calculate_content_size(files)
         size_mb = _interpret_size(part.size, content_mb)
 
-        cfg.log(f"  Creating FAT32 image via PowerShell ({size_mb}MB)...")
-
-        # First try without elevation (works if already admin)
-        cmd = [
-            "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-            "-File", ps1,
-            "-Action", "CreateImg",
-            "-SourceDir", staging,
-            "-OutputFile", str(Path(output).resolve()),
-            "-Label", part.label[:11],
-            "-SizeMB", str(size_mb),
-        ]
-        if cfg.verbose:
-            cmd.append("-Verbose")
-
-        r = _sp.run(cmd, capture_output=True, text=True)
-        if r.returncode == 0 and os.path.isfile(output):
-            if r.stdout.strip():
-                for line in r.stdout.strip().splitlines():
-                    cfg.log(f"  {line}")
-            actual_size = os.path.getsize(output)
-            cfg.log(f"  [OK] Created {output} ({actual_size // 1024}KB, FAT32)")
-            if cfg.verify:
-                _verify_write(cfg, files, output)
-            return
-
-        # Non-elevated failed — retry with elevation via progress file
-        cfg.log("  Requesting Administrator access (diskpart requires elevation)...")
-        fd, progress_file = tempfile.mkstemp(suffix=".txt")
-        os.close(fd)
+        cfg.log(f"  Image size: {size_mb}MB ({content_mb}MB content + {size_mb - content_mb}MB free)")
+        cfg.log(f"  {len(files)} files ({content_mb * 1024}KB) to include")
 
         args_list = [
             "-NoProfile", "-ExecutionPolicy", "Bypass",
@@ -147,32 +149,17 @@ def _build_img_windows(cfg: Config, files: dict[str, str], output: str) -> None:
             args_list.append("-Verbose")
         args_str = " ".join(f"'{a}'" for a in args_list)
 
-        try:
-            proc = _sp.Popen([
-                "powershell", "-NoProfile", "-Command",
-                f"Start-Process -FilePath 'powershell.exe' "
-                f"-ArgumentList {args_str} "
-                f"-Verb RunAs -Wait"
-            ], stdout=_sp.PIPE, stderr=_sp.PIPE)
+        cfg.log("  Requesting Administrator access (diskpart requires elevation)...")
+        proc = _sp.Popen([
+            "powershell", "-NoProfile", "-Command",
+            f"Start-Process -FilePath 'powershell.exe' "
+            f"-ArgumentList {args_str} "
+            f"-Verb RunAs -Wait"
+        ], stdout=_sp.PIPE, stderr=_sp.PIPE)
 
-            lines_read = 0
-            while proc.poll() is None:
-                time.sleep(0.3)
-                if os.path.exists(progress_file):
-                    try:
-                        with open(progress_file, "r", encoding="utf-8",
-                                  errors="replace") as pf:
-                            all_lines = pf.readlines()
-                        for line in all_lines[lines_read:]:
-                            stripped = line.rstrip()
-                            if stripped:
-                                cfg.log(f"  {stripped}")
-                        lines_read = len(all_lines)
-                    except OSError:
-                        pass
-
-            # Read remaining output
-            time.sleep(0.5)
+        lines_read = 0
+        while proc.poll() is None:
+            time.sleep(0.3)
             if os.path.exists(progress_file):
                 try:
                     with open(progress_file, "r", encoding="utf-8",
@@ -182,30 +169,46 @@ def _build_img_windows(cfg: Config, files: dict[str, str], output: str) -> None:
                         stripped = line.rstrip()
                         if stripped:
                             cfg.log(f"  {stripped}")
+                    lines_read = len(all_lines)
                 except OSError:
                     pass
 
-            if not os.path.isfile(output):
-                raise RuntimeError("Image creation failed: output file not created")
-
-            actual_size = os.path.getsize(output)
-            cfg.log(f"  [OK] Created {output} ({actual_size // 1024}KB, FAT32)")
-
-            if cfg.verify:
-                _verify_write(cfg, files, output)
-
-        except Exception as exc:
-            if "canceled by the user" in str(exc):
-                raise RuntimeError("Administrator access denied")
-            raise
-        finally:
+        # Read remaining output
+        time.sleep(0.5)
+        if os.path.exists(progress_file):
             try:
-                os.unlink(progress_file)
+                with open(progress_file, "r", encoding="utf-8",
+                          errors="replace") as pf:
+                    all_lines = pf.readlines()
+                for line in all_lines[lines_read:]:
+                    stripped = line.rstrip()
+                    if stripped:
+                        cfg.log(f"  {stripped}")
             except OSError:
                 pass
 
+        if not os.path.isfile(output):
+            raise RuntimeError("Image creation failed: output file not created")
 
-def build_img(cfg: Config, files: dict[str, str], output: str) -> None:
+        actual_size = os.path.getsize(output)
+        cfg.log(f"  [OK] Created {output} ({actual_size // 1024}KB, FAT32)")
+
+        if cfg.verify:
+            _verify_write(cfg, files, output)
+
+    except Exception as exc:
+        if "canceled by the user" in str(exc):
+            raise RuntimeError("Administrator access denied")
+        raise
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+        try:
+            os.unlink(progress_file)
+        except OSError:
+            pass
+
+
+def build_img(cfg: object, files: dict[str, str], output: str) -> None:
     """Create a FAT32 disk image (no partition table).
 
     Primary method uses mcopy (no root needed). Falls back to mount+rsync
