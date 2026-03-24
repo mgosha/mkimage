@@ -495,46 +495,6 @@ def _write_fat32_image(
         if current_pos < target_size:
             f.write(b'\x00' * (target_size - current_pos))
 
-        # Append VHD fixed-disk footer (512 bytes).
-        # Makes the image mountable on Windows via Mount-DiskImage.
-        # The footer is ignored by dd when writing to USB.
-        import uuid as _uuid
-        vhd = bytearray(sector_size)
-        vhd[0:8] = b'conectix'                                 # Cookie
-        struct.pack_into('>I', vhd, 8, 0x00000002)             # Features
-        struct.pack_into('>I', vhd, 12, 0x00010000)            # Version 1.0
-        struct.pack_into('>Q', vhd, 16, 0xFFFFFFFFFFFFFFFF)    # Data offset (fixed)
-        struct.pack_into('>I', vhd, 24, 0)                     # Timestamp
-        vhd[28:32] = b'mkig'                                   # Creator app
-        struct.pack_into('>I', vhd, 32, 0x00060001)            # Creator ver
-        vhd[36:40] = b'Wi2k'                                   # Creator host
-        raw_size = target_size
-        struct.pack_into('>Q', vhd, 40, raw_size)              # Original size
-        struct.pack_into('>Q', vhd, 48, raw_size)              # Current size
-        # CHS geometry
-        ts = raw_size // sector_size
-        if ts > 65535 * 16 * 63:
-            c, h, s = 65535, 16, 63
-        else:
-            s = 17
-            h = (ts // s + 1023) // 1024
-            if h < 4: h = 4
-            if h > 16: s, h = 31, 16
-            if ts // (s * h) > 65535: s, h = 63, 16
-            c = ts // (h * s)
-        struct.pack_into('>H', vhd, 56, c)
-        vhd[58] = h
-        vhd[59] = s
-        struct.pack_into('>I', vhd, 60, 2)                     # Fixed disk
-        vhd[68:84] = _uuid.uuid4().bytes                       # Unique ID
-        # Checksum
-        struct.pack_into('>I', vhd, 64, 0)
-        ck = 0
-        for b in vhd:
-            ck = (ck + b) & 0xFFFFFFFF
-        struct.pack_into('>I', vhd, 64, (~ck) & 0xFFFFFFFF)
-        f.write(vhd)
-
     cfg.log(f"  Copied {len(files)} files to image")
 
 

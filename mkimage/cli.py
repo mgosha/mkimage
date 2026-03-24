@@ -108,6 +108,9 @@ examples:
   # Check USB drive for bad blocks:
   %(prog)s --check-usb /dev/sdb
 
+  # List contents of an image:
+  %(prog)s --list-image boot.img
+
   # List USB drives:
   %(prog)s --list-drives
 
@@ -226,6 +229,11 @@ tips:
         help="File to remove (with --modify, repeatable)",
     )
 
+    mod_group.add_argument(
+        "--list-image", metavar="IMAGE",
+        help="List contents of a FAT32 disk image (.img) and exit",
+    )
+
     # --- General ---
     gen_group = parser.add_argument_group("General")
     gen_group.add_argument(
@@ -300,6 +308,12 @@ tips:
         udf_bridge=args.udf_bridge,
         partitions=partitions,
     )
+
+    # --list-image operation
+    if args.list_image:
+        from mkimage.inspect import list_image
+        list_image(args.list_image)
+        return
 
     # --modify operation
     if args.modify:

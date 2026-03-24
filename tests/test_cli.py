@@ -75,17 +75,17 @@ class TestCliBuild:
                         "--label", "TESTLBL",
                         "--partition", "fat32::TESTLBL")
         assert r.returncode == 0
-        info = subprocess.run(
-            ["minfo", "-i", out, "::"],
-            capture_output=True, text=True,
-        )
+        # MBR image: use --list-image to verify label
+        info = run_mkimage("--list-image", out)
         assert "TESTLBL" in info.stdout
 
     def test_verbose_flag(self, sample_dir: Path, tmp_path: Path) -> None:
         out = str(tmp_path / "out.img")
         r = run_mkimage("--source", str(sample_dir), "--target", out, "-v")
         assert r.returncode == 0
-        assert "status=progress" in r.stdout or "sending" in r.stdout or ">" in r.stdout
+        # Pure Python path logs differently from dd/mcopy
+        assert ("status=progress" in r.stdout or ">" in r.stdout
+                or "Creating FAT32" in r.stdout or "Copying" in r.stdout)
 
 
 class TestCliGptFlags:

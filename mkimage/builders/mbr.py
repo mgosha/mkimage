@@ -33,11 +33,29 @@ def build_mbr_img(cfg: Config, files: dict[str, str], output: str) -> None:
     from mkimage.platform import _is_windows
 
     # Pure Python path: works on all platforms, no root needed
-    if _is_windows():
-        from mkimage.builders.img import _build_img_windows
-        _build_img_windows(cfg, files, output, mbr=True)
+    # Use native tools only when root is available and fs_type needs them
+    from mkimage.builders.img import _build_img_windows, _write_fat32_image
+    from mkimage.builders.img import _calculate_content_size, _interpret_size
+
+    part_spec_check = cfg.partitions[0] if cfg.partitions else PartitionSpec()
+    fs = part_spec_check.fs_type if part_spec_check.fs_type != "esp" else "fat32"
+
+    # Pure Python supports FAT32 only; other filesystems need native tools
+    if fs == "fat32" or _is_windows():
+        part = cfg.partitions[0] if cfg.partitions else PartitionSpec()
+        content_mb = _calculate_content_size(files)
+        size_mb = _interpret_size(part.size, content_mb)
+        cfg.log(f"  Image size: {size_mb}MB ({content_mb}MB content + {size_mb - content_mb}MB free)")
+        cfg.log(f"  {len(files)} files ({content_mb * 1024}KB) to include")
+        _write_fat32_image(cfg, files, output, size_mb, part.label[:11],
+                           part.cluster_size, mbr=True)
+        actual_size = os.path.getsize(output)
+        cfg.log(f"  [OK] Created {output} ({actual_size // (1024*1024)}MB, MBR FAT32)")
+        if cfg.verify:
+            _verify_write(cfg, files, output)
         return
 
+    # Non-FAT32 on Linux/macOS: need native tools + root
     _check_root(cfg, "MBR image creation")
     ensure_tools(cfg, "mbr")
     out = _resolve(output)
