@@ -30,14 +30,17 @@ def _find_ps1() -> str | None:
         if p.is_file():
             return str(p)
 
-    # Check if bundled inside zipapp — extract to temp on first use
+    # Check if bundled inside zipapp — extract to shared temp location
+    # so both normal and elevated processes can access it
     try:
         import importlib.resources as pkg_resources
         ref = pkg_resources.files("mkimage").joinpath("mkimage.ps1")
         data = ref.read_bytes()
-        fd, tmp_path = tempfile.mkstemp(suffix=".ps1", prefix="mkimage-")
-        os.write(fd, data)
-        os.close(fd)
+        shared_dir = os.path.join(os.environ.get("SystemDrive", "C:"), "temp")
+        os.makedirs(shared_dir, exist_ok=True)
+        tmp_path = os.path.join(shared_dir, "mkimage.ps1")
+        with open(tmp_path, "wb") as f:
+            f.write(data)
         _extracted_ps1 = tmp_path
         return tmp_path
     except (ImportError, FileNotFoundError, TypeError, AttributeError):
@@ -138,9 +141,15 @@ def _build_img_windows(cfg: object, files: dict[str, str], output: str) -> None:
     if not ps1:
         raise RuntimeError("mkimage.ps1 not found. Cannot create images on Windows.")
 
-    staging = tempfile.mkdtemp(prefix="mkimage-")
-    fd, progress_file = tempfile.mkstemp(suffix=".txt")
-    os.close(fd)
+    # Use a shared location accessible by both normal and elevated processes.
+    # The user's %TEMP% may not be accessible from an elevated context.
+    shared_tmp = os.path.join(os.environ.get("SystemDrive", "C:"), "temp", "mkimage-build")
+    os.makedirs(shared_tmp, exist_ok=True)
+    staging = tempfile.mkdtemp(prefix="stg-", dir=shared_tmp)
+    progress_file = os.path.join(shared_tmp, f"progress-{os.getpid()}.txt")
+    # Ensure progress file exists
+    with open(progress_file, "w") as f:
+        pass
 
     try:
         _stage_files(files, Path(staging))
