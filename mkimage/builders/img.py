@@ -11,8 +11,16 @@ from mkimage.tools import ensure_tools, _suggest_install
 from mkimage.verify import _verify_write
 
 
+_extracted_ps1: str | None = None
+
+
 def _find_ps1() -> str | None:
-    """Locate mkimage.ps1 — bundled alongside the package or in cwd."""
+    """Locate mkimage.ps1 — filesystem, zipapp resource, or cwd."""
+    global _extracted_ps1
+    if _extracted_ps1 and os.path.isfile(_extracted_ps1):
+        return _extracted_ps1
+
+    # Check filesystem locations
     candidates = [
         Path(__file__).resolve().parent.parent / "mkimage.ps1",
         Path(__file__).resolve().parent.parent.parent / "mkimage.ps1",
@@ -21,12 +29,20 @@ def _find_ps1() -> str | None:
     for p in candidates:
         if p.is_file():
             return str(p)
-    # Check if bundled inside zipapp
-    import sys
-    if hasattr(sys, '_MEIPASS'):
-        p = Path(sys._MEIPASS) / "mkimage.ps1"
-        if p.is_file():
-            return str(p)
+
+    # Check if bundled inside zipapp — extract to temp on first use
+    try:
+        import importlib.resources as pkg_resources
+        ref = pkg_resources.files("mkimage").joinpath("mkimage.ps1")
+        data = ref.read_bytes()
+        fd, tmp_path = tempfile.mkstemp(suffix=".ps1", prefix="mkimage-")
+        os.write(fd, data)
+        os.close(fd)
+        _extracted_ps1 = tmp_path
+        return tmp_path
+    except (ImportError, FileNotFoundError, TypeError, AttributeError):
+        pass
+
     return None
 
 
