@@ -159,11 +159,21 @@ def _write_fat32_image(
 
     reserved_sectors = 32
     num_fats = 2
-    # Calculate FAT size
-    cluster_count = (total_sectors - reserved_sectors) // spc
-    # Each FAT entry is 4 bytes for FAT32
-    fat_sectors = (cluster_count * 4 + sector_size - 1) // sector_size
-    # Recalculate data clusters with FAT overhead
+
+    def _calc_fat_size(tot: int, res: int, nfat: int, secpc: int) -> int:
+        """Calculate FAT size per Microsoft FAT spec (fatgen103.pdf, p.21).
+
+        RootDirSectors = 0 for FAT32.
+        TmpVal1 = DskSize - (ResvdSecCnt + RootDirSectors)
+        TmpVal2 = (256 * SecPerClus) + NumFATs
+        If FAT32: TmpVal2 = TmpVal2 / 2
+        FATSz = (TmpVal1 + (TmpVal2 - 1)) / TmpVal2
+        """
+        t1 = tot - res
+        t2 = (256 * secpc + nfat) // 2
+        return (t1 + t2 - 1) // t2
+
+    fat_sectors = _calc_fat_size(total_sectors, reserved_sectors, num_fats, spc)
     data_start = reserved_sectors + num_fats * fat_sectors
     data_sectors = total_sectors - data_start
     cluster_count = data_sectors // spc
@@ -171,8 +181,7 @@ def _write_fat32_image(
     # FAT32 requires >= 65525 clusters; if too few, reduce spc
     while cluster_count < 65525 and spc > 1:
         spc //= 2
-        cluster_count = (total_sectors - reserved_sectors) // spc
-        fat_sectors = (cluster_count * 4 + sector_size - 1) // sector_size
+        fat_sectors = _calc_fat_size(total_sectors, reserved_sectors, num_fats, spc)
         data_start = reserved_sectors + num_fats * fat_sectors
         data_sectors = total_sectors - data_start
         cluster_count = data_sectors // spc
@@ -219,12 +228,12 @@ def _write_fat32_image(
         boot[511] = 0xAA
         f.write(boot)
 
-        # === FSInfo sector (sector 1) ===
+        # === FSInfo sector (sector 1) — placeholder, updated after allocation ===
         fsinfo = bytearray(sector_size)
         struct.pack_into('<I', fsinfo, 0, 0x41615252)      # Lead signature
         struct.pack_into('<I', fsinfo, 484, 0x61417272)     # Struct signature
-        struct.pack_into('<I', fsinfo, 488, cluster_count - 1)  # Free clusters
-        struct.pack_into('<I', fsinfo, 492, 3)              # Next free cluster
+        struct.pack_into('<I', fsinfo, 488, 0xFFFFFFFF)     # Free clusters (placeholder)
+        struct.pack_into('<I', fsinfo, 492, 0xFFFFFFFF)     # Next free cluster (placeholder)
         fsinfo[510] = 0x55
         fsinfo[511] = 0xAA
         f.write(fsinfo)
@@ -311,6 +320,19 @@ def _write_fat32_image(
                 dir_entries[parent_dir] = []
             dir_entries[parent_dir].append((file_name, first_cluster, file_size, False))
 
+        # Update FSInfo with correct free cluster count and next free cluster
+        used_clusters = next_cluster - 2  # clusters 2..next_cluster-1
+        free_clusters = cluster_count - used_clusters
+        struct.pack_into('<I', fsinfo, 488, free_clusters)
+        struct.pack_into('<I', fsinfo, 492, next_cluster)
+        # Write updated FSInfo at sector 1 and backup at sector 7
+        f.seek(1 * sector_size)
+        f.write(fsinfo)
+        f.seek(7 * sector_size)
+        f.write(fsinfo)
+        # Seek to FAT start
+        f.seek(reserved_sectors * sector_size)
+
         # Write FAT1 and FAT2
         f.write(fat)
         f.write(fat)
@@ -346,28 +368,45 @@ def _write_fat32_image(
             entry[11] = 0x08  # Volume label attribute
             return bytes(entry)
 
-        # Build cluster data for directories
-        # Root directory is cluster 2
+        def _make_dot_entry(name: str, cluster: int) -> bytes:
+            """Create a '.' or '..' directory entry."""
+            entry = bytearray(32)
+            padded = name.ljust(11)[:11]
+            entry[0:11] = padded.encode("ascii")
+            entry[11] = 0x10  # Directory attribute
+            struct.pack_into('<H', entry, 20, cluster >> 16)
+            struct.pack_into('<H', entry, 26, cluster & 0xFFFF)
+            return bytes(entry)
+
+        # Build a map of dir_path -> cluster number
+        dir_cluster_map: dict[str, int] = {"": 2}  # root = cluster 2
         for dir_path, entries in dir_entries.items():
-            if dir_path == "":
-                cluster_num = 2
-            else:
-                # Find the cluster allocated for this directory
-                parts = dir_path.split("/")
-                parent = "/".join(parts[:-1])
-                dname = parts[-1]
-                cluster_num = None
-                for name, cl, sz, isd in dir_entries.get(parent, []):
-                    if name == dname and isd:
-                        cluster_num = cl
-                        break
-                if cluster_num is None:
-                    continue
+            for name, cl, sz, isd in entries:
+                if isd:
+                    child = f"{dir_path}/{name}" if dir_path else name
+                    dir_cluster_map[child] = cl
+
+        # Build cluster data for directories
+        for dir_path, entries in dir_entries.items():
+            cluster_num = dir_cluster_map.get(dir_path)
+            if cluster_num is None:
+                continue
 
             dir_data = bytearray()
             if dir_path == "":
-                # Volume label entry in root
+                # Volume label entry in root (no . or .. in root)
                 dir_data += _make_label_entry(vol_label_bytes)
+            else:
+                # . entry (points to self)
+                dir_data += _make_dot_entry(".", cluster_num)
+                # .. entry (points to parent, 0 if parent is root)
+                parent = "/".join(dir_path.split("/")[:-1])
+                parent_cluster = dir_cluster_map.get(parent, 0)
+                # FAT spec: .. in root's children should be 0
+                if parent_cluster == 2:
+                    parent_cluster = 0
+                dir_data += _make_dot_entry("..", parent_cluster)
+
             for name, cl, sz, isd in entries:
                 dir_data += _make_dir_entry(name, cl, sz, isd)
             # Pad to cluster size
