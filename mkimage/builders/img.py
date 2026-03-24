@@ -129,17 +129,25 @@ def _populate_img_mount(
 def _write_fat32_image(
     cfg: object, files: dict[str, str], output: str,
     size_mb: int, label: str, cluster_size: int = 0,
+    mbr: bool = False,
 ) -> None:
     """Create a FAT32 image file using pure Python — no admin, no external tools.
 
     Writes the FAT32 BPB, FAT tables, root directory, and file data directly.
     Based on the approach Rufus uses (direct filesystem creation).
     Works on all platforms without elevation or external dependencies.
+
+    If mbr=True, prepends an MBR partition table with a single FAT32 LBA
+    partition spanning the entire disk. The FAT32 filesystem starts at
+    sector 1 (hidden_sectors=1 in BPB).
     """
     import struct
 
     sector_size = 512
-    total_sectors = size_mb * 1024 * 1024 // sector_size
+    # MBR: partition starts at sector 2048 (1MB alignment, Windows standard)
+    partition_offset = 2048 if mbr else 0
+    total_image_sectors = size_mb * 1024 * 1024 // sector_size
+    total_sectors = total_image_sectors - partition_offset  # FAT32 portion
 
     # Choose cluster size (sectors per cluster)
     if cluster_size > 0:
@@ -193,10 +201,34 @@ def _write_fat32_image(
     # Pad label to 11 chars
     vol_label_bytes = label.upper().ljust(11)[:11].encode("ascii", errors="replace")
 
-    cfg.log(f"  Creating FAT32 image ({size_mb}MB, {spc * sector_size}B clusters)...")
+    mbr_label = " (MBR)" if mbr else ""
+    cfg.log(f"  Creating FAT32{mbr_label} image ({size_mb}MB, {spc * sector_size}B clusters)...")
 
     with open(output, "wb") as f:
-        # === Boot sector (sector 0) ===
+        # === MBR (sector 0) — only if mbr=True ===
+        if mbr:
+            mbr_sector = bytearray(sector_size)
+            # Partition entry 1 at offset 446 (16 bytes)
+            mbr_sector[446] = 0x80                                  # Active/bootable
+            # CHS start: use LBA-to-CHS for partition_offset (usually 2048)
+            # For small disks: H=32, S=32; LBA 2048 = C=2, H=0, S=1
+            mbr_sector[447] = 32                                    # Start head
+            mbr_sector[448] = 33                                    # Start sector (1-based)
+            mbr_sector[449] = 0                                     # Start cylinder
+            mbr_sector[450] = 0x0C                                  # Type: FAT32 LBA
+            # CHS end: use max values (LBA is authoritative)
+            mbr_sector[451] = 0xFE                                  # End head
+            mbr_sector[452] = 0xFF                                  # End sector+cyl
+            mbr_sector[453] = 0xFF                                  # End cylinder
+            struct.pack_into('<I', mbr_sector, 454, partition_offset)  # LBA start
+            struct.pack_into('<I', mbr_sector, 458, total_sectors)    # LBA size
+            mbr_sector[510] = 0x55                                  # Boot signature
+            mbr_sector[511] = 0xAA
+            f.write(mbr_sector)
+            # Gap between MBR and partition (sectors 1 to partition_offset-1)
+            f.write(b'\x00' * sector_size * (partition_offset - 1))
+
+        # === Boot sector (sector 0 of FAT32 partition) ===
         boot = bytearray(sector_size)
         boot[0:3] = b'\xEB\x58\x90'          # Jump + NOP
         boot[3:11] = b'MKIMAGE '              # OEM name
@@ -210,7 +242,7 @@ def _write_fat32_image(
         struct.pack_into('<H', boot, 22, 0)                 # FAT size 16 (0 for FAT32)
         struct.pack_into('<H', boot, 24, 32)                # Sectors per track
         struct.pack_into('<H', boot, 26, 8)                 # Number of heads
-        struct.pack_into('<I', boot, 28, 0)                 # Hidden sectors
+        struct.pack_into('<I', boot, 28, partition_offset)    # Hidden sectors
         struct.pack_into('<I', boot, 32, total_sectors)     # Total sectors 32
         # FAT32-specific fields (offset 36+)
         struct.pack_into('<I', boot, 36, fat_sectors)       # FAT size 32
@@ -326,12 +358,13 @@ def _write_fat32_image(
         struct.pack_into('<I', fsinfo, 488, free_clusters)
         struct.pack_into('<I', fsinfo, 492, next_cluster)
         # Write updated FSInfo at sector 1 and backup at sector 7
-        f.seek(1 * sector_size)
+        part_base = partition_offset * sector_size
+        f.seek(part_base + 1 * sector_size)
         f.write(fsinfo)
-        f.seek(7 * sector_size)
+        f.seek(part_base + 7 * sector_size)
         f.write(fsinfo)
         # Seek to FAT start
-        f.seek(reserved_sectors * sector_size)
+        f.seek(part_base + reserved_sectors * sector_size)
 
         # Write FAT1 and FAT2
         f.write(fat)
@@ -462,10 +495,51 @@ def _write_fat32_image(
         if current_pos < target_size:
             f.write(b'\x00' * (target_size - current_pos))
 
+        # Append VHD fixed-disk footer (512 bytes).
+        # Makes the image mountable on Windows via Mount-DiskImage.
+        # The footer is ignored by dd when writing to USB.
+        import uuid as _uuid
+        vhd = bytearray(sector_size)
+        vhd[0:8] = b'conectix'                                 # Cookie
+        struct.pack_into('>I', vhd, 8, 0x00000002)             # Features
+        struct.pack_into('>I', vhd, 12, 0x00010000)            # Version 1.0
+        struct.pack_into('>Q', vhd, 16, 0xFFFFFFFFFFFFFFFF)    # Data offset (fixed)
+        struct.pack_into('>I', vhd, 24, 0)                     # Timestamp
+        vhd[28:32] = b'mkig'                                   # Creator app
+        struct.pack_into('>I', vhd, 32, 0x00060001)            # Creator ver
+        vhd[36:40] = b'Wi2k'                                   # Creator host
+        raw_size = target_size
+        struct.pack_into('>Q', vhd, 40, raw_size)              # Original size
+        struct.pack_into('>Q', vhd, 48, raw_size)              # Current size
+        # CHS geometry
+        ts = raw_size // sector_size
+        if ts > 65535 * 16 * 63:
+            c, h, s = 65535, 16, 63
+        else:
+            s = 17
+            h = (ts // s + 1023) // 1024
+            if h < 4: h = 4
+            if h > 16: s, h = 31, 16
+            if ts // (s * h) > 65535: s, h = 63, 16
+            c = ts // (h * s)
+        struct.pack_into('>H', vhd, 56, c)
+        vhd[58] = h
+        vhd[59] = s
+        struct.pack_into('>I', vhd, 60, 2)                     # Fixed disk
+        vhd[68:84] = _uuid.uuid4().bytes                       # Unique ID
+        # Checksum
+        struct.pack_into('>I', vhd, 64, 0)
+        ck = 0
+        for b in vhd:
+            ck = (ck + b) & 0xFFFFFFFF
+        struct.pack_into('>I', vhd, 64, (~ck) & 0xFFFFFFFF)
+        f.write(vhd)
+
     cfg.log(f"  Copied {len(files)} files to image")
 
 
-def _build_img_windows(cfg: object, files: dict[str, str], output: str) -> None:
+def _build_img_windows(cfg: object, files: dict[str, str], output: str,
+                       mbr: bool = False) -> None:
     """Create FAT32 image on Windows — pure Python, no admin needed.
 
     Uses _write_fat32_image() to write FAT32 structures directly,
@@ -480,10 +554,12 @@ def _build_img_windows(cfg: object, files: dict[str, str], output: str) -> None:
     cfg.log(f"  Image size: {size_mb}MB ({content_mb}MB content + {size_mb - content_mb}MB free)")
     cfg.log(f"  {len(files)} files ({content_mb * 1024}KB) to include")
 
-    _write_fat32_image(cfg, files, output, size_mb, part.label[:11], part.cluster_size)
+    _write_fat32_image(cfg, files, output, size_mb, part.label[:11],
+                       part.cluster_size, mbr=mbr)
 
+    fmt = "FAT32 MBR" if mbr else "FAT32"
     actual_size = os.path.getsize(output)
-    cfg.log(f"  [OK] Created {output} ({actual_size // 1024}KB, FAT32)")
+    cfg.log(f"  [OK] Created {output} ({actual_size // 1024}KB, {fmt})")
 
     if cfg.verify:
         _verify_write(cfg, files, output)

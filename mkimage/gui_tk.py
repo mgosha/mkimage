@@ -511,7 +511,7 @@ def gui_main() -> None:
     tk.Label(options_tab, text="Partition:").grid(row=0, column=0, sticky=tk.W, **pad)
     part_frame = tk.Frame(options_tab)
     part_frame.grid(row=0, column=1, columnspan=3, sticky=tk.W, **pad)
-    part_scheme_var = tk.StringVar(value="none")
+    part_scheme_var = tk.StringVar(value="mbr")
 
     partition_rows: list[tuple[tk.Frame, tk.StringVar, tk.StringVar,
                                tk.StringVar, tk.StringVar,

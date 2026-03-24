@@ -24,8 +24,19 @@ if TYPE_CHECKING:
 
 
 def build_mbr_img(cfg: Config, files: dict[str, str], output: str) -> None:
-    """Create an MBR-partitioned disk image with a single FAT partition."""
+    """Create an MBR-partitioned disk image with a single FAT partition.
+
+    On Windows (or when root is not available), uses the pure Python
+    FAT32 writer with MBR support — no admin or external tools needed.
+    """
     from mkimage import PartitionSpec
+    from mkimage.platform import _is_windows
+
+    # Pure Python path: works on all platforms, no root needed
+    if _is_windows():
+        from mkimage.builders.img import _build_img_windows
+        _build_img_windows(cfg, files, output, mbr=True)
+        return
 
     _check_root(cfg, "MBR image creation")
     ensure_tools(cfg, "mbr")

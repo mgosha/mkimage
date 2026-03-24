@@ -29,7 +29,7 @@ class Config:
     verbose: bool = False
     verify: bool = False
     gpt: bool = False
-    mbr: bool = False
+    mbr: bool = True   # Default to MBR — raw images need partition table for Windows
     label: str = "UEFITOOLS"    # ISO label + default partition label
     force: bool = False
     log: Callable[..., None] = field(default=print)

@@ -718,7 +718,7 @@ def gui_main() -> None:
                 _section("Partition Scheme")
                 part_rb = dpg.add_radio_button(
                     ["None", "MBR", "GPT"], tag="partition_radio",
-                    horizontal=True, default_value="None",
+                    horizontal=True, default_value="MBR",
                     callback=_on_partition_scheme_change)
                 with dpg.tooltip(part_rb):
                     dpg.add_text("None=raw filesystem, MBR=legacy boot, GPT=UEFI boot")
