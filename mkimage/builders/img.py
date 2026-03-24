@@ -413,10 +413,73 @@ def _write_fat32_image(
             # Shouldn't happen
             return base.ljust(8)[:8], ext.ljust(3)[:3]
 
+        def _lfn_checksum(short_name: bytes) -> int:
+            """Compute the 8.3 name checksum used by LFN entries."""
+            chk = 0
+            for b in short_name[:11]:
+                chk = ((chk >> 1) + ((chk & 1) << 7) + b) & 0xFF
+            return chk
+
+        def _make_lfn_entries(long_name: str, short_name_11: bytes) -> bytes:
+            """Create VFAT Long File Name directory entries.
+
+            Returns N * 32 bytes (LFN entries in reverse order, ready to
+            prepend before the 8.3 entry).
+            """
+            chksum = _lfn_checksum(short_name_11)
+            # Encode name as UTF-16LE, add null terminator
+            ucs2 = bytearray(long_name.encode("utf-16-le"))
+            ucs2 += b'\x00\x00'  # null terminator
+            # Pad to multiple of 26 bytes (13 chars * 2 bytes each)
+            while len(ucs2) % 26 != 0:
+                ucs2 += b'\xff\xff'
+
+            num_entries = len(ucs2) // 26
+            entries = bytearray()
+
+            for i in range(num_entries):
+                entry = bytearray(32)
+                seq = i + 1
+                if i == num_entries - 1:
+                    seq |= 0x40  # last LFN entry marker
+                entry[0] = seq
+                entry[11] = 0x0F  # LFN attribute
+                entry[13] = chksum
+
+                # 13 UTF-16LE chars (26 bytes) split across three fields
+                chunk = ucs2[i * 26:(i + 1) * 26]
+                entry[1:11] = chunk[0:10]    # chars 1-5
+                entry[14:26] = chunk[10:22]  # chars 6-11
+                entry[28:32] = chunk[22:26]  # chars 12-13
+
+                entries += entry
+
+            # LFN entries are stored in reverse order (highest seq first)
+            result = bytearray()
+            for i in range(num_entries - 1, -1, -1):
+                result += entries[i * 32:(i + 1) * 32]
+            return bytes(result)
+
+        def _needs_lfn(name: str, base8: str, ext3: str, is_dir: bool) -> bool:
+            """Check if the long name differs from the 8.3 short name."""
+            if is_dir:
+                short = base8.rstrip()
+                return name.upper() != short
+            parts = name.rsplit(".", 1)
+            short = base8.rstrip() + ("." + ext3.rstrip() if ext3.rstrip() else "")
+            return name.upper() != short
+
         def _make_dir_entry(name: str, cluster: int, size: int,
                             is_dir: bool, dir_path: str = "") -> bytes:
-            """Create a 32-byte FAT32 directory entry with unique 8.3 name."""
+            """Create FAT32 directory entry(s) with LFN support.
+
+            Returns LFN entries (if needed) + 32-byte 8.3 entry.
+            """
             base8, ext3 = _to_short_name(name, is_dir, dir_path)
+            short_name_11 = (base8.encode("ascii", errors="replace") +
+                             ext3.encode("ascii", errors="replace"))
+
+            # 8.3 short entry
             entry = bytearray(32)
             entry[0:8] = base8.encode("ascii", errors="replace")
             entry[8:11] = ext3.encode("ascii", errors="replace")
@@ -424,6 +487,11 @@ def _write_fat32_image(
             struct.pack_into('<H', entry, 20, cluster >> 16)  # High cluster
             struct.pack_into('<H', entry, 26, cluster & 0xFFFF)  # Low cluster
             struct.pack_into('<I', entry, 28, size)
+
+            # Add LFN entries if the long name differs from 8.3
+            if _needs_lfn(name, base8, ext3, is_dir):
+                lfn = _make_lfn_entries(name, short_name_11)
+                return lfn + bytes(entry)
             return bytes(entry)
 
         def _make_label_entry(label_bytes: bytes) -> bytes:
@@ -474,10 +542,30 @@ def _write_fat32_image(
 
             for name, cl, sz, isd in entries:
                 dir_data += _make_dir_entry(name, cl, sz, isd, dir_path)
-            # Pad to cluster size
-            if len(dir_data) < bytes_per_cluster:
-                dir_data += b'\x00' * (bytes_per_cluster - len(dir_data))
-            file_data[cluster_num] = bytes(dir_data[:bytes_per_cluster])
+
+            # Split dir_data across clusters if it exceeds one cluster
+            num_dir_clusters = max(1, -(-len(dir_data) // bytes_per_cluster))
+            # Pad to fill last cluster
+            padded_len = num_dir_clusters * bytes_per_cluster
+            dir_data += b'\x00' * (padded_len - len(dir_data))
+
+            # First cluster is already allocated; allocate extras
+            dir_clusters = [cluster_num]
+            for _ in range(num_dir_clusters - 1):
+                dir_clusters.append(next_cluster)
+                next_cluster += 1
+
+            # Chain directory clusters in FAT
+            for i, dcl in enumerate(dir_clusters):
+                if i < len(dir_clusters) - 1:
+                    struct.pack_into('<I', fat, dcl * 4, dir_clusters[i + 1])
+                else:
+                    struct.pack_into('<I', fat, dcl * 4, 0x0FFFFFFF)
+
+            # Write each cluster
+            for i, dcl in enumerate(dir_clusters):
+                chunk = dir_data[i * bytes_per_cluster:(i + 1) * bytes_per_cluster]
+                file_data[dcl] = bytes(chunk)
 
         # Write all clusters from 2 to next_cluster-1
         for cluster_num in range(2, max(next_cluster, 3)):
