@@ -303,7 +303,7 @@ tips:
         verify=args.verify,
         label=args.label,
         gpt=args.gpt,
-        mbr=args.mbr if args.mbr or args.gpt else True,  # Default to MBR
+        mbr=args.mbr,
         force=args.force,
         iso_hybrid=args.iso_hybrid,
         udf_bridge=args.udf_bridge,

@@ -149,15 +149,11 @@ def _write_fat32_image(
     total_image_sectors = size_mb * 1024 * 1024 // sector_size
     total_sectors = total_image_sectors - partition_offset  # FAT32 portion
 
-    # Choose cluster size (sectors per cluster)
+    # Choose cluster size (sectors per cluster) — matches mkfs.vfat defaults
     if cluster_size > 0:
         spc = cluster_size // sector_size
-    elif size_mb <= 64:
-        spc = 1   # 512 bytes
-    elif size_mb <= 128:
-        spc = 2   # 1KB
-    elif size_mb <= 256:
-        spc = 4   # 2KB
+    elif size_mb <= 260:
+        spc = 1   # 512 bytes (mkfs.vfat uses spc=1 up to ~260MB)
     elif size_mb <= 8192:
         spc = 8   # 4KB
     elif size_mb <= 16384:
@@ -168,18 +164,20 @@ def _write_fat32_image(
     reserved_sectors = 32
     num_fats = 2
 
-    def _calc_fat_size(tot: int, res: int, nfat: int, secpc: int) -> int:
-        """Calculate FAT size per Microsoft FAT spec (fatgen103.pdf, p.21).
+    def _calc_fat_size(tot: int, res: int, nfat: int, secpc: int,
+                        sec_size: int = 512) -> int:
+        """Calculate FAT32 FAT size to match mkfs.vfat (dosfstools).
 
-        RootDirSectors = 0 for FAT32.
-        TmpVal1 = DskSize - (ResvdSecCnt + RootDirSectors)
-        TmpVal2 = (256 * SecPerClus) + NumFATs
-        If FAT32: TmpVal2 = TmpVal2 / 2
-        FATSz = (TmpVal1 + (TmpVal2 - 1)) / TmpVal2
+        Each FAT entry is 4 bytes. Solve for fat_sz such that the FAT
+        can index all data clusters:
+          fat_sz * (sec_size/4) * spc >= total - reserved - nfat*fat_sz + 2*spc
+        Rearranged:
+          fat_sz = ceil((total - reserved + 2*spc) / (sec_size/4 * spc + nfat))
         """
-        t1 = tot - res
-        t2 = (256 * secpc + nfat) // 2
-        return (t1 + t2 - 1) // t2
+        entries_per_sector = sec_size // 4
+        numerator = tot - res + 2 * secpc
+        denominator = entries_per_sector * secpc + nfat
+        return (numerator + denominator - 1) // denominator
 
     fat_sectors = _calc_fat_size(total_sectors, reserved_sectors, num_fats, spc)
     data_start = reserved_sectors + num_fats * fat_sectors
