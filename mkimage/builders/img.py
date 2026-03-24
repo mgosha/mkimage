@@ -160,25 +160,28 @@ def _build_img_windows(cfg: object, files: dict[str, str], output: str) -> None:
         cfg.log(f"  Image size: {size_mb}MB ({content_mb}MB content + {size_mb - content_mb}MB free)")
         cfg.log(f"  {len(files)} files ({content_mb * 1024}KB) to include")
 
-        args_list = [
-            "-NoProfile", "-ExecutionPolicy", "Bypass",
-            "-File", ps1,
-            "-Action", "CreateImg",
-            "-SourceDir", staging,
-            "-OutputFile", str(Path(output).resolve()),
-            "-Label", part.label[:11],
-            "-SizeMB", str(size_mb),
-            "-ProgressFile", progress_file,
-        ]
-        if cfg.verbose:
-            args_list.append("-Verbose")
-        args_str = " ".join(f"'{a}'" for a in args_list)
+        # Write a wrapper script that the elevated process will execute.
+        # This avoids ArgumentList quoting issues with Start-Process.
+        output_resolved = str(Path(output).resolve())
+        wrapper = os.path.join(shared_tmp, f"run-{os.getpid()}.ps1")
+        verbose_flag = "-Verbose" if cfg.verbose else ""
+        with open(wrapper, "w") as wf:
+            wf.write(
+                f'& "{ps1}" '
+                f'-Action CreateImg '
+                f'-SourceDir "{staging}" '
+                f'-OutputFile "{output_resolved}" '
+                f'-Label "{part.label[:11]}" '
+                f'-SizeMB {size_mb} '
+                f'-ProgressFile "{progress_file}" '
+                f'{verbose_flag}\n'
+            )
 
         cfg.log("  Requesting Administrator access (diskpart requires elevation)...")
         proc = _sp.Popen([
             "powershell", "-NoProfile", "-Command",
             f"Start-Process -FilePath 'powershell.exe' "
-            f"-ArgumentList {args_str} "
+            f"-ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','{wrapper}' "
             f"-Verb RunAs -Wait"
         ], stdout=_sp.PIPE, stderr=_sp.PIPE)
 
@@ -227,10 +230,11 @@ def _build_img_windows(cfg: object, files: dict[str, str], output: str) -> None:
         raise
     finally:
         shutil.rmtree(staging, ignore_errors=True)
-        try:
-            os.unlink(progress_file)
-        except OSError:
-            pass
+        for f in (progress_file, wrapper):
+            try:
+                os.unlink(f)
+            except OSError:
+                pass
 
 
 def build_img(cfg: object, files: dict[str, str], output: str) -> None:
