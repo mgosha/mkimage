@@ -126,115 +126,296 @@ def _populate_img_mount(
     return r.returncode == 0
 
 
-def _build_img_windows(cfg: object, files: dict[str, str], output: str) -> None:
-    """Create FAT32 image on Windows via mkimage.ps1 (no WSL needed).
+def _write_fat32_image(
+    cfg: object, files: dict[str, str], output: str,
+    size_mb: int, label: str, cluster_size: int = 0,
+) -> None:
+    """Create a FAT32 image file using pure Python — no admin, no external tools.
 
-    diskpart requires admin for VHD operations. Runs elevated via
-    Start-Process -Verb RunAs with a progress file for log output.
-    Staging dir is managed manually so it survives the elevated subprocess.
+    Writes the FAT32 BPB, FAT tables, root directory, and file data directly.
+    Based on the approach Rufus uses (direct filesystem creation).
+    Works on all platforms without elevation or external dependencies.
     """
-    import shutil
-    import time
+    import struct
+
+    sector_size = 512
+    total_sectors = size_mb * 1024 * 1024 // sector_size
+
+    # Choose cluster size (sectors per cluster)
+    if cluster_size > 0:
+        spc = cluster_size // sector_size
+    elif size_mb <= 64:
+        spc = 1   # 512 bytes
+    elif size_mb <= 128:
+        spc = 2   # 1KB
+    elif size_mb <= 256:
+        spc = 4   # 2KB
+    elif size_mb <= 8192:
+        spc = 8   # 4KB
+    elif size_mb <= 16384:
+        spc = 16  # 8KB
+    else:
+        spc = 32  # 16KB
+
+    reserved_sectors = 32
+    num_fats = 2
+    # Calculate FAT size
+    cluster_count = (total_sectors - reserved_sectors) // spc
+    # Each FAT entry is 4 bytes for FAT32
+    fat_sectors = (cluster_count * 4 + sector_size - 1) // sector_size
+    # Recalculate data clusters with FAT overhead
+    data_start = reserved_sectors + num_fats * fat_sectors
+    data_sectors = total_sectors - data_start
+    cluster_count = data_sectors // spc
+
+    # FAT32 requires >= 65525 clusters; if too few, reduce spc
+    while cluster_count < 65525 and spc > 1:
+        spc //= 2
+        cluster_count = (total_sectors - reserved_sectors) // spc
+        fat_sectors = (cluster_count * 4 + sector_size - 1) // sector_size
+        data_start = reserved_sectors + num_fats * fat_sectors
+        data_sectors = total_sectors - data_start
+        cluster_count = data_sectors // spc
+
+    # Volume serial number (random)
+    import random
+    vol_serial = random.randint(0, 0xFFFFFFFF)
+
+    # Pad label to 11 chars
+    vol_label_bytes = label.upper().ljust(11)[:11].encode("ascii", errors="replace")
+
+    cfg.log(f"  Creating FAT32 image ({size_mb}MB, {spc * sector_size}B clusters)...")
+
+    with open(output, "wb") as f:
+        # === Boot sector (sector 0) ===
+        boot = bytearray(sector_size)
+        boot[0:3] = b'\xEB\x58\x90'          # Jump + NOP
+        boot[3:11] = b'MKIMAGE '              # OEM name
+        struct.pack_into('<H', boot, 11, sector_size)      # Bytes per sector
+        boot[13] = spc                                      # Sectors per cluster
+        struct.pack_into('<H', boot, 14, reserved_sectors)  # Reserved sectors
+        boot[16] = num_fats                                 # Number of FATs
+        struct.pack_into('<H', boot, 17, 0)                 # Root entries (0 for FAT32)
+        struct.pack_into('<H', boot, 19, 0)                 # Total sectors 16 (0 for FAT32)
+        boot[21] = 0xF8                                     # Media descriptor (fixed disk)
+        struct.pack_into('<H', boot, 22, 0)                 # FAT size 16 (0 for FAT32)
+        struct.pack_into('<H', boot, 24, 32)                # Sectors per track
+        struct.pack_into('<H', boot, 26, 8)                 # Number of heads
+        struct.pack_into('<I', boot, 28, 0)                 # Hidden sectors
+        struct.pack_into('<I', boot, 32, total_sectors)     # Total sectors 32
+        # FAT32-specific fields (offset 36+)
+        struct.pack_into('<I', boot, 36, fat_sectors)       # FAT size 32
+        struct.pack_into('<H', boot, 40, 0)                 # Flags
+        struct.pack_into('<H', boot, 42, 0)                 # Version
+        struct.pack_into('<I', boot, 44, 2)                 # Root cluster
+        struct.pack_into('<H', boot, 48, 1)                 # FSInfo sector
+        struct.pack_into('<H', boot, 50, 6)                 # Backup boot sector
+        boot[64] = 0x80                                     # Drive number
+        boot[66] = 0x29                                     # Extended boot signature
+        struct.pack_into('<I', boot, 67, vol_serial)        # Volume serial
+        boot[71:82] = vol_label_bytes                       # Volume label
+        boot[82:90] = b'FAT32   '                          # FS type
+        boot[510] = 0x55                                    # Boot signature
+        boot[511] = 0xAA
+        f.write(boot)
+
+        # === FSInfo sector (sector 1) ===
+        fsinfo = bytearray(sector_size)
+        struct.pack_into('<I', fsinfo, 0, 0x41615252)      # Lead signature
+        struct.pack_into('<I', fsinfo, 484, 0x61417272)     # Struct signature
+        struct.pack_into('<I', fsinfo, 488, cluster_count - 1)  # Free clusters
+        struct.pack_into('<I', fsinfo, 492, 3)              # Next free cluster
+        fsinfo[510] = 0x55
+        fsinfo[511] = 0xAA
+        f.write(fsinfo)
+
+        # Sectors 2-5: zeros
+        f.write(b'\x00' * sector_size * 4)
+
+        # === Backup boot sector (sector 6) ===
+        f.write(boot)
+        # Backup FSInfo (sector 7)
+        f.write(fsinfo)
+
+        # Remaining reserved sectors (8 through reserved-1)
+        remaining = reserved_sectors - 8
+        f.write(b'\x00' * sector_size * remaining)
+
+        # === FAT tables ===
+        # Build FAT in memory
+        fat = bytearray(fat_sectors * sector_size)
+        # Entry 0: media descriptor
+        struct.pack_into('<I', fat, 0, 0x0FFFFFF8)
+        # Entry 1: end of chain marker
+        struct.pack_into('<I', fat, 4, 0x0FFFFFFF)
+        # Entry 2: root directory (end of chain for now)
+        struct.pack_into('<I', fat, 8, 0x0FFFFFFF)
+
+        # Allocate clusters for files and write data
+        next_cluster = 3  # First available cluster
+
+        # Collect directory structure
+        dir_entries: dict[str, list[tuple[str, int, int, bytes]]] = {"": []}
+        # Each entry: (name, first_cluster, size, is_dir)
+        file_data: dict[int, bytes] = {}  # cluster -> data
+
+        # Create directory entries
+        dirs_created: set[str] = set()
+        for img_path in sorted(files.keys()):
+            parts = PurePosixPath(img_path).parts
+            # Create parent directories
+            for i in range(1, len(parts)):
+                d = "/".join(parts[:i])
+                if d not in dirs_created:
+                    parent = "/".join(parts[:i-1])
+                    dir_name = parts[i-1]
+                    # Allocate cluster for directory
+                    dir_cluster = next_cluster
+                    struct.pack_into('<I', fat, dir_cluster * 4, 0x0FFFFFFF)
+                    next_cluster += 1
+                    if parent not in dir_entries:
+                        dir_entries[parent] = []
+                    dir_entries[parent].append((dir_name, dir_cluster, 0, True))
+                    dir_entries[d] = []
+                    dirs_created.add(d)
+
+            # Add file entry
+            parent_dir = "/".join(parts[:-1])
+            file_name = parts[-1]
+            local_path = files[img_path]
+            file_bytes = open(local_path, "rb").read()
+            file_size = len(file_bytes)
+
+            if file_size == 0:
+                if parent_dir not in dir_entries:
+                    dir_entries[parent_dir] = []
+                dir_entries[parent_dir].append((file_name, 0, 0, False))
+                continue
+
+            first_cluster = next_cluster
+            # Allocate clusters for file data
+            clusters_needed = (file_size + spc * sector_size - 1) // (spc * sector_size)
+            for c in range(clusters_needed):
+                cluster_num = next_cluster
+                next_cluster += 1
+                if c < clusters_needed - 1:
+                    struct.pack_into('<I', fat, cluster_num * 4, cluster_num + 1)
+                else:
+                    struct.pack_into('<I', fat, cluster_num * 4, 0x0FFFFFFF)
+                # Store data for this cluster
+                offset = c * spc * sector_size
+                chunk = file_bytes[offset:offset + spc * sector_size]
+                file_data[cluster_num] = chunk
+
+            if parent_dir not in dir_entries:
+                dir_entries[parent_dir] = []
+            dir_entries[parent_dir].append((file_name, first_cluster, file_size, False))
+
+        # Write FAT1 and FAT2
+        f.write(fat)
+        f.write(fat)
+
+        # === Data area ===
+        # Write clusters sequentially
+        total_data_clusters = next_cluster - 2  # clusters 2..next_cluster-1
+        bytes_per_cluster = spc * sector_size
+
+        def _make_dir_entry(name: str, cluster: int, size: int, is_dir: bool) -> bytes:
+            """Create a 32-byte FAT32 directory entry."""
+            # Convert name to 8.3 format
+            if is_dir:
+                base = name.upper()[:8].ljust(8)
+                ext = "   "
+            else:
+                parts = name.rsplit(".", 1)
+                base = parts[0].upper()[:8].ljust(8)
+                ext = parts[1].upper()[:3].ljust(3) if len(parts) > 1 else "   "
+            entry = bytearray(32)
+            entry[0:8] = base.encode("ascii", errors="replace")
+            entry[8:11] = ext.encode("ascii", errors="replace")
+            entry[11] = 0x10 if is_dir else 0x20  # Attribute
+            struct.pack_into('<H', entry, 20, cluster >> 16)  # High cluster
+            struct.pack_into('<H', entry, 26, cluster & 0xFFFF)  # Low cluster
+            struct.pack_into('<I', entry, 28, size)
+            return bytes(entry)
+
+        def _make_label_entry(label_bytes: bytes) -> bytes:
+            """Create a volume label directory entry."""
+            entry = bytearray(32)
+            entry[0:11] = label_bytes
+            entry[11] = 0x08  # Volume label attribute
+            return bytes(entry)
+
+        # Build cluster data for directories
+        # Root directory is cluster 2
+        for dir_path, entries in dir_entries.items():
+            if dir_path == "":
+                cluster_num = 2
+            else:
+                # Find the cluster allocated for this directory
+                parts = dir_path.split("/")
+                parent = "/".join(parts[:-1])
+                dname = parts[-1]
+                cluster_num = None
+                for name, cl, sz, isd in dir_entries.get(parent, []):
+                    if name == dname and isd:
+                        cluster_num = cl
+                        break
+                if cluster_num is None:
+                    continue
+
+            dir_data = bytearray()
+            if dir_path == "":
+                # Volume label entry in root
+                dir_data += _make_label_entry(vol_label_bytes)
+            for name, cl, sz, isd in entries:
+                dir_data += _make_dir_entry(name, cl, sz, isd)
+            # Pad to cluster size
+            if len(dir_data) < bytes_per_cluster:
+                dir_data += b'\x00' * (bytes_per_cluster - len(dir_data))
+            file_data[cluster_num] = bytes(dir_data[:bytes_per_cluster])
+
+        # Write all clusters from 2 to next_cluster-1
+        for cluster_num in range(2, max(next_cluster, 3)):
+            if cluster_num in file_data:
+                data = file_data[cluster_num]
+                if len(data) < bytes_per_cluster:
+                    data += b'\x00' * (bytes_per_cluster - len(data))
+                f.write(data[:bytes_per_cluster])
+            else:
+                f.write(b'\x00' * bytes_per_cluster)
+
+        # Fill remaining space to reach total size
+        current_pos = f.tell()
+        target_size = size_mb * 1024 * 1024
+        if current_pos < target_size:
+            f.write(b'\x00' * (target_size - current_pos))
+
+    cfg.log(f"  Copied {len(files)} files to image")
+
+
+def _build_img_windows(cfg: object, files: dict[str, str], output: str) -> None:
+    """Create FAT32 image on Windows — pure Python, no admin needed.
+
+    Uses _write_fat32_image() to write FAT32 structures directly,
+    bypassing diskpart/VHD entirely (like Rufus's approach).
+    """
     from mkimage import PartitionSpec
 
-    ps1 = _find_ps1()
-    if not ps1:
-        raise RuntimeError("mkimage.ps1 not found. Cannot create images on Windows.")
+    part = cfg.partitions[0] if cfg.partitions else PartitionSpec()
+    content_mb = _calculate_content_size(files)
+    size_mb = _interpret_size(part.size, content_mb)
 
-    # Use a shared location accessible by both normal and elevated processes.
-    # The user's %TEMP% may not be accessible from an elevated context.
-    shared_tmp = os.path.join(os.environ.get("SystemDrive", "C:"), "temp", "mkimage-build")
-    os.makedirs(shared_tmp, exist_ok=True)
-    staging = tempfile.mkdtemp(prefix="stg-", dir=shared_tmp)
-    progress_file = os.path.join(shared_tmp, f"progress-{os.getpid()}.txt")
-    # Ensure progress file exists
-    with open(progress_file, "w") as f:
-        pass
+    cfg.log(f"  Image size: {size_mb}MB ({content_mb}MB content + {size_mb - content_mb}MB free)")
+    cfg.log(f"  {len(files)} files ({content_mb * 1024}KB) to include")
 
-    try:
-        _stage_files(files, Path(staging))
-        part = cfg.partitions[0] if cfg.partitions else PartitionSpec()
-        content_mb = _calculate_content_size(files)
-        size_mb = _interpret_size(part.size, content_mb)
+    _write_fat32_image(cfg, files, output, size_mb, part.label[:11], part.cluster_size)
 
-        cfg.log(f"  Image size: {size_mb}MB ({content_mb}MB content + {size_mb - content_mb}MB free)")
-        cfg.log(f"  {len(files)} files ({content_mb * 1024}KB) to include")
+    actual_size = os.path.getsize(output)
+    cfg.log(f"  [OK] Created {output} ({actual_size // 1024}KB, FAT32)")
 
-        # Write a wrapper script that the elevated process will execute.
-        # This avoids ArgumentList quoting issues with Start-Process.
-        output_resolved = str(Path(output).resolve())
-        wrapper = os.path.join(shared_tmp, f"run-{os.getpid()}.ps1")
-        verbose_flag = "-Verbose" if cfg.verbose else ""
-        with open(wrapper, "w") as wf:
-            wf.write(
-                f'& "{ps1}" '
-                f'-Action CreateImg '
-                f'-SourceDir "{staging}" '
-                f'-OutputFile "{output_resolved}" '
-                f'-Label "{part.label[:11]}" '
-                f'-SizeMB {size_mb} '
-                f'-ProgressFile "{progress_file}" '
-                f'{verbose_flag}\n'
-            )
-
-        cfg.log("  Requesting Administrator access (diskpart requires elevation)...")
-        proc = _sp.Popen([
-            "powershell", "-NoProfile", "-Command",
-            f"Start-Process -FilePath 'powershell.exe' "
-            f"-ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','{wrapper}' "
-            f"-Verb RunAs -Wait"
-        ], stdout=_sp.PIPE, stderr=_sp.PIPE)
-
-        lines_read = 0
-        while proc.poll() is None:
-            time.sleep(0.3)
-            if os.path.exists(progress_file):
-                try:
-                    with open(progress_file, "r", encoding="utf-8",
-                              errors="replace") as pf:
-                        all_lines = pf.readlines()
-                    for line in all_lines[lines_read:]:
-                        stripped = line.rstrip()
-                        if stripped:
-                            cfg.log(f"  {stripped}")
-                    lines_read = len(all_lines)
-                except OSError:
-                    pass
-
-        # Read remaining output
-        time.sleep(0.5)
-        if os.path.exists(progress_file):
-            try:
-                with open(progress_file, "r", encoding="utf-8",
-                          errors="replace") as pf:
-                    all_lines = pf.readlines()
-                for line in all_lines[lines_read:]:
-                    stripped = line.rstrip()
-                    if stripped:
-                        cfg.log(f"  {stripped}")
-            except OSError:
-                pass
-
-        if not os.path.isfile(output):
-            raise RuntimeError("Image creation failed: output file not created")
-
-        actual_size = os.path.getsize(output)
-        cfg.log(f"  [OK] Created {output} ({actual_size // 1024}KB, FAT32)")
-
-        if cfg.verify:
-            _verify_write(cfg, files, output)
-
-    except Exception as exc:
-        if "canceled by the user" in str(exc):
-            raise RuntimeError("Administrator access denied")
-        raise
-    finally:
-        shutil.rmtree(staging, ignore_errors=True)
-        for f in (progress_file, wrapper):
-            try:
-                os.unlink(f)
-            except OSError:
-                pass
+    if cfg.verify:
+        _verify_write(cfg, files, output)
 
 
 def build_img(cfg: object, files: dict[str, str], output: str) -> None:
