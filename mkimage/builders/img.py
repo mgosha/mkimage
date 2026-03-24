@@ -342,19 +342,51 @@ def _write_fat32_image(
         total_data_clusters = next_cluster - 2  # clusters 2..next_cluster-1
         bytes_per_cluster = spc * sector_size
 
-        def _make_dir_entry(name: str, cluster: int, size: int, is_dir: bool) -> bytes:
-            """Create a 32-byte FAT32 directory entry."""
-            # Convert name to 8.3 format
+        # Track used 8.3 names per directory to avoid collisions
+        used_short_names: dict[str, set[str]] = {}  # dir_path -> set of "BASEEXT"
+
+        def _to_short_name(name: str, is_dir: bool, dir_path: str) -> tuple[str, str]:
+            """Convert a long filename to unique 8.3 format with ~N tails."""
             if is_dir:
-                base = name.upper()[:8].ljust(8)
-                ext = "   "
+                base = name.upper()[:8]
+                ext = ""
             else:
                 parts = name.rsplit(".", 1)
-                base = parts[0].upper()[:8].ljust(8)
-                ext = parts[1].upper()[:3].ljust(3) if len(parts) > 1 else "   "
+                base = parts[0].upper()[:8]
+                ext = parts[1].upper()[:3] if len(parts) > 1 else ""
+
+            # Strip invalid characters
+            base = "".join(c if c.isalnum() or c in "_-" else "_" for c in base)
+            ext = "".join(c if c.isalnum() or c in "_-" else "_" for c in ext)
+
+            if dir_path not in used_short_names:
+                used_short_names[dir_path] = set()
+
+            candidate = (base.ljust(8)[:8] + ext.ljust(3)[:3])
+            if candidate not in used_short_names[dir_path]:
+                used_short_names[dir_path].add(candidate)
+                return base.ljust(8)[:8], ext.ljust(3)[:3]
+
+            # Collision — use ~N suffix
+            for n in range(1, 1000):
+                suffix = f"~{n}"
+                max_base = 8 - len(suffix)
+                short_base = base[:max_base] + suffix
+                candidate = (short_base.ljust(8)[:8] + ext.ljust(3)[:3])
+                if candidate not in used_short_names[dir_path]:
+                    used_short_names[dir_path].add(candidate)
+                    return short_base.ljust(8)[:8], ext.ljust(3)[:3]
+
+            # Shouldn't happen
+            return base.ljust(8)[:8], ext.ljust(3)[:3]
+
+        def _make_dir_entry(name: str, cluster: int, size: int,
+                            is_dir: bool, dir_path: str = "") -> bytes:
+            """Create a 32-byte FAT32 directory entry with unique 8.3 name."""
+            base8, ext3 = _to_short_name(name, is_dir, dir_path)
             entry = bytearray(32)
-            entry[0:8] = base.encode("ascii", errors="replace")
-            entry[8:11] = ext.encode("ascii", errors="replace")
+            entry[0:8] = base8.encode("ascii", errors="replace")
+            entry[8:11] = ext3.encode("ascii", errors="replace")
             entry[11] = 0x10 if is_dir else 0x20  # Attribute
             struct.pack_into('<H', entry, 20, cluster >> 16)  # High cluster
             struct.pack_into('<H', entry, 26, cluster & 0xFFFF)  # Low cluster
@@ -408,7 +440,7 @@ def _write_fat32_image(
                 dir_data += _make_dot_entry("..", parent_cluster)
 
             for name, cl, sz, isd in entries:
-                dir_data += _make_dir_entry(name, cl, sz, isd)
+                dir_data += _make_dir_entry(name, cl, sz, isd, dir_path)
             # Pad to cluster size
             if len(dir_data) < bytes_per_cluster:
                 dir_data += b'\x00' * (bytes_per_cluster - len(dir_data))
