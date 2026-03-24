@@ -466,6 +466,7 @@ def _do_create() -> None:
     dpg.set_value("log_text", "")
 
     def run() -> None:
+        nonlocal output
         cfg = Config(
             verbose=dpg.get_value("verbose_check"),
             verify=dpg.get_value("verify_check"),
