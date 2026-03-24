@@ -288,14 +288,15 @@ tips:
         args.gpt = True
         partitions.append(PartitionSpec("ext4", args.persistent, "casper-rw"))
 
-    # Apply --cluster-size to first partition spec (or create default)
-    if args.cluster_size > 0:
-        if partitions:
-            partitions[0].cluster_size = args.cluster_size
-        else:
-            p = PartitionSpec()
+    # If no --partition flags, create default partition with --label
+    if not partitions:
+        p = PartitionSpec()
+        p.label = args.label
+        if args.cluster_size > 0:
             p.cluster_size = args.cluster_size
-            partitions.append(p)
+        partitions.append(p)
+    elif args.cluster_size > 0:
+        partitions[0].cluster_size = args.cluster_size
 
     cfg = Config(
         verbose=args.verbose,
