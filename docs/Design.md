@@ -310,7 +310,7 @@ On macOS, install via Homebrew: `brew install dosfstools gdisk xorriso`
 
 ### Phase 5: Integration
 
-- Update uefi-bootkit config.sh `MKIMAGE_DIR` default to point here
+- Update uefi-devkit config.sh `MKIMAGE_DIR` default to point here
 - Replace inline image creation in uefi-ipmitool/scripts/build.sh
 - Replace image/usb targets in softbmc/scripts/deploy.sh
 - Replace QEMU disk image creation in project qemu.sh scripts

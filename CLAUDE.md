@@ -48,7 +48,7 @@ layouts, and USB safety features from `softbmc/scripts/deploy.sh`.
 
 ## Primary Consumers
 
-- `~/projects/aximcode/uefi-bootkit` — build.sh calls mkimage.py via
+- `~/projects/aximcode/uefi-devkit` — build.sh calls mkimage.py via
   `$MKIMAGE_DIR` to create the final multi-tool UEFI boot image
 - `~/projects/aximcode/uefi-ipmitool` — standalone image creation
 - `~/projects/aximcode/softbmc` — deploy.sh image/usb targets (planned)
