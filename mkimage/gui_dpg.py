@@ -459,12 +459,9 @@ def _on_source_mode_change(sender: int) -> None:
     dpg.hide_item("source_file_group")
     dpg.hide_item("source_includes_group")
     dpg.hide_item("source_usb_group")
-    dpg.hide_item("source_none_group")
     if mode == "USB":
         dpg.show_item("source_usb_group")
         _refresh_source_drives()
-    elif mode == "None":
-        dpg.show_item("source_none_group")
     else:
         dpg.show_item("source_file_group")
         dpg.show_item("source_includes_group")
@@ -493,9 +490,7 @@ def _on_target_mode_change(sender: int) -> None:
 def _update_action_label() -> None:
     src = dpg.get_value("source_mode")
     tgt = dpg.get_value("target_mode")
-    if src == "None":
-        label = "Format USB" if tgt == "USB" else "Create Image"
-    elif src == "File" and tgt == "File":
+    if src == "File" and tgt == "File":
         label = "Create Image"
     elif src == "File" and tgt == "USB":
         label = "Write to USB"
@@ -547,48 +542,6 @@ def _section(label: str) -> None:
 def _do_create() -> None:
     source_mode = dpg.get_value("source_mode")
     target_mode = dpg.get_value("target_mode")
-
-    # Format-only flow (Source=None)
-    if source_mode == "None":
-        if target_mode != "USB":
-            _log("Error: No source selected. Cannot create an empty image.")
-            return
-        sel = dpg.get_value("drive_combo")
-        if not sel or "no USB" in sel:
-            _log("Error: No USB drive selected.")
-            return
-        device = sel.split()[0]
-        label = dpg.get_value("vol_label").strip() or "UEFITOOLS"
-        partition_scheme = dpg.get_value("partition_radio")
-        partitions = _get_partitions()
-
-        _set_building(True)
-        dpg.set_value("log_text", "")
-
-        def run_format() -> None:
-            from mkimage.usb.write import format_device
-            from mkimage.usb.safety import _unmount_device
-            cfg = Config(
-                verbose=dpg.get_value("verbose_check"),
-                gpt=(partition_scheme == "GPT"),
-                mbr=(partition_scheme == "MBR"),
-                label=label,
-                force=dpg.get_value("force_check"),
-                log=_log,
-                partitions=partitions,
-            )
-            try:
-                _log(f"Formatting {device}...")
-                _unmount_device(cfg, device)
-                format_device(cfg, device)
-                _log("Done.")
-                _set_building(False, "success")
-            except Exception as e:
-                _log(f"Error: {e}")
-                _set_building(False, "error")
-
-        threading.Thread(target=run_format, daemon=True).start()
-        return
 
     if source_mode == "USB":
         sel = dpg.get_value("source_drive_combo")
@@ -759,7 +712,7 @@ def gui_main() -> None:
                         dpg.bind_item_theme(t, "header_theme")
 
                         dpg.add_radio_button(
-                            ["File", "USB", "None"], tag="source_mode",
+                            ["File", "USB"], tag="source_mode",
                             horizontal=True, default_value="File",
                             callback=_on_source_mode_change)
 
@@ -782,14 +735,6 @@ def gui_main() -> None:
                                 dpg.add_button(
                                     label="Refresh",
                                     callback=_refresh_source_drives, width=70)
-
-                        # None mode (format only, hidden)
-                        with dpg.group(tag="source_none_group", show=False):
-                            dpg.add_spacer(height=30)
-                            dpg.add_text("Format only \u2014 no files",
-                                         color=(150, 150, 150))
-                            dpg.add_text("Select a USB target to format",
-                                         color=(120, 120, 120))
 
                         # Extra includes (File mode only)
                         with dpg.group(tag="source_includes_group"):

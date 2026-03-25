@@ -201,9 +201,7 @@ def gui_main() -> None:
     def _update_action_label_tk() -> None:
         src = source_mode_var.get()
         tgt = target_mode_var.get()
-        if src == "none":
-            label = "Format USB" if tgt == "usb" else "Create Image"
-        elif src == "file" and tgt == "file":
+        if src == "file" and tgt == "file":
             label = "Create Image"
         elif src == "file" and tgt == "usb":
             label = "Write to USB"
@@ -218,12 +216,9 @@ def gui_main() -> None:
         source_file_frame.pack_forget()
         source_includes_frame.pack_forget()
         source_usb_frame.pack_forget()
-        source_none_frame.pack_forget()
         if mode == "usb":
             source_usb_frame.pack(fill=tk.X, pady=(2, 0))
             refresh_source_drives()
-        elif mode == "none":
-            source_none_frame.pack(fill=tk.X, pady=(2, 0))
         else:
             source_file_frame.pack(fill=tk.X)
             source_includes_frame.pack(fill=tk.X, pady=(2, 0))
@@ -242,47 +237,6 @@ def gui_main() -> None:
     def do_create() -> None:
         src_mode = source_mode_var.get()
         to_usb = target_mode_var.get() == "usb"
-
-        # Format-only flow (Source=None)
-        if src_mode == "none":
-            if not to_usb:
-                messagebox.showerror("Error", "No source selected. Cannot create an empty image.")
-                return
-            sel = target_drive_var.get().strip()
-            if not sel:
-                messagebox.showerror("Error", "No USB drive selected.")
-                return
-            device = sel.split()[0]
-            label = label_var.get().strip() or "UEFITOOLS"
-            scheme = partition_scheme_var.get()
-            partitions = get_partitions()
-
-            create_btn.config(state=tk.DISABLED)
-
-            def run_format() -> None:
-                from mkimage.usb.write import format_device
-                from mkimage.usb.safety import _unmount_device
-                cfg = Config(
-                    verbose=verbose_var.get(),
-                    gpt=(scheme == "gpt"),
-                    mbr=(scheme == "mbr"),
-                    label=label,
-                    force=force_var.get(),
-                    log=log,
-                    partitions=partitions,
-                )
-                try:
-                    log(f"Formatting {device}...")
-                    _unmount_device(cfg, device)
-                    format_device(cfg, device)
-                    log("Done.")
-                except Exception as e:
-                    log(f"Error: {e}")
-                finally:
-                    create_btn.config(state=tk.NORMAL)
-
-            threading.Thread(target=run_format, daemon=True).start()
-            return
 
         if src_mode == "usb":
             sel = source_drive_var.get().strip()
@@ -428,8 +382,6 @@ def gui_main() -> None:
                    value="file", command=on_source_mode_change).pack(side=tk.LEFT)
     tk.Radiobutton(src_mode_frame, text="USB", variable=source_mode_var,
                    value="usb", command=on_source_mode_change).pack(side=tk.LEFT, padx=5)
-    tk.Radiobutton(src_mode_frame, text="None", variable=source_mode_var,
-                   value="none", command=on_source_mode_change).pack(side=tk.LEFT, padx=5)
 
     # Source File mode
     source_file_frame = tk.Frame(src_lf)
@@ -453,13 +405,6 @@ def gui_main() -> None:
     source_drive_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
     tk.Button(src_usb_row, text="Refresh",
               command=refresh_source_drives).pack(side=tk.LEFT, padx=(3, 0))
-
-    # Source None mode (hidden)
-    source_none_frame = tk.Frame(src_lf)
-    tk.Label(source_none_frame, text="Format only \u2014 no files",
-             fg="gray", font=("Segoe UI", 9, "italic")).pack(anchor=tk.W, pady=10)
-    tk.Label(source_none_frame, text="Select a USB target to format",
-             fg="gray").pack(anchor=tk.W)
 
     # Extra includes (File mode only)
     source_includes_frame = tk.Frame(src_lf)
