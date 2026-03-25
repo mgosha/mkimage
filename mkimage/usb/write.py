@@ -636,6 +636,222 @@ def _write_usb_from_image(cfg: Config, image_path: str,
     _write_usb_linux(cfg, image_path, img_size, img_resolved, drive)
 
 
+def format_device(cfg: Config, device: str) -> None:
+    """Format a USB device with partition table and filesystem (no files).
+
+    Creates partition table (GPT/MBR/none) and formats partitions based
+    on cfg.partitions. Requires root on Linux for sgdisk/mkfs operations.
+    """
+    from mkimage import PartitionSpec
+
+    if _is_macos():
+        _format_device_macos(cfg, device)
+        return
+
+    if _is_windows():
+        _format_device_windows(cfg, device)
+        return
+
+    # Linux
+    _wipe_device(cfg, device)
+    partitions = cfg.partitions or [PartitionSpec("fat32", "0", cfg.label)]
+
+    if cfg.gpt:
+        _check_root(cfg, "GPT format")
+        cfg.log(f"  Creating GPT partition table on {device}...")
+        _run(cfg, ["sgdisk", "-Z", device], verbose=cfg.verbose, as_root=True)
+        _run(cfg, ["sgdisk", "-o", device], verbose=cfg.verbose, as_root=True)
+
+        for i, part in enumerate(partitions):
+            pnum = i + 1
+            is_esp = part.fs_type == "esp"
+            fs_type = "fat32" if is_esp else part.fs_type
+            sgdisk_type = "EF00" if is_esp else "0700"
+            label = part.label[:11] if part.label else cfg.label[:11]
+            size_mb = _interpret_size(part.size, 1, is_esp=is_esp)
+
+            if size_mb == 0 or i == len(partitions) - 1:
+                size_spec = "0:0"
+            else:
+                size_spec = f"+{size_mb}M"
+            start = "2048" if pnum == 1 else "0"
+
+            _run(cfg, ["sgdisk",
+                       "-n", f"{pnum}:{start}:{size_spec}",
+                       "-t", f"{pnum}:{sgdisk_type}",
+                       "-c", f"{pnum}:{label}",
+                       device], verbose=True, as_root=True)
+
+        _run(cfg, ["partprobe", device], check=False, as_root=True)
+        import time
+        time.sleep(1)
+
+        part_fmt = _partition_device_fmt(device)
+        for i, part in enumerate(partitions):
+            pnum = i + 1
+            is_esp = part.fs_type == "esp"
+            fs_type = "fat32" if is_esp else part.fs_type
+            label = part.label[:11] if part.label else cfg.label[:11]
+            part_dev = part_fmt.format(pnum)
+            cs = part.cluster_size if hasattr(part, 'cluster_size') else 0
+            cfg.log(f"  Formatting partition {pnum} ({label}) as {fs_type} on {part_dev}...")
+            _format_partition(cfg, part_dev, fs_type, label, cs)
+
+    elif cfg.mbr:
+        _check_root(cfg, "MBR format")
+        cfg.log(f"  Creating MBR partition table on {device}...")
+        part = partitions[0]
+        fs_type = part.fs_type if part.fs_type != "esp" else "fat32"
+        label = part.label[:11] if part.label else cfg.label[:11]
+        sfdisk_input = "label: dos\ntype=0c\n"
+        _run(cfg, ["sfdisk", device], verbose=cfg.verbose, as_root=True,
+             input=sfdisk_input)
+        _run(cfg, ["partprobe", device], check=False, as_root=True)
+        import time
+        time.sleep(1)
+        part_fmt = _partition_device_fmt(device)
+        part_dev = part_fmt.format(1)
+        cs = part.cluster_size if hasattr(part, 'cluster_size') else 0
+        cfg.log(f"  Formatting {part_dev} as {fs_type}...")
+        _format_partition(cfg, part_dev, fs_type, label, cs)
+
+    else:
+        # Raw: format the whole device as a single filesystem
+        part = partitions[0]
+        fs_type = part.fs_type if part.fs_type != "esp" else "fat32"
+        label = part.label[:11] if part.label else cfg.label[:11]
+        cs = part.cluster_size if hasattr(part, 'cluster_size') else 0
+        cfg.log(f"  Formatting {device} as {fs_type}...")
+        _format_partition(cfg, device, fs_type, label, cs)
+
+    _run(cfg, ["sync"], check=False)
+    cfg.log(f"  [OK] {device} formatted.")
+
+
+def _format_device_macos(cfg: Config, device: str) -> None:
+    """Format a USB device on macOS using diskutil."""
+    from mkimage import PartitionSpec
+    partitions = cfg.partitions or [PartitionSpec("fat32", "0", cfg.label)]
+    part = partitions[0]
+    fs_type = part.fs_type if part.fs_type != "esp" else "fat32"
+    label = part.label or cfg.label
+
+    fs_map = {"fat32": "FAT32", "exfat": "ExFAT", "ntfs": "NTFS"}
+    diskutil_fs = fs_map.get(fs_type, "FAT32")
+
+    if cfg.gpt:
+        scheme = "GPTFormat"
+    elif cfg.mbr:
+        scheme = "MBRFormat"
+    else:
+        scheme = "MBRFormat"
+
+    cfg.log(f"  Formatting {device} as {diskutil_fs} ({scheme})...")
+    _run(cfg, ["diskutil", "eraseDisk", diskutil_fs, label, scheme, device],
+         verbose=True, as_root=True)
+    cfg.log(f"  [OK] {device} formatted.")
+
+
+def _format_device_windows(cfg: Config, device: str) -> None:
+    """Format a USB device on Windows via PowerShell/diskpart."""
+    from mkimage import PartitionSpec
+    partitions = cfg.partitions or [PartitionSpec("fat32", "0", cfg.label)]
+    part = partitions[0]
+    fs_type = part.fs_type if part.fs_type != "esp" else "fat32"
+    label = part.label[:11] if part.label else cfg.label[:11]
+
+    fs_map = {"fat32": "fat32", "exfat": "exfat", "ntfs": "ntfs"}
+    diskpart_fs = fs_map.get(fs_type, "fat32")
+
+    gpt_str = "$true" if cfg.gpt else "$false"
+    # Extract disk number from device path (\\.\PhysicalDriveN)
+    disk_num = device.rsplit("PhysicalDrive", 1)[-1] if "PhysicalDrive" in device else device
+
+    cfg.log(f"  Formatting disk {disk_num} as {diskpart_fs}...")
+    _write_usb_windows_format_only(cfg, disk_num, diskpart_fs, label, gpt_str)
+
+
+def _write_usb_windows_format_only(
+    cfg: Config, disk_num: str, fs: str, label: str, gpt_str: str,
+) -> None:
+    """Run a format-only diskpart script on Windows (no file copy)."""
+    fd, progress_file = tempfile.mkstemp(suffix=".txt")
+    os.close(fd)
+    fd, script_file = tempfile.mkstemp(suffix=".ps1")
+    os.close(fd)
+
+    prg_esc = progress_file.replace("'", "''")
+    ps_script = f"""
+try {{
+    $useGpt = {gpt_str}
+    $partStyle = if ($useGpt) {{ "GPT" }} else {{ "MBR" }}
+    "Formatting disk {disk_num} as {fs} ($partStyle)..." | Out-File -Append '{prg_esc}'
+    Set-Disk -Number {disk_num} -IsOffline $true -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 1
+    ("select disk {disk_num}`r`nclean" | diskpart 2>&1) | Out-Null
+    Start-Sleep -Seconds 1
+    ("select disk {disk_num}`r`nconvert $($partStyle.ToLower())" | diskpart 2>&1) | Out-Null
+    Start-Sleep -Seconds 1
+    $dpCreate = @"
+select disk {disk_num}
+create partition primary
+format fs={fs} quick label={label}
+"@
+    ($dpCreate | diskpart 2>&1) | Out-Null
+    "automount disable" | diskpart 2>&1 | Out-Null
+    Set-Disk -Number {disk_num} -IsOffline $false -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 2
+    "automount enable" | diskpart 2>&1 | Out-Null
+    "OK" | Out-File -Append '{prg_esc}'
+}} catch {{
+    "ERROR: $_" | Out-File -Append '{prg_esc}'
+}}
+"""
+    with open(script_file, "w") as f:
+        f.write(ps_script)
+
+    try:
+        proc = subprocess.Popen([
+            "powershell.exe", "-NoProfile", "-Command",
+            f"Start-Process -FilePath 'powershell.exe' "
+            f"-ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','{script_file}' "
+            f"-Verb RunAs -Wait"
+        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        proc.wait()
+
+        final_msg = ""
+        if os.path.exists(progress_file):
+            with open(progress_file, "r", encoding="utf-8", errors="replace") as pf:
+                lines = pf.readlines()
+            for line in lines:
+                stripped = line.rstrip()
+                if stripped:
+                    cfg.log(f"  {stripped}")
+            final_msg = lines[-1].strip() if lines else ""
+
+        if final_msg.startswith("OK"):
+            cfg.log(f"  [OK] Disk {disk_num} formatted.")
+        elif final_msg.startswith("ERROR"):
+            raise RuntimeError(final_msg)
+        else:
+            raise RuntimeError("Format subprocess produced no output.")
+    finally:
+        for path in (script_file, progress_file):
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+
+def _partition_device_fmt(device: str) -> str:
+    """Determine partition device naming: sdX1, sdXp1, or diskNs1 (macOS)."""
+    if _is_macos():
+        return f"{device}s{{}}"
+    if Path(f"{device}1").exists() or Path(f"{device}1").is_block_device():
+        return f"{device}{{}}"
+    return f"{device}p{{}}"
+
+
 def _write_gpt_to_device(cfg: Config, files: dict[str, str],
                           device: str) -> None:
     """Write GPT layout directly to a USB device (no intermediate image).
@@ -715,13 +931,7 @@ def _write_gpt_to_device(cfg: Config, files: dict[str, str],
         import time
         time.sleep(1)
 
-        # Determine partition device naming: sdX1, sdXp1, or diskNs1 (macOS)
-        if _is_macos():
-            part_fmt = f"{device}s{{}}"
-        elif Path(f"{device}1").exists() or Path(f"{device}1").is_block_device():
-            part_fmt = f"{device}{{}}"
-        else:
-            part_fmt = f"{device}p{{}}"
+        part_fmt = _partition_device_fmt(device)
 
         for i, info in enumerate(part_info):
             pnum = i + 1

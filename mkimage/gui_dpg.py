@@ -337,17 +337,137 @@ def _wipe_drive(sender: object = None, app_data: object = None) -> None:
     threading.Thread(target=run, daemon=True).start()
 
 
+# ---------------------------------------------------------------------------
+# Tools tab callbacks
+# ---------------------------------------------------------------------------
+
+def _refresh_tools_drives() -> None:
+    drives = _list_removable_drives()
+    items = ([f"{d['path']}  {d['size']}  {d['model']}" for d in drives]
+             or ["(no USB drives found)"])
+    dpg.configure_item("tools_drive_combo", items=items)
+    dpg.set_value("tools_drive_combo", items[0])
+
+
+def _tools_get_device() -> str | None:
+    sel = dpg.get_value("tools_drive_combo")
+    if not sel or "no USB" in sel or "click Refresh" in sel:
+        _log("No USB drive selected. Click Refresh first.")
+        return None
+    return sel.split()[0]
+
+
+def _tools_format_drive() -> None:
+    device = _tools_get_device()
+    if not device:
+        return
+    scheme = dpg.get_value("tools_scheme_radio")
+    fs = dpg.get_value("tools_fs_combo")
+    label = dpg.get_value("tools_label").strip() or "UEFITOOLS"
+    _set_building(True)
+    dpg.set_value("log_text", "")
+
+    def run() -> None:
+        from mkimage.usb.write import format_device
+        from mkimage.usb.safety import _unmount_device
+        cfg = Config(
+            verbose=True, log=_log,
+            gpt=(scheme == "GPT"), mbr=(scheme == "MBR"),
+            label=label,
+            partitions=[PartitionSpec(fs_type=fs, size="0", label=label)],
+        )
+        try:
+            _unmount_device(cfg, device)
+            format_device(cfg, device)
+            _log(f"[OK] {device} formatted as {fs} ({scheme}).")
+            _set_building(False, "success")
+        except Exception as e:
+            _log(f"Error: {e}")
+            _set_building(False, "error")
+
+    threading.Thread(target=run, daemon=True).start()
+
+
+def _tools_wipe_drive() -> None:
+    device = _tools_get_device()
+    if not device:
+        return
+    _log(f"Wiping all signatures from {device}...")
+    _set_building(True)
+
+    def run() -> None:
+        from mkimage.usb.safety import _wipe_device, _unmount_device
+        cfg = Config(log=_log, verbose=True)
+        try:
+            _unmount_device(cfg, device)
+            _wipe_device(cfg, device)
+            _log(f"[OK] {device} wiped.")
+            _set_building(False, "success")
+        except Exception as e:
+            _log(f"Error: {e}")
+            _set_building(False, "error")
+
+    threading.Thread(target=run, daemon=True).start()
+
+
+def _tools_check_drive() -> None:
+    device = _tools_get_device()
+    if not device:
+        return
+    _log(f"Checking {device} for bad blocks...")
+    _set_building(True)
+    dpg.set_value("log_text", "")
+
+    def run() -> None:
+        from mkimage.usb.safety import _check_bad_blocks, _unmount_device
+        cfg = Config(log=_log, verbose=True)
+        try:
+            _unmount_device(cfg, device)
+            if _check_bad_blocks(cfg, device):
+                _log(f"[OK] No bad blocks on {device}.")
+                _set_building(False, "success")
+            else:
+                _log(f"[FAIL] Bad blocks detected on {device}!")
+                _set_building(False, "error")
+        except Exception as e:
+            _log(f"Error: {e}")
+            _set_building(False, "error")
+
+    threading.Thread(target=run, daemon=True).start()
+
+
+def _browse_list_image() -> None:
+    _open_native_dialog(
+        "open_file", "Select Image File",
+        lambda r: dpg.set_value("tools_image_path", r[0]),
+        filetypes=[("Disk Image", "*.img"), ("All Files", "*.*")])
+
+
+def _tools_list_image() -> None:
+    path = dpg.get_value("tools_image_path").strip()
+    if not path:
+        _log("Error: No image file specified.")
+        return
+    dpg.set_value("log_text", "")
+    dpg.set_value("tab_bar", dpg.get_alias_id("log_tab"))
+    from mkimage.inspect import list_image
+    list_image(path, _log)
+
+
 def _on_source_mode_change(sender: int) -> None:
     mode = dpg.get_value(sender)
+    dpg.hide_item("source_file_group")
+    dpg.hide_item("source_includes_group")
+    dpg.hide_item("source_usb_group")
+    dpg.hide_item("source_none_group")
     if mode == "USB":
-        dpg.hide_item("source_file_group")
-        dpg.hide_item("source_includes_group")
         dpg.show_item("source_usb_group")
         _refresh_source_drives()
+    elif mode == "None":
+        dpg.show_item("source_none_group")
     else:
         dpg.show_item("source_file_group")
         dpg.show_item("source_includes_group")
-        dpg.hide_item("source_usb_group")
     _update_action_label()
 
 
@@ -373,7 +493,9 @@ def _on_target_mode_change(sender: int) -> None:
 def _update_action_label() -> None:
     src = dpg.get_value("source_mode")
     tgt = dpg.get_value("target_mode")
-    if src == "File" and tgt == "File":
+    if src == "None":
+        label = "Format USB" if tgt == "USB" else "Create Image"
+    elif src == "File" and tgt == "File":
         label = "Create Image"
     elif src == "File" and tgt == "USB":
         label = "Write to USB"
@@ -424,6 +546,50 @@ def _section(label: str) -> None:
 
 def _do_create() -> None:
     source_mode = dpg.get_value("source_mode")
+    target_mode = dpg.get_value("target_mode")
+
+    # Format-only flow (Source=None)
+    if source_mode == "None":
+        if target_mode != "USB":
+            _log("Error: No source selected. Cannot create an empty image.")
+            return
+        sel = dpg.get_value("drive_combo")
+        if not sel or "no USB" in sel:
+            _log("Error: No USB drive selected.")
+            return
+        device = sel.split()[0]
+        label = dpg.get_value("vol_label").strip() or "UEFITOOLS"
+        partition_scheme = dpg.get_value("partition_radio")
+        partitions = _get_partitions()
+
+        _set_building(True)
+        dpg.set_value("log_text", "")
+
+        def run_format() -> None:
+            from mkimage.usb.write import format_device
+            from mkimage.usb.safety import _unmount_device
+            cfg = Config(
+                verbose=dpg.get_value("verbose_check"),
+                gpt=(partition_scheme == "GPT"),
+                mbr=(partition_scheme == "MBR"),
+                label=label,
+                force=dpg.get_value("force_check"),
+                log=_log,
+                partitions=partitions,
+            )
+            try:
+                _log(f"Formatting {device}...")
+                _unmount_device(cfg, device)
+                format_device(cfg, device)
+                _log("Done.")
+                _set_building(False, "success")
+            except Exception as e:
+                _log(f"Error: {e}")
+                _set_building(False, "error")
+
+        threading.Thread(target=run_format, daemon=True).start()
+        return
+
     if source_mode == "USB":
         sel = dpg.get_value("source_drive_combo")
         if not sel or "no USB" in sel:
@@ -438,7 +604,6 @@ def _do_create() -> None:
 
     includes = _get_includes() if source_mode == "File" else []
     label = dpg.get_value("vol_label").strip() or "UEFITOOLS"
-    target_mode = dpg.get_value("target_mode")
 
     if target_mode == "File":
         output = dpg.get_value("output_path").strip()
@@ -594,7 +759,7 @@ def gui_main() -> None:
                         dpg.bind_item_theme(t, "header_theme")
 
                         dpg.add_radio_button(
-                            ["File", "USB"], tag="source_mode",
+                            ["File", "USB", "None"], tag="source_mode",
                             horizontal=True, default_value="File",
                             callback=_on_source_mode_change)
 
@@ -617,6 +782,14 @@ def gui_main() -> None:
                                 dpg.add_button(
                                     label="Refresh",
                                     callback=_refresh_source_drives, width=70)
+
+                        # None mode (format only, hidden)
+                        with dpg.group(tag="source_none_group", show=False):
+                            dpg.add_spacer(height=30)
+                            dpg.add_text("Format only \u2014 no files",
+                                         color=(150, 150, 150))
+                            dpg.add_text("Select a USB target to format",
+                                         color=(120, 120, 120))
 
                         # Extra includes (File mode only)
                         with dpg.group(tag="source_includes_group"):
@@ -752,6 +925,67 @@ def gui_main() -> None:
                 c = dpg.add_checkbox(label="Force (skip USB confirmation)", tag="force_check")
                 with dpg.tooltip(c):
                     dpg.add_text("Skip the confirmation prompt when writing to USB")
+
+            # ===================== TOOLS TAB =====================
+            with dpg.tab(label="Tools", tag="tools_tab"):
+                _section("Format Drive")
+                dpg.add_text("Format a USB drive with partition table and filesystem.",
+                             color=(170, 170, 170))
+                with dpg.group(horizontal=True):
+                    dpg.add_combo(
+                        tag="tools_drive_combo",
+                        items=["(click Refresh)"], width=-80)
+                    dpg.add_button(
+                        label="Refresh", width=70,
+                        callback=lambda: _refresh_tools_drives())
+                with dpg.group(horizontal=True):
+                    dpg.add_text("Scheme:")
+                    dpg.add_radio_button(
+                        ["None", "MBR", "GPT"],
+                        tag="tools_scheme_radio",
+                        horizontal=True, default_value="MBR")
+                with dpg.group(horizontal=True):
+                    dpg.add_text("FS:")
+                    dpg.add_combo(
+                        ["fat32", "exfat", "ntfs", "ext4"],
+                        tag="tools_fs_combo",
+                        default_value="fat32", width=80)
+                    dpg.add_text("Label:")
+                    dpg.add_input_text(
+                        tag="tools_label",
+                        default_value="UEFITOOLS", width=100)
+                dpg.add_button(
+                    label="Format", width=100,
+                    callback=lambda: _tools_format_drive())
+                dpg.add_spacer(height=5)
+
+                _section("Wipe Drive")
+                dpg.add_text("Remove all partition signatures from a USB drive.",
+                             color=(170, 170, 170))
+                dpg.add_button(
+                    label="Wipe", width=100,
+                    callback=lambda: _tools_wipe_drive())
+                dpg.add_spacer(height=5)
+
+                _section("Check Drive")
+                dpg.add_text("Test USB drive for bad blocks (destructive).",
+                             color=(170, 170, 170))
+                dpg.add_button(
+                    label="Check", width=100,
+                    callback=lambda: _tools_check_drive())
+                dpg.add_spacer(height=5)
+
+                _section("List Image Contents")
+                with dpg.group(horizontal=True):
+                    dpg.add_button(
+                        label="Browse...", width=75,
+                        callback=lambda: _browse_list_image())
+                    dpg.add_input_text(
+                        tag="tools_image_path", width=-1,
+                        hint="Path to .img file")
+                dpg.add_button(
+                    label="List", width=100,
+                    callback=lambda: _tools_list_image())
 
             # ===================== LOG TAB =====================
             with dpg.tab(label="Log", tag="log_tab"):

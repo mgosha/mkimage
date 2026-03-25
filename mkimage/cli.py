@@ -210,6 +210,10 @@ tips:
         help="Check USB drive for bad blocks (destructive test, erases all data)",
     )
     usb_group.add_argument(
+        "--format", metavar="DEVICE",
+        help="Format a USB drive. Uses --gpt/--mbr, --partition, --label for configuration.",
+    )
+    usb_group.add_argument(
         "--persistent", metavar="SIZE",
         help="Add persistent storage partition (e.g. 4G). Creates ext4 'casper-rw' partition.",
     )
@@ -377,6 +381,30 @@ tips:
         else:
             print(f"[FAIL] Bad blocks detected on {device}!", file=sys.stderr)
             sys.exit(1)
+        sys.exit(0)
+
+    if args.format:
+        from mkimage.usb.write import format_device
+        from mkimage.usb.safety import _verify_usb_bus, _unmount_device
+        device = args.format
+        if not _verify_usb_bus(cfg, device):
+            print(f"Error: {device} is not on the USB bus. Refusing.", file=sys.stderr)
+            sys.exit(1)
+        if not cfg.force:
+            scheme = "GPT" if cfg.gpt else ("MBR" if cfg.mbr else "raw")
+            fs = cfg.partitions[0].fs_type if cfg.partitions else "fat32"
+            print(f"\n  WARNING: This will ERASE ALL DATA on {device}.")
+            print(f"  Format: {fs} ({scheme})\n")
+            try:
+                confirm = input(f"  Type 'yes' to format {device}: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                confirm = ""
+            if confirm != "yes":
+                print("Aborted.")
+                sys.exit(0)
+        _unmount_device(cfg, device)
+        format_device(cfg, device)
+        print(f"[OK] Formatted {device}.")
         sys.exit(0)
 
     if args.check:

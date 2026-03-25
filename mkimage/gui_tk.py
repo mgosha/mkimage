@@ -201,7 +201,9 @@ def gui_main() -> None:
     def _update_action_label_tk() -> None:
         src = source_mode_var.get()
         tgt = target_mode_var.get()
-        if src == "file" and tgt == "file":
+        if src == "none":
+            label = "Format USB" if tgt == "usb" else "Create Image"
+        elif src == "file" and tgt == "file":
             label = "Create Image"
         elif src == "file" and tgt == "usb":
             label = "Write to USB"
@@ -212,13 +214,17 @@ def gui_main() -> None:
         create_btn.config(text=label)
 
     def on_source_mode_change(*_args: object) -> None:
-        if source_mode_var.get() == "usb":
-            source_file_frame.pack_forget()
-            source_includes_frame.pack_forget()
+        mode = source_mode_var.get()
+        source_file_frame.pack_forget()
+        source_includes_frame.pack_forget()
+        source_usb_frame.pack_forget()
+        source_none_frame.pack_forget()
+        if mode == "usb":
             source_usb_frame.pack(fill=tk.X, pady=(2, 0))
             refresh_source_drives()
+        elif mode == "none":
+            source_none_frame.pack(fill=tk.X, pady=(2, 0))
         else:
-            source_usb_frame.pack_forget()
             source_file_frame.pack(fill=tk.X)
             source_includes_frame.pack(fill=tk.X, pady=(2, 0))
         _update_action_label_tk()
@@ -234,7 +240,51 @@ def gui_main() -> None:
         _update_action_label_tk()
 
     def do_create() -> None:
-        if source_mode_var.get() == "usb":
+        src_mode = source_mode_var.get()
+        to_usb = target_mode_var.get() == "usb"
+
+        # Format-only flow (Source=None)
+        if src_mode == "none":
+            if not to_usb:
+                messagebox.showerror("Error", "No source selected. Cannot create an empty image.")
+                return
+            sel = target_drive_var.get().strip()
+            if not sel:
+                messagebox.showerror("Error", "No USB drive selected.")
+                return
+            device = sel.split()[0]
+            label = label_var.get().strip() or "UEFITOOLS"
+            scheme = partition_scheme_var.get()
+            partitions = get_partitions()
+
+            create_btn.config(state=tk.DISABLED)
+
+            def run_format() -> None:
+                from mkimage.usb.write import format_device
+                from mkimage.usb.safety import _unmount_device
+                cfg = Config(
+                    verbose=verbose_var.get(),
+                    gpt=(scheme == "gpt"),
+                    mbr=(scheme == "mbr"),
+                    label=label,
+                    force=force_var.get(),
+                    log=log,
+                    partitions=partitions,
+                )
+                try:
+                    log(f"Formatting {device}...")
+                    _unmount_device(cfg, device)
+                    format_device(cfg, device)
+                    log("Done.")
+                except Exception as e:
+                    log(f"Error: {e}")
+                finally:
+                    create_btn.config(state=tk.NORMAL)
+
+            threading.Thread(target=run_format, daemon=True).start()
+            return
+
+        if src_mode == "usb":
             sel = source_drive_var.get().strip()
             if not sel:
                 messagebox.showerror("Error", "No source USB drive selected.")
@@ -248,7 +298,6 @@ def gui_main() -> None:
                 return
             includes = list(includes_list.get(0, tk.END))
 
-        to_usb = target_mode_var.get() == "usb"
         if not to_usb:
             out = output_var.get().strip()
             if not out:
@@ -379,6 +428,8 @@ def gui_main() -> None:
                    value="file", command=on_source_mode_change).pack(side=tk.LEFT)
     tk.Radiobutton(src_mode_frame, text="USB", variable=source_mode_var,
                    value="usb", command=on_source_mode_change).pack(side=tk.LEFT, padx=5)
+    tk.Radiobutton(src_mode_frame, text="None", variable=source_mode_var,
+                   value="none", command=on_source_mode_change).pack(side=tk.LEFT, padx=5)
 
     # Source File mode
     source_file_frame = tk.Frame(src_lf)
@@ -402,6 +453,13 @@ def gui_main() -> None:
     source_drive_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
     tk.Button(src_usb_row, text="Refresh",
               command=refresh_source_drives).pack(side=tk.LEFT, padx=(3, 0))
+
+    # Source None mode (hidden)
+    source_none_frame = tk.Frame(src_lf)
+    tk.Label(source_none_frame, text="Format only \u2014 no files",
+             fg="gray", font=("Segoe UI", 9, "italic")).pack(anchor=tk.W, pady=10)
+    tk.Label(source_none_frame, text="Select a USB target to format",
+             fg="gray").pack(anchor=tk.W)
 
     # Extra includes (File mode only)
     source_includes_frame = tk.Frame(src_lf)
@@ -656,6 +714,158 @@ def gui_main() -> None:
 
     # Populate default partition row (None scheme = one fat32 row)
     on_scheme_change()
+
+    # ===================== TOOLS TAB =====================
+    tools_tab = ttk.Frame(notebook)
+    notebook.add(tools_tab, text="Tools")
+
+    # Format Drive
+    fmt_lf = tk.LabelFrame(tools_tab, text="Format Drive", padx=5, pady=5)
+    fmt_lf.pack(fill=tk.X, padx=5, pady=(5, 2))
+    tk.Label(fmt_lf, text="Format a USB drive with partition table and filesystem.",
+             fg="gray").pack(anchor=tk.W)
+    tools_drive_row = tk.Frame(fmt_lf)
+    tools_drive_row.pack(fill=tk.X, pady=2)
+    tools_drive_var = tk.StringVar(value="(click Refresh)")
+    tools_drive_combo = tk.OptionMenu(tools_drive_row, tools_drive_var, "(click Refresh)")
+    tools_drive_combo.config(width=30, anchor=tk.W)
+    tools_drive_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+    def refresh_tools_drives() -> None:
+        drives = _list_removable_drives()
+        menu = tools_drive_combo["menu"]
+        menu.delete(0, tk.END)
+        if not drives:
+            menu.add_command(label="(no USB drives)", command=lambda: tools_drive_var.set(""))
+            tools_drive_var.set("")
+        else:
+            for d in drives:
+                lbl = f"{d['path']}  {d['size']}  {d['model']}"
+                menu.add_command(label=lbl, command=lambda v=lbl: tools_drive_var.set(v))
+            tools_drive_var.set(f"{drives[0]['path']}  {drives[0]['size']}  {drives[0]['model']}")
+
+    tk.Button(tools_drive_row, text="Refresh", command=refresh_tools_drives).pack(side=tk.LEFT, padx=(3, 0))
+
+    tools_opts_row = tk.Frame(fmt_lf)
+    tools_opts_row.pack(fill=tk.X, pady=2)
+    tk.Label(tools_opts_row, text="Scheme:").pack(side=tk.LEFT)
+    tools_scheme_var = tk.StringVar(value="mbr")
+    for val, txt in [("none", "None"), ("mbr", "MBR"), ("gpt", "GPT")]:
+        tk.Radiobutton(tools_opts_row, text=txt, variable=tools_scheme_var,
+                       value=val).pack(side=tk.LEFT, padx=2)
+
+    tools_opts_row2 = tk.Frame(fmt_lf)
+    tools_opts_row2.pack(fill=tk.X, pady=2)
+    tk.Label(tools_opts_row2, text="FS:").pack(side=tk.LEFT)
+    tools_fs_var = tk.StringVar(value="fat32")
+    tools_fs_combo = tk.OptionMenu(tools_opts_row2, tools_fs_var, "fat32", "exfat", "ntfs", "ext4")
+    tools_fs_combo.config(width=6)
+    tools_fs_combo.pack(side=tk.LEFT, padx=(0, 10))
+    tk.Label(tools_opts_row2, text="Label:").pack(side=tk.LEFT)
+    tools_label_var = tk.StringVar(value="UEFITOOLS")
+    tk.Entry(tools_opts_row2, textvariable=tools_label_var, width=12).pack(side=tk.LEFT, padx=(3, 0))
+
+    def tools_format() -> None:
+        sel = tools_drive_var.get().strip()
+        if not sel or "no USB" in sel or "click Refresh" in sel:
+            log("No USB drive selected. Click Refresh first.")
+            return
+        device = sel.split()[0]
+        scheme = tools_scheme_var.get()
+        fs = tools_fs_var.get()
+        label_val = tools_label_var.get().strip() or "UEFITOOLS"
+
+        def run() -> None:
+            from mkimage.usb.write import format_device
+            from mkimage.usb.safety import _unmount_device
+            cfg = Config(
+                verbose=True, log=log,
+                gpt=(scheme == "gpt"), mbr=(scheme == "mbr"),
+                label=label_val,
+                partitions=[PartitionSpec(fs_type=fs, size="0", label=label_val)],
+            )
+            try:
+                _unmount_device(cfg, device)
+                format_device(cfg, device)
+                log(f"[OK] {device} formatted as {fs} ({scheme}).")
+            except Exception as e:
+                log(f"Error: {e}")
+        threading.Thread(target=run, daemon=True).start()
+
+    tk.Button(fmt_lf, text="Format", width=10, command=tools_format).pack(anchor=tk.W, pady=2)
+
+    # Wipe Drive
+    wipe_lf = tk.LabelFrame(tools_tab, text="Wipe Drive", padx=5, pady=5)
+    wipe_lf.pack(fill=tk.X, padx=5, pady=2)
+    tk.Label(wipe_lf, text="Remove all partition signatures from a USB drive.", fg="gray").pack(anchor=tk.W)
+
+    def tools_wipe() -> None:
+        sel = tools_drive_var.get().strip()
+        if not sel or "no USB" in sel or "click Refresh" in sel:
+            log("No USB drive selected.")
+            return
+        device = sel.split()[0]
+        def run() -> None:
+            from mkimage.usb.safety import _wipe_device, _unmount_device
+            cfg = Config(log=log, verbose=True)
+            try:
+                _unmount_device(cfg, device)
+                _wipe_device(cfg, device)
+                log(f"[OK] {device} wiped.")
+            except Exception as e:
+                log(f"Error: {e}")
+        threading.Thread(target=run, daemon=True).start()
+
+    tk.Button(wipe_lf, text="Wipe", width=10, command=tools_wipe).pack(anchor=tk.W, pady=2)
+
+    # Check Drive
+    check_lf = tk.LabelFrame(tools_tab, text="Check Drive", padx=5, pady=5)
+    check_lf.pack(fill=tk.X, padx=5, pady=2)
+    tk.Label(check_lf, text="Test USB drive for bad blocks (destructive).", fg="gray").pack(anchor=tk.W)
+
+    def tools_check() -> None:
+        sel = tools_drive_var.get().strip()
+        if not sel or "no USB" in sel or "click Refresh" in sel:
+            log("No USB drive selected.")
+            return
+        device = sel.split()[0]
+        def run() -> None:
+            from mkimage.usb.safety import _check_bad_blocks, _unmount_device
+            cfg = Config(log=log, verbose=True)
+            try:
+                _unmount_device(cfg, device)
+                if _check_bad_blocks(cfg, device):
+                    log(f"[OK] No bad blocks on {device}.")
+                else:
+                    log(f"[FAIL] Bad blocks detected on {device}!")
+            except Exception as e:
+                log(f"Error: {e}")
+        threading.Thread(target=run, daemon=True).start()
+
+    tk.Button(check_lf, text="Check", width=10, command=tools_check).pack(anchor=tk.W, pady=2)
+
+    # List Image
+    list_lf = tk.LabelFrame(tools_tab, text="List Image Contents", padx=5, pady=5)
+    list_lf.pack(fill=tk.X, padx=5, pady=2)
+    list_row = tk.Frame(list_lf)
+    list_row.pack(fill=tk.X, pady=2)
+    tools_image_var = tk.StringVar()
+    tk.Button(list_row, text="Browse...", width=9,
+              command=lambda: tools_image_var.set(
+                  filedialog.askopenfilename(title="Select Image File",
+                      filetypes=[("Disk Image", "*.img"), ("All Files", "*.*")])
+                  or tools_image_var.get())).pack(side=tk.LEFT, padx=(0, 3))
+    tk.Entry(list_row, textvariable=tools_image_var).pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+    def tools_list_image() -> None:
+        path = tools_image_var.get().strip()
+        if not path:
+            log("Error: No image file specified.")
+            return
+        from mkimage.inspect import list_image
+        list_image(path, log)
+
+    tk.Button(list_lf, text="List", width=10, command=tools_list_image).pack(anchor=tk.W, pady=2)
 
     # ===================== LOG TAB =====================
     log_tab = ttk.Frame(notebook)
