@@ -75,9 +75,9 @@ def _interpret_size(size_str: str, content_mb: int) -> int:
     if not size_str or size_str == "0":
         return max(40, content_mb + 32)
     if size_str.startswith("+"):
-        extra = _parse_size(size_str[1:]) // (1024 * 1024)
+        extra = _parse_size(size_str[1:])
         return max(40, content_mb + extra)
-    absolute = _parse_size(size_str) // (1024 * 1024)
+    absolute = _parse_size(size_str)
     return max(40, absolute)
 
 
