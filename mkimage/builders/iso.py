@@ -89,6 +89,13 @@ def build_iso(cfg: Config, files: dict[str, str], output: str) -> None:
             cmd = [
                 "xorriso", "-as", "mkisofs",
                 "-o", out,
+                # -iso-level 4 enables ISO 9660:1999 long names in the base
+                # layer. Without it, two long names that share an 8.3 prefix
+                # (e.g. axl-webfs.efi + axl-webfs-dxe.efi) collide and one
+                # silently aliases to the same 8.3 short name. Joliet/UDF
+                # readers are unaffected, but plain ISO 9660 readers
+                # would only see one of the two.
+                "-iso-level", "4",
                 "-R", "-J", "-joliet-long",
                 "-V", cfg.label[:32],
             ]
@@ -131,6 +138,8 @@ def build_iso(cfg: Config, files: dict[str, str], output: str) -> None:
             giso_cmd = [
                 "genisoimage",
                 "-o", out,
+                # See xorriso path above for why -iso-level 4 is necessary.
+                "-iso-level", "4",
                 "-R", "-J", "-joliet-long",
                 "-V", cfg.label[:32],
             ]
