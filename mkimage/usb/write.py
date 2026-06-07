@@ -249,6 +249,10 @@ def _write_usb_windows(
     gpt_str = "$true" if cfg.gpt else "$false"
 
     ps_script = f"""
+# Force every Out-File below to UTF-8 so the Python side (which reads the
+# progress file as utf-8-sig) gets clean text. Windows PowerShell's default
+# Out-File encoding is UTF-16, which the reader would turn into mojibake.
+$PSDefaultParameterValues['Out-File:Encoding'] = 'utf8'
 try {{
     "Preparing USB drive (disk {disk_num})... [native Windows, no WSL]" | Out-File -Append '{prg_esc}'
 
@@ -482,7 +486,7 @@ def _poll_progress(proc: subprocess.Popen[bytes], progress_file: str,
         time.sleep(0.3)
         if os.path.exists(progress_file):
             try:
-                with open(progress_file, "r", encoding="utf-8", errors="replace") as pf:
+                with open(progress_file, "r", encoding="utf-8-sig", errors="replace") as pf:
                     all_lines = pf.readlines()
                 if len(all_lines) > lines_read:
                     for line in all_lines[lines_read:]:
@@ -559,8 +563,14 @@ def _write_usb_linux(
 
 
 def _write_usb_from_dir(cfg: Config, files: dict[str, str],
-                        target: str) -> None:
-    """Build and write to a USB device from collected files."""
+                        target: str, source_dir: str = "",
+                        includes: Optional[list[str]] = None) -> None:
+    """Build and write to a USB device from collected files.
+
+    source_dir/includes are the original source paths, needed by the Windows
+    diskpart path (which robocopies the source tree directly). The GPT/Linux
+    paths build from the collected `files` mapping instead.
+    """
     drive = _resolve_usb_target(cfg, target)
     if drive is None:
         return
@@ -582,7 +592,7 @@ def _write_usb_from_dir(cfg: Config, files: dict[str, str],
         cfg.log(f"Writing GPT layout to {device}...")
         _write_gpt_to_device(cfg, files, device)
     elif _is_windows():
-        _write_usb_windows(cfg, "", [], drive)
+        _write_usb_windows(cfg, source_dir, includes or [], drive)
     else:
         # Build temp FAT32 image, then dd
         with tempfile.NamedTemporaryFile(suffix=".img", delete=False) as tmp:

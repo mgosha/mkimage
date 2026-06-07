@@ -16,12 +16,13 @@ from pathlib import Path
 
 import pytest
 
-from conftest import MKIMAGE_PS1, winvm_scp_to, winvm_ssh
+from conftest import MKIMAGE_PS1, MKIMAGE_PYZ, winvm_scp_to, winvm_ssh
 
 pytestmark = pytest.mark.windows
 
 VM_MKIMAGE_DIR = "C:/Users/mike/mkimage"
 VM_MKIMAGE_PS1 = f"{VM_MKIMAGE_DIR}/mkimage.ps1"
+VM_MKIMAGE_PYZ = f"{VM_MKIMAGE_DIR}/mkimage.pyz"
 
 
 def _find_usb_disk() -> int | None:
@@ -457,3 +458,106 @@ class TestPs1UsbRewrite:
         self._rescan_disk(usb_disk)
         out = self._write_usb(usb_disk, test_source, "CLEAN_GPT", gpt=True, verify=True)
         assert "Wrote" in out
+
+
+class TestPyzUsbWrite:
+    """End-to-end USB write via the Python package (mkimage.pyz) — the path
+    the Dear PyGui GUI uses, distinct from the PS1 path above.
+
+    Regression coverage for two bugs found while testing the GUI write flow
+    against the QEMU virtual USB drive:
+      * the elevated diskpart progress file was written UTF-16 but read UTF-8,
+        producing replacement chars that crashed print() on a cp1252 stdout
+        (UnicodeEncodeError: 'charmap'); and
+      * the Windows branch of _write_usb_from_dir passed an empty source_dir,
+        so it formatted the drive then copied ZERO files.
+    Both reproduce as: a write that "succeeds" but lands 0 files on the disk.
+    """
+
+    @pytest.fixture(autouse=True)
+    def sync_pyz(self) -> None:
+        """Sync the current mkimage.pyz to the VM before each test."""
+        r = winvm_scp_to(MKIMAGE_PYZ, VM_MKIMAGE_PYZ)
+        assert r.returncode == 0, f"Failed to SCP mkimage.pyz: {r.stderr}"
+
+    @pytest.fixture(autouse=True)
+    def usb_disk(self) -> int:
+        """Find the virtual USB disk or skip."""
+        disk = _find_usb_disk()
+        if disk is None:
+            pytest.skip("No USB disk found on VM (start QEMU with -device usb-storage)")
+        return disk
+
+    @pytest.fixture
+    def test_source(self) -> str:
+        """Create a nested source tree on the VM (a subdir guards the
+        recursive-copy fix), return the path, clean up after."""
+        src = "C:\\temp\\pyz_usb_src"
+        winvm_ssh(f'powershell -NoProfile -Command "Remove-Item {src} -Recurse -Force -ErrorAction SilentlyContinue"')
+        winvm_ssh(
+            'powershell -NoProfile -Command "'
+            f"New-Item -ItemType Directory -Path '{src}\\EFI\\BOOT' -Force | Out-Null; "
+            f"New-Item -ItemType Directory -Path '{src}\\tools' -Force | Out-Null; "
+            f"Set-Content -Path '{src}\\README.txt' -Value 'pyz usb test'; "
+            f"Set-Content -Path '{src}\\tools\\hello.txt' -Value 'nested'; "
+            # 1 KiB stand-in for a bootloader, so EFI\\BOOT is non-empty
+            f"[IO.File]::WriteAllBytes('{src}\\EFI\\BOOT\\BOOTX64.EFI', (New-Object byte[] 1024))"
+            '"'
+        )
+        yield src
+        winvm_ssh(f'powershell -NoProfile -Command "Remove-Item {src} -Recurse -Force -ErrorAction SilentlyContinue"')
+
+    def _pyz_write_usb(self, source: str, label: str, verify: bool = True,
+                       timeout: int = 180) -> str:
+        """Run `mkimage.pyz --target usb` over SSH, feeding 'yes' to the
+        confirm prompt. Returns combined stdout+stderr."""
+        verify_flag = "--verify " if verify else ""
+        # '... | Out-String' keeps the pipe inside the quoted -Command so cmd
+        # doesn't split on it. 'yes' answers the destructive-write confirm.
+        cmd = (
+            "powershell -NoProfile -ExecutionPolicy Bypass -Command "
+            f"\"'yes' | python.exe '{VM_MKIMAGE_PYZ}' "
+            f"--source '{source}' --target usb {verify_flag}--label {label} "
+            "2>&1 | Out-String\""
+        )
+        r = winvm_ssh(cmd, timeout=timeout)
+        return r.stdout + r.stderr
+
+    def _usb_files(self) -> list[str]:
+        """List files (relative) on the virtual USB drive's volume."""
+        cmd = (
+            "powershell -NoProfile -Command "
+            "\"$p = Get-Partition -DiskNumber " + str(_find_usb_disk()) +
+            " -ErrorAction SilentlyContinue | Where-Object DriveLetter; "
+            "if ($p) { $r = ($p.DriveLetter + ':\\'); "
+            "Get-ChildItem -Recurse -File $r | ForEach-Object "
+            "{ $_.FullName.Substring(3) } }\""
+        )
+        r = winvm_ssh(cmd, timeout=30)
+        return [ln.strip() for ln in r.stdout.splitlines() if ln.strip()]
+
+    def test_write_copies_files(self, usb_disk: int, test_source: str) -> None:
+        """The Python path must actually COPY files, not just format.
+
+        Regresses the 'copied 0 files' bug and the encoding crash.
+        """
+        out = self._pyz_write_usb(test_source, "PYZTEST", verify=True)
+
+        # Bug 1: must not crash on the progress-file encoding.
+        assert "charmap" not in out and "codec can't" not in out, \
+            f"encoding crash regressed:\n{out}"
+        # Bug 2: must report a non-zero file count, not OK:0 / "Wrote 0 files".
+        assert "Wrote 0 files" not in out and "OK:0" not in out, \
+            f"copied zero files (source_dir not threaded through?):\n{out}"
+        assert "OK:" in out or "Wrote" in out, f"write did not complete:\n{out}"
+        assert "Verification passed" in out or "files match" in out, \
+            f"verify did not pass:\n{out}"
+
+        # Ground truth: the nested tree is actually on the disk.
+        files = {f.replace("/", "\\") for f in self._usb_files()}
+        assert any(f.endswith("EFI\\BOOT\\BOOTX64.EFI") for f in files), \
+            f"BOOTX64.EFI missing on USB; files={files}"
+        assert any(f.endswith("tools\\hello.txt") for f in files), \
+            f"nested tools\\hello.txt missing on USB; files={files}"
+        assert any(f.endswith("README.txt") for f in files), \
+            f"README.txt missing on USB; files={files}"

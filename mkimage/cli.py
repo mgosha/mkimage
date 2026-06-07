@@ -46,6 +46,19 @@ def _parse_partition_spec(spec: str) -> PartitionSpec:
 
 
 def main() -> None:
+    # Make output robust regardless of the platform's default stream encoding.
+    # On Windows a piped stdout defaults to the legacy console code page
+    # (cp1252), which raises UnicodeEncodeError on any non-ASCII byte — e.g.
+    # subprocess/diskpart output relayed through cfg.log. UTF-8 + replace keeps
+    # the tool from crashing mid-write on a stray character.
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except (ValueError, OSError):
+                pass
+
     parser = argparse.ArgumentParser(
         description="mkimage -- Create bootable UEFI media images, ISOs, and USB drives.",
         epilog="""\
@@ -483,7 +496,7 @@ tips:
                 print("Building ISO image...")
                 build_iso(cfg, files, build_target)
             elif target_type in ("device", "usb-auto"):
-                _write_usb_from_dir(cfg, files, target)
+                _write_usb_from_dir(cfg, files, target, source, args.include or [])
 
             if compressed and target_type not in ("device", "usb-auto"):
                 _compress_file(cfg, build_target, target)

@@ -16,6 +16,7 @@ from mkimage import Config, collect_files
 MKIMAGE_PY = str(Path(__file__).parent.parent / "mkimage.py")
 MKIMAGE_GUI = str(Path(__file__).parent.parent / "mkimage_gui.py")
 MKIMAGE_PS1 = str(Path(__file__).parent.parent / "mkimage.ps1")
+MKIMAGE_PYZ = str(Path(__file__).parent.parent / "mkimage.pyz")
 
 
 # ---------------------------------------------------------------------------
