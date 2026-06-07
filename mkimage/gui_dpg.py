@@ -554,9 +554,11 @@ def _confirm_usb_write(device: str, on_confirm: "Callable[[], None]") -> None:
         on_confirm()
 
     vw = dpg.get_viewport_client_width() or 900
-    with dpg.window(label="Confirm USB write", modal=True, no_resize=True,
-                    no_collapse=True, tag="usb_confirm_modal",
-                    width=470, pos=[max(0, vw // 2 - 235), 180]):
+    # autosize so the window grows to fit the text + buttons — a fixed width
+    # with no height gave DPG a too-short default that clipped the buttons.
+    with dpg.window(label="Confirm USB write", modal=True, no_collapse=True,
+                    autosize=True, tag="usb_confirm_modal",
+                    pos=[max(0, vw // 2 - 235), 180]):
         dpg.add_text(f"ALL DATA on {device}", wrap=450)
         dpg.add_text("will be PERMANENTLY ERASED. This cannot be undone.",
                      wrap=450)
