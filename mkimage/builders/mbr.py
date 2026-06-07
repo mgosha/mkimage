@@ -42,6 +42,12 @@ def build_mbr_img(cfg: Config, files: dict[str, str], output: str) -> None:
 
     # Pure Python supports FAT32 only; other filesystems need native tools
     if fs == "fat32" or _is_windows():
+        if fs != "fat32":
+            # The pure-Python writer only does FAT32. Don't silently mislead
+            # the caller into thinking they got exFAT/NTFS/etc.
+            cfg.log(f"  Warning: '{fs}' filesystem is not supported by the "
+                    f"pure-Python image writer (used on Windows / without "
+                    f"root); creating FAT32 instead.")
         part = cfg.partitions[0] if cfg.partitions else PartitionSpec()
         content_mb = _calculate_content_size(files)
         size_mb = _interpret_size(part.size, content_mb)
