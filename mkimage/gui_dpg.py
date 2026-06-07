@@ -539,6 +539,34 @@ def _section(label: str) -> None:
 # Main action
 # ---------------------------------------------------------------------------
 
+def _confirm_usb_write(device: str, on_confirm: "Callable[[], None]") -> None:
+    """Show an in-GUI confirmation before a destructive USB write.
+
+    Replaces the CLI input() prompt (which would otherwise surface in a
+    separate console window). On confirm, the caller runs the write with
+    force=True so the underlying code skips its own console prompt.
+    """
+    if dpg.does_item_exist("usb_confirm_modal"):
+        dpg.delete_item("usb_confirm_modal")
+
+    def _yes() -> None:
+        dpg.delete_item("usb_confirm_modal")
+        on_confirm()
+
+    vw = dpg.get_viewport_client_width() or 900
+    with dpg.window(label="Confirm USB write", modal=True, no_resize=True,
+                    no_collapse=True, tag="usb_confirm_modal",
+                    width=470, pos=[max(0, vw // 2 - 235), 180]):
+        dpg.add_text(f"ALL DATA on {device}", wrap=450)
+        dpg.add_text("will be PERMANENTLY ERASED. This cannot be undone.",
+                     wrap=450)
+        dpg.add_spacer(height=10)
+        with dpg.group(horizontal=True):
+            dpg.add_button(label="Cancel", width=150,
+                           callback=lambda: dpg.delete_item("usb_confirm_modal"))
+            dpg.add_button(label="Write to USB", width=200, callback=_yes)
+
+
 def _do_create() -> None:
     source_mode = dpg.get_value("source_mode")
     target_mode = dpg.get_value("target_mode")
@@ -580,10 +608,7 @@ def _do_create() -> None:
         partitions.append(PartitionSpec("ext4", ps, "casper-rw"))
         is_gpt = True
 
-    _set_building(True)
-    dpg.set_value("log_text", "")
-
-    def run() -> None:
+    def run(force_usb: bool = False) -> None:
         nonlocal output
         cfg = Config(
             verbose=dpg.get_value("verbose_check"),
@@ -591,7 +616,7 @@ def _do_create() -> None:
             gpt=is_gpt,
             mbr=is_mbr,
             label=label,
-            force=dpg.get_value("force_check"),
+            force=dpg.get_value("force_check") or force_usb,
             log=_log,
             iso_hybrid=dpg.get_value("hybrid_check"),
             udf_bridge=dpg.get_value("udf_bridge_check"),
@@ -622,7 +647,7 @@ def _do_create() -> None:
 
             if to_usb:
                 _set_status("Writing to USB...")
-                _write_usb_from_dir(cfg, files, "usb")
+                _write_usb_from_dir(cfg, files, "usb", source, includes)
             else:
                 compressed = _is_compressed_path(output)
                 build_target = _strip_compression_ext(output) if compressed else output
@@ -672,7 +697,20 @@ def _do_create() -> None:
             _set_status(f"Error: {e}")
             _set_building(False, "error")
 
-    threading.Thread(target=run, daemon=True).start()
+    def _launch(force_usb: bool = False) -> None:
+        _set_building(True)
+        dpg.set_value("log_text", "")
+        threading.Thread(target=run, args=(force_usb,), daemon=True).start()
+
+    # Destructive USB writes get an in-GUI confirmation (no console prompt).
+    # The "Force" checkbox skips it for power users.
+    if to_usb and not dpg.get_value("force_check"):
+        device = (dpg.get_value("drive_combo") or "").strip()
+        if not device or "Refresh" in device or "no USB" in device:
+            device = "the auto-detected USB drive"
+        _confirm_usb_write(device, lambda: _launch(force_usb=True))
+        return
+    _launch()
 
 
 # ---------------------------------------------------------------------------
@@ -806,7 +844,7 @@ def gui_main() -> None:
                             with dpg.group(horizontal=True):
                                 dpg.add_combo(
                                     tag="drive_combo",
-                                    items=["(click Refresh)"], width=-170)
+                                    items=["(click Refresh)"], width=-205)
                                 dpg.add_button(
                                     label="Refresh",
                                     callback=_refresh_drives, width=70)
