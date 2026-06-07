@@ -187,7 +187,7 @@ provision_guest() {
     rm -f "$tmpcmd"
 
     echo "[provision] interactive session up — launching $gui GUI on the desktop..." >&2
-    ssh -o BatchMode=yes winvm "powershell -NoProfile -ExecutionPolicy Bypass -Command \"\$a = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '/c $win_cmd'; \$p = New-ScheduledTaskPrincipal -UserId \$env:USERNAME -LogonType Interactive; Register-ScheduledTask -TaskName mkimage-gui -Action \$a -Principal \$p -Force | Out-Null; Start-ScheduledTask -TaskName mkimage-gui\"" 2>/dev/null \
+    ssh -o BatchMode=yes winvm "powershell -NoProfile -ExecutionPolicy Bypass -Command \"\$a = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '/c $win_cmd'; \$p = New-ScheduledTaskPrincipal -UserId \$env:USERNAME -LogonType Interactive -RunLevel Highest; Register-ScheduledTask -TaskName mkimage-gui -Action \$a -Principal \$p -Force | Out-Null; Start-ScheduledTask -TaskName mkimage-gui\"" 2>/dev/null \
         || echo "[provision] auto-launch failed — run 'python $win_pyz' in the VNC session." >&2
     tlog "GUI launched"
 }
@@ -222,6 +222,9 @@ if [[ -z "$SCREENSHOT" ]]; then
     # boot into recovery (WinRE). Never SIGKILL this VM.
     PROV_PID=""
     MONSOCK="$(mktemp -u "${TMPDIR:-/tmp}/mkimage-mon.XXXXXX.sock")"
+    # QMP socket (machine protocol) for scripted input injection / automation
+    # — e.g. driving the GUI for screenshot tests. HMP (MONSOCK) is for humans.
+    QMPSOCK="$(mktemp -u "${TMPDIR:-/tmp}/mkimage-qmp.XXXXXX.sock")"
     QEMU_PID=""
     shutdown_guest() {
         if [[ -n "$QEMU_PID" ]] && kill -0 "$QEMU_PID" 2>/dev/null; then
@@ -244,11 +247,12 @@ if [[ -z "$SCREENSHOT" ]]; then
         PROV_PID=$!
     fi
     "${CMD[@]}" -display "vnc=$HOST:$PORT,reverse=on" \
-                -monitor "unix:$MONSOCK,server,nowait" &
+                -monitor "unix:$MONSOCK,server,nowait" \
+                -qmp "unix:$QMPSOCK,server,nowait" &
     QEMU_PID=$!
     wait "$QEMU_PID"
     [[ -n "$PROV_PID" ]] && kill "$PROV_PID" 2>/dev/null || true
-    rm -f "$MONSOCK" 2>/dev/null || true
+    rm -f "$MONSOCK" "$QMPSOCK" 2>/dev/null || true
     exit 0
 fi
 
