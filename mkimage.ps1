@@ -1,7 +1,8 @@
 param(
-    [ValidateSet('', 'WriteUsb', 'CreateImg', 'CreateIso')]
+    [ValidateSet('', 'WriteUsb', 'CreateImg', 'CreateIso', 'Clone')]
     [string]$Action = '',
     [int]$DiskNumber = -1,
+    [int]$SourceDiskNumber = -1,
     [string]$SourceDir = '',
     [string[]]$Includes = @(),
     [string]$Label = 'UEFITOOLS',
@@ -901,6 +902,232 @@ format fs=__FILESYSTEM__ quick label=__LABEL__
 }
 
 # ---------------------------------------------------------------------------
+# Raw disk clone: device <-> image file, all directions. The actual raw I/O
+# runs in an elevated worker (PhysicalDrive access + Set-Disk need admin),
+# using the same progress-file polling pattern as Write-UsbDrive.
+#
+# Modes (by which of SourceDiskNum / DestDiskNum are >= 0):
+#   device -> file   clone a USB/disk to an .img   (SourceDiskNum set)
+#   file   -> device write an .img to a USB/disk   (DestDiskNum set)
+#   device -> device clone one disk to another     (both set)
+# ---------------------------------------------------------------------------
+function Copy-DiskImage {
+    param(
+        [string]$SourcePath = "",     # image file path (file source), else ""
+        [int]$SourceDiskNum = -1,     # source PhysicalDrive number, else -1
+        [double]$SourceSizeBytes = 0, # source disk size (required for device source)
+        [string]$DestPath = "",       # image file path (file dest), else ""
+        [int]$DestDiskNum = -1,       # dest PhysicalDrive number, else -1
+        [double]$DestSizeBytes = 0,   # dest disk size (device dest, for safety)
+        [string]$DestModel = "",
+        [switch]$Verify,
+        [switch]$SkipConfirm,
+        [string]$CliProgressFile = "",
+        $LogBox = $null
+    )
+
+    function Write-Log([string]$Message) {
+        if ($LogBox) { $LogBox.AppendText("$Message`r`n") } else { Write-Host $Message }
+    }
+
+    if ($SourceDiskNum -lt 0 -and -not $SourcePath) {
+        Write-Log "ERROR: no clone source specified."; return
+    }
+    if ($DestDiskNum -lt 0 -and -not $DestPath) {
+        Write-Log "ERROR: no clone destination specified."; return
+    }
+
+    # Destructive-device-write safety (mirrors Write-UsbDrive).
+    if ($DestDiskNum -ge 0) {
+        $parts = Get-Partition -DiskNumber $DestDiskNum -ErrorAction SilentlyContinue
+        if ($parts | Where-Object { $_.DriveLetter -eq 'C' }) {
+            Write-Log "ERROR: Destination disk contains the C: drive. Refusing to write."
+            if ($LogBox) { [System.Windows.Forms.MessageBox]::Show("Destination disk contains the C: drive. Refusing.", "Safety Check Failed", "OK", "Error") }
+            return
+        }
+        if ($DestSizeBytes -gt ($MAX_USB_SIZE_GB * 1GB)) {
+            Write-Log "ERROR: Destination disk larger than ${MAX_USB_SIZE_GB}GB. Refusing to write."
+            return
+        }
+        # An image-file source must fit on the destination disk.
+        if ($SourceDiskNum -lt 0 -and (Test-Path $SourcePath)) {
+            $srcLen = (Get-Item $SourcePath).Length
+            if ($srcLen -gt $DestSizeBytes) {
+                Write-Log "ERROR: Image ($srcLen bytes) is larger than the destination disk ($DestSizeBytes bytes)."
+                return
+            }
+        }
+        if (-not $SkipConfirm) {
+            if ($LogBox) {
+                $c = [System.Windows.Forms.MessageBox]::Show(
+                    "WARNING: ALL DATA on \\.\PhysicalDrive$DestDiskNum ($DestModel) WILL BE DESTROYED.`n`nProceed?",
+                    "Confirm Clone", "YesNo", "Warning")
+                if ($c -ne "Yes") { Write-Log "Aborted."; return }
+            } else {
+                Write-Log "WARNING: would destroy all data on disk $DestDiskNum. Aborted (use -SkipConfirm)."
+                return
+            }
+        }
+    }
+
+    $ownProgressFile = $false
+    if ($CliProgressFile) {
+        $progressFile = $CliProgressFile
+    } else {
+        $progressFile = [System.IO.Path]::GetTempFileName()
+        $ownProgressFile = $true
+    }
+    $tmpScript = [System.IO.Path]::GetTempFileName() -replace '\.tmp$', '.ps1'
+
+    $worker = @'
+$prog = '__PROGRESS__'
+function P([string]$m){ $m | Out-File -Append $prog }
+$srcDisk = __SRCDISK__
+$dstDisk = __DSTDISK__
+try {
+    $srcName = if ($srcDisk -ge 0) { "\\.\PhysicalDrive$srcDisk" } else { '__SRCPATH__' }
+    $dstName = if ($dstDisk -ge 0) { "\\.\PhysicalDrive$dstDisk" } else { '__DSTPATH__' }
+    $declTotal = [int64]'__SIZE__'
+    $doVerify = __VERIFY__
+    $sector = 512
+
+    # Offline the destination disk so raw sector writes are permitted, and wipe
+    # its partition table so nothing auto-mounts mid-write.
+    if ($dstDisk -ge 0) {
+        P "Taking destination disk $dstDisk offline..."
+        Set-Disk -Number $dstDisk -IsReadOnly $false -ErrorAction SilentlyContinue
+        Set-Disk -Number $dstDisk -IsOffline $true -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 1
+        "select disk $dstDisk`r`nclean" | diskpart | Out-Null
+        Start-Sleep -Seconds 1
+        Set-Disk -Number $dstDisk -IsOffline $true -ErrorAction SilentlyContinue
+    }
+    if ($srcDisk -ge 0) {
+        P "Taking source disk $srcDisk offline (consistent read)..."
+        Set-Disk -Number $srcDisk -IsOffline $true -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 1
+    }
+
+    $in  = [System.IO.FileStream]::new($srcName, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+    $outMode = if ($dstDisk -ge 0) { [System.IO.FileMode]::Open } else { [System.IO.FileMode]::Create }
+    $out = [System.IO.FileStream]::new($dstName, $outMode, [System.IO.FileAccess]::Write, [System.IO.FileShare]::ReadWrite)
+
+    # total bytes: declared size for a device source, file length for a file.
+    $total = if ($srcDisk -ge 0) { $declTotal } else { $in.Length }
+    $buf = New-Object byte[] (4MB)
+    [int64]$done = 0
+    $lastPct = -1
+    P "Cloning $total bytes: $srcName -> $dstName"
+    while ($done -lt $total) {
+        $want = [Math]::Min([int64]$buf.Length, $total - $done)
+        $read = $in.Read($buf, 0, [int]$want)
+        if ($read -le 0) { break }
+        $writeLen = $read
+        if ($dstDisk -ge 0 -and ($writeLen % $sector) -ne 0) {
+            $pad = $sector - ($writeLen % $sector)
+            for ($z = $writeLen; $z -lt $writeLen + $pad; $z++) { $buf[$z] = 0 }
+            $writeLen += $pad
+        }
+        $out.Write($buf, 0, [int]$writeLen)
+        $done += $read
+        $pct = [int](($done * 100) / $total)
+        if ($pct -ne $lastPct -and ($pct % 5) -eq 0) { P "  $pct% ($done / $total bytes)"; $lastPct = $pct }
+    }
+    $out.Flush(); $out.Close(); $in.Close()
+    P "Copy complete: $done bytes"
+
+    if ($doVerify) {
+        P "Verifying $total bytes (SHA256)..."
+        function HashN($name, $n) {
+            $f = [System.IO.FileStream]::new($name, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+            $h = [System.Security.Cryptography.SHA256]::Create(); $b = New-Object byte[] (4MB); [int64]$d = 0
+            while ($d -lt $n) { $w = [Math]::Min([int64]$b.Length, $n - $d); $r = $f.Read($b, 0, [int]$w); if ($r -le 0) { break }; [void]$h.TransformBlock($b, 0, $r, $null, 0); $d += $r }
+            [void]$h.TransformFinalBlock((New-Object byte[] 0), 0, 0); $f.Close()
+            return ([BitConverter]::ToString($h.Hash))
+        }
+        # Dest device is still offline here, so we read back the raw sectors.
+        $sh = HashN $srcName $total
+        $dh = HashN $dstName $total
+        if ($sh -eq $dh) { P "  VERIFY OK" } else { throw "VERIFY FAIL (hash mismatch)" }
+    }
+
+    P "OK:$done"
+} catch {
+    "ERROR: $_" | Out-File -Append $prog
+} finally {
+    if ($dstDisk -ge 0) { Set-Disk -Number $dstDisk -IsOffline $false -ErrorAction SilentlyContinue }
+    if ($srcDisk -ge 0) { Set-Disk -Number $srcDisk -IsOffline $false -ErrorAction SilentlyContinue }
+}
+'@
+    $worker = $worker.Replace('__PROGRESS__', ($progressFile -replace "'", "''"))
+    $worker = $worker.Replace('__SRCDISK__', "$SourceDiskNum")
+    $worker = $worker.Replace('__DSTDISK__', "$DestDiskNum")
+    $worker = $worker.Replace('__SRCPATH__', ($SourcePath -replace "'", "''"))
+    $worker = $worker.Replace('__DSTPATH__', ($DestPath -replace "'", "''"))
+    $worker = $worker.Replace('__SIZE__', "$([int64]$SourceSizeBytes)")
+    $worker = $worker.Replace('__VERIFY__', "$(if ($Verify) { '$true' } else { '$false' })")
+    [System.IO.File]::WriteAllText($tmpScript, $worker)
+
+    $srcDesc = if ($SourceDiskNum -ge 0) { "Disk $SourceDiskNum" } else { $SourcePath }
+    $dstDesc = if ($DestDiskNum -ge 0) { "Disk $DestDiskNum ($DestModel)" } else { $DestPath }
+    Write-Log "Clone: $srcDesc -> $dstDesc"
+
+    try {
+        Write-Log "Requesting Administrator access..."
+        if ($LogBox) { $LogBox.Parent.Refresh() }
+        $proc = Start-Process -FilePath "powershell.exe" `
+            -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $tmpScript `
+            -Verb RunAs -PassThru -WindowStyle Hidden
+        if ($null -eq $proc) { Write-Log "Aborted - Administrator access denied."; return }
+
+        $linesRead = 0
+        while (-not $proc.HasExited) {
+            if ($LogBox) { [System.Windows.Forms.Application]::DoEvents() }
+            Start-Sleep -Milliseconds 300
+            if (Test-Path $progressFile) {
+                $allLines = @(Get-Content $progressFile -ErrorAction SilentlyContinue)
+                if ($allLines.Count -gt $linesRead) {
+                    for ($i = $linesRead; $i -lt $allLines.Count; $i++) {
+                        if ($allLines[$i]) { Write-Log "  $($allLines[$i])" }
+                    }
+                    $linesRead = $allLines.Count
+                    if ($LogBox) { $LogBox.Parent.Refresh() }
+                }
+            }
+        }
+        Start-Sleep -Milliseconds 500
+        $finalMsg = ""
+        if (Test-Path $progressFile) {
+            $allLines = @(Get-Content $progressFile -ErrorAction SilentlyContinue)
+            if ($allLines.Count -gt $linesRead) {
+                for ($i = $linesRead; $i -lt $allLines.Count; $i++) {
+                    if ($allLines[$i]) { Write-Log "  $($allLines[$i])" }
+                }
+            }
+            $finalMsg = if ($allLines.Count -gt 0) { $allLines[-1].Trim() } else { "" }
+        }
+        if ($finalMsg -match "^OK:(\d+)") {
+            Write-Log "[OK] Cloned $($Matches[1]) bytes."
+        } elseif ($finalMsg -match "^ERROR:") {
+            Write-Log "[ERROR] $finalMsg"
+        } elseif ($finalMsg) {
+            Write-Log "  $finalMsg"
+        } else {
+            Write-Log "[ERROR] Clone subprocess produced no output (Administrator access may have been denied)."
+        }
+    } catch {
+        if ($_.Exception.Message -match "canceled by the user") {
+            Write-Log "Aborted - Administrator access denied."
+        } else {
+            Write-Log "[ERROR] $_"
+        }
+    } finally {
+        Remove-Item $tmpScript -ErrorAction SilentlyContinue
+        if ($ownProgressFile) { Remove-Item $progressFile -ErrorAction SilentlyContinue }
+    }
+}
+
+# ---------------------------------------------------------------------------
 # Main WinForms GUI
 # ---------------------------------------------------------------------------
 
@@ -1440,6 +1667,25 @@ if ($Action) {
                 -OutputFile $OutputFile -Label $Label -BootImage $BootImage `
                 -Verbose:$Verbose
             if (-not $result) { exit 1 }
+        }
+        'Clone' {
+            # Raw clone. Resolve source/dest from $SourceDiskNumber/$DiskNumber
+            # (devices) and $SourceDir/$OutputFile (image files). Reuses
+            # $DiskNumber as the destination device.
+            $srcSize = 0.0; $dstSize = 0.0; $dstModel = ''
+            if ($SourceDiskNumber -ge 0) {
+                $sd = Get-Disk -Number $SourceDiskNumber -ErrorAction SilentlyContinue
+                if (-not $sd) { Write-Error "Source disk $SourceDiskNumber not found"; exit 1 }
+                $srcSize = [double]$sd.Size
+            }
+            if ($DiskNumber -ge 0) {
+                $dd = Get-Disk -Number $DiskNumber -ErrorAction SilentlyContinue
+                if (-not $dd) { Write-Error "Destination disk $DiskNumber not found"; exit 1 }
+                $dstSize = [double]$dd.Size; $dstModel = $dd.FriendlyName
+            }
+            Copy-DiskImage -SourcePath $SourceDir -SourceDiskNum $SourceDiskNumber -SourceSizeBytes $srcSize `
+                -DestPath $OutputFile -DestDiskNum $DiskNumber -DestSizeBytes $dstSize -DestModel $dstModel `
+                -Verify:$Verify -SkipConfirm:$SkipConfirm -CliProgressFile $ProgressFile
         }
         default {
             Write-Error "Unknown action: $Action"
