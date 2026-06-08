@@ -2197,10 +2197,18 @@ function Show-MainForm {
     $chkUsb.AutoSize = $true
     $tabBuild.Controls.Add($chkUsb)
 
-    # Output target
-    $y += 30
+    # Output target -- set off as the destination with a divider + down arrow
+    # (the vertical-layout equivalent of the Python GUI's source->target arrow).
+    $y += 26
+    $divOut = New-Object System.Windows.Forms.Panel
+    $divOut.Location = New-Object System.Drawing.Point(15, $y)
+    $divOut.Size = New-Object System.Drawing.Size(570, 1)
+    $divOut.BackColor = $clrBorder
+    $tabBuild.Controls.Add($divOut)
+
+    $y += 10
     $lblOut = New-Object System.Windows.Forms.Label
-    $lblOut.Text = "Output Target:"
+    $lblOut.Text = [string][char]0x2193 + "  Output Target:"
     $lblOut.Location = New-Object System.Drawing.Point(15, $y)
     $lblOut.AutoSize = $true
     $tabBuild.Controls.Add($lblOut)
