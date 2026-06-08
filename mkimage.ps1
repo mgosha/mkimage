@@ -1047,18 +1047,28 @@ convert $($partStyle.ToLower())
     ($dpConvert | diskpart 2>&1) | Out-Null
     Start-Sleep -Seconds 1
 
-    # Step 1c: create partition + format
+    # Step 1c: create partition + format. Windows' formatter caps FAT32 at
+    # 32GB, so on a larger drive cap the FAT32 partition at 32000MB (rest left
+    # unallocated) instead of spanning the whole disk and failing with "The
+    # volume size is too big". Other filesystems use the whole disk.
+    $fsType = "__FILESYSTEM__"
+    $diskBytes = (Get-Disk -Number __DISKNUM__).Size
+    $createPart = "create partition primary"
+    if ($fsType -eq "fat32" -and $diskBytes -gt 32GB) {
+        $createPart = "create partition primary size=32000"
+        "  NOTE: Windows limits FAT32 formatting to 32GB; creating a 32000MB FAT32 partition (remaining ~$([math]::Round(($diskBytes/1GB) - 32))GB left unallocated). Use exFAT/NTFS to use the whole drive." | Out-File -Append __PROGRESS__
+    }
     if ($useGpt) {
         $dpSetup = @"
 select disk __DISKNUM__
-create partition primary
+$createPart
 select partition 1
 format fs=__FILESYSTEM__ quick label=__LABEL__
 "@
     } else {
         $dpSetup = @"
 select disk __DISKNUM__
-create partition primary
+$createPart
 active
 format fs=__FILESYSTEM__ quick label=__LABEL__
 "@
@@ -2396,7 +2406,9 @@ function Show-MainForm {
         $btnCreate.Enabled = $false
         $progress.Visible = $true
         $progress.MarqueeAnimationSpeed = 30
+        $lblStatus.ForeColor = $clrText
         $lblStatus.Text = "Working..."
+        $logStart = $txtLog.TextLength
         $txtLog.AppendText("`r`n--- $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') ---`r`n")
         $txtLog.AppendText("Action: $($btnCreate.Text)`r`n")
         $form.Refresh()
@@ -2474,8 +2486,18 @@ function Show-MainForm {
 
         $progress.MarqueeAnimationSpeed = 0
         $progress.Visible = $false
-        $lblStatus.Text = "Done"
         $btnCreate.Enabled = $true
+
+        # Pass/fail indication in the status bar; jump to the Log on failure.
+        $tail = $txtLog.Text.Substring([Math]::Min($logStart, $txtLog.TextLength))
+        if ($tail -match '\[ERROR\]|ERROR:|VERIFY FAIL') {
+            $lblStatus.ForeColor = [System.Drawing.Color]::FromArgb(200, 0, 0)
+            $lblStatus.Text = [string][char]0x2717 + " Failed -- see Log tab"
+            $tabs.SelectedTab = $tabLog
+        } else {
+            $lblStatus.ForeColor = [System.Drawing.Color]::FromArgb(0, 140, 0)
+            $lblStatus.Text = [string][char]0x2713 + " Done"
+        }
     })
 
     # --- Keyboard navigation (F-keys), mirroring the Python GUI ---------------
