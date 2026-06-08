@@ -121,7 +121,9 @@ fi
 provision_guest() {
     local gui="${GUI:-dpg}"
     local pyz="$ROOT_DIR/mkimage.pyz"
-    local guest_dir="C:/Users/mike/mkimage"
+    # Windows username on the guest (GUEST_USER overrides; default "user").
+    local guser="${GUEST_USER:-user}"
+    local guest_dir="C:/Users/$guser/mkimage"
 
     # Rebuild the zipapp so the guest always gets current source.
     if [[ -f "$ROOT_DIR/build_pyz.py" ]]; then
@@ -150,17 +152,17 @@ provision_guest() {
     # (black) screen. Idempotent; cheap. (AC + DC, monitor + standby.)
     ssh -o BatchMode=yes winvm "powercfg /change monitor-timeout-ac 0 & powercfg /change monitor-timeout-dc 0 & powercfg /change standby-timeout-ac 0 & powercfg /change standby-timeout-dc 0" >/dev/null 2>&1 || true
 
-    # A GUI can only appear on the VNC console once mike is logged into the
-    # interactive session. The VM is configured for autologon, so this is
+    # A GUI can only appear on the VNC console once the user is logged into
+    # the interactive session. The VM is configured for autologon, so this is
     # satisfied a few seconds after boot. Detect it by the desktop shell
     # (explorer.exe) being present — far more robust than parsing `query
     # session` text over SSH. Fail FAST (not after 10 min) if it never logs in.
-    echo "[provision] waiting for mike's interactive desktop session (autologon)..." >&2
+    echo "[provision] waiting for the interactive desktop session (autologon)..." >&2
     local stries=0 nexpl
     until nexpl="$(ssh -o BatchMode=yes winvm 'powershell -NoProfile -Command "(Get-Process explorer -ErrorAction SilentlyContinue | Measure-Object).Count"' 2>/dev/null | tr -dc '0-9')"; [[ "${nexpl:-0}" -ge 1 ]]; do
         stries=$((stries + 1))
         if (( stries > 30 )); then   # ~90s — autologon should be well under this
-            echo "[provision] no interactive desktop after 90s (autologon may have failed); log in via VNC, then run 'python C:\\Users\\mike\\mkimage\\mkimage.pyz'." >&2
+            echo "[provision] no interactive desktop after 90s (autologon may have failed); log in via VNC, then run 'python $guest_dir/mkimage.pyz'." >&2
             return 1
         fi
         sleep 3
@@ -175,8 +177,8 @@ provision_guest() {
     # passed inline: cmd.exe does NOT treat single quotes as quoting, so inline
     # quoting through ssh -> cmd -> powershell -> cmd is a minefield. A .cmd
     # file sidesteps all of it and makes the dpg/tk choice a content swap.
-    local win_pyz="C:\\Users\\mike\\mkimage\\mkimage.pyz"
-    local win_cmd="C:\\Users\\mike\\mkimage\\run-gui.cmd"
+    local win_pyz="C:\\Users\\$guser\\mkimage\\mkimage.pyz"
+    local win_cmd="C:\\Users\\$guser\\mkimage\\run-gui.cmd"
     local tmpcmd; tmpcmd="$(mktemp "${TMPDIR:-/tmp}/mkimage-gui.XXXXXX")"
     if [[ "$gui" == tk ]]; then
         printf '@echo off\r\npython -c "import sys; sys.path.insert(0, r'\''%s'\''); from mkimage.gui_tk import gui_main; gui_main()"\r\n' "$win_pyz" > "$tmpcmd"

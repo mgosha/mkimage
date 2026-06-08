@@ -41,17 +41,17 @@ tests/                Test suite (Linux, macOS, Windows via QEMU)
 
 ## Origin
 
-Extracted from `uefi-ipmitool/scripts/mkimage.py` where it was
+Extracted from `the original project's scripts/mkimage.py` where it was
 originally written as a cross-platform tool with WSL bridge for
 Windows. Being expanded with GPT partitioning, multi-partition
-layouts, and USB safety features from `softbmc/scripts/deploy.sh`.
+layouts, and USB safety features from `a deployment script`.
 
 ## Primary Consumers
 
-- `~/projects/aximcode/uefi-devkit` — build.sh calls mkimage.py via
+- the consuming build project — build.sh calls mkimage.py via
   `$MKIMAGE_DIR` to create the final multi-tool UEFI boot image
-- `~/projects/aximcode/uefi-ipmitool` — standalone image creation
-- `~/projects/aximcode/softbmc` — deploy.sh image/usb targets (planned)
+- the original project — standalone image creation
+- a deployment project — deploy.sh image/usb targets (planned)
 
 ## Usage
 

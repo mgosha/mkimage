@@ -54,7 +54,9 @@ def _winvm_reachable() -> bool:
     return _winvm_ok
 
 
-MACOS_HOST = "100.108.244.116"
+# macOS integration tests SSH to a real macOS host. Set MKIMAGE_MACOS_HOST to
+# its address (or ssh-config alias) to enable them; otherwise they skip.
+MACOS_HOST = os.environ.get("MKIMAGE_MACOS_HOST", "")
 _macos_ok: bool | None = None
 
 
@@ -62,6 +64,9 @@ def _macos_reachable() -> bool:
     """Check SSH connectivity to macOS host (cached for session)."""
     global _macos_ok
     if _macos_ok is not None:
+        return _macos_ok
+    if not MACOS_HOST:
+        _macos_ok = False
         return _macos_ok
     try:
         r = subprocess.run(

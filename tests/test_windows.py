@@ -21,7 +21,10 @@ from conftest import (MKIMAGE_PS1, MKIMAGE_PYZ, winvm_scp_from, winvm_scp_to,
 
 pytestmark = pytest.mark.windows
 
-VM_MKIMAGE_DIR = "C:/Users/mike/mkimage"
+# The QEMU Windows VM is reached via the `winvm` ssh-config alias. Set
+# MKIMAGE_WINVM_USER to that VM's Windows username (defaults to "user").
+_WINVM_USER = os.environ.get("MKIMAGE_WINVM_USER", "user")
+VM_MKIMAGE_DIR = f"C:/Users/{_WINVM_USER}/mkimage"
 VM_MKIMAGE_PS1 = f"{VM_MKIMAGE_DIR}/mkimage.ps1"
 VM_MKIMAGE_PYZ = f"{VM_MKIMAGE_DIR}/mkimage.pyz"
 
@@ -668,7 +671,7 @@ class TestPyzWindowsBuilds:
         import base64
         script = (
             "import sys\n"
-            "sys.path.insert(0, r'C:/Users/mike/mkimage/mkimage.pyz')\n"
+            f"sys.path.insert(0, r'{VM_MKIMAGE_PYZ}')\n"
             "import dearpygui.dearpygui as dpg\n"
             "dpg.create_context()\n"
             "from mkimage.gui_dpg import _KEY_SHORTCUTS, _setup_key_handlers\n"

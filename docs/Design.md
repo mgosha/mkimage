@@ -166,7 +166,7 @@ ISO 9660 with Joliet extensions. Created via `xorriso` or
 
 ## USB Write
 
-### Safety checks [NEW — from softbmc deploy.sh]
+### Safety checks [NEW]
 
 Before writing to USB:
 
@@ -189,7 +189,7 @@ On Windows, drive enumeration uses PowerShell `Get-Disk` /
 - **GPT layout:** `sgdisk` + `mkfs.vfat` directly on device (no
   intermediate image)
 
-## Auto-sizing [NEW — from softbmc deploy.sh]
+## Auto-sizing [NEW]
 
 When `--size` is not specified, mkimage calculates the optimal image
 size:
@@ -232,7 +232,7 @@ def _run(cmd, as_root=False):
 ### Path conversion
 
 On Windows, paths are converted to WSL mount paths:
-`C:\Users\mike\staging` → `/mnt/c/Users/mike/staging`
+`C:\Users\<user>\staging` → `/mnt/c/Users/<user>/staging`
 
 ### Tool detection
 
@@ -275,7 +275,7 @@ On macOS, install via Homebrew: `brew install dosfstools gdisk xorriso`
 
 ### Phase 1: Extract and reorganize
 
-- Copy mkimage.py, mkimage.ps1, mkimage.bat from uefi-ipmitool
+- Copy mkimage.py, mkimage.ps1, mkimage.bat from the original project
 - Add CLAUDE.md, docs/Design.md, .gitignore
 - Verify existing functionality works standalone
 - No code changes — just extraction
@@ -310,9 +310,9 @@ On macOS, install via Homebrew: `brew install dosfstools gdisk xorriso`
 
 ### Phase 5: Integration
 
-- Update uefi-devkit config.sh `MKIMAGE_DIR` default to point here
-- Replace inline image creation in uefi-ipmitool/scripts/build.sh
-- Replace image/usb targets in softbmc/scripts/deploy.sh
+- Update the consuming project's config `MKIMAGE_DIR` default to point here
+- Replace inline image creation in the original project's build script
+- Replace image/usb targets in a deployment script
 - Replace QEMU disk image creation in project qemu.sh scripts
 
 ## Implementation Status
@@ -321,9 +321,9 @@ On macOS, install via Homebrew: `brew install dosfstools gdisk xorriso`
 
 | File | Status | Description |
 |------|--------|-------------|
-| `mkimage.py` | Done | Copied from uefi-ipmitool/scripts/ |
-| `mkimage.ps1` | Done | Copied from uefi-ipmitool/scripts/ |
-| `mkimage.bat` | Done | Copied from uefi-ipmitool/scripts/ |
+| `mkimage.py` | Done | Copied from the original project's scripts/ |
+| `mkimage.ps1` | Done | Copied from the original project's scripts/ |
+| `mkimage.bat` | Done | Copied from the original project's scripts/ |
 | `CLAUDE.md` | Done | Project instructions |
 | `docs/Design.md` | Done | This document |
 | `.gitignore` | Done | Build artifacts |
