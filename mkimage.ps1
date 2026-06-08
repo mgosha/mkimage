@@ -1633,59 +1633,61 @@ function Show-MainForm {
     [void]$form.Controls.Add($tabs)
 
     # Placeholders for tabs filled in by later parity phases.
-    # --- Help tab: shortcuts, quick start, reference, tips ------------------
-    $helpText = @"
-KEYBOARD SHORTCUTS
-  F1-F5   Build / Options / Tools / Log / Help tabs
-  F6      Refresh USB drive list (when a USB list is shown)
-  F12     Run the current action (Create / Write / Clone)
+    # --- Help tab: headered, spaced sections (RichTextBox) ------------------
+    $rtbHelp = New-Object System.Windows.Forms.RichTextBox
+    $rtbHelp.Location = New-Object System.Drawing.Point(12, 12)
+    $rtbHelp.Size = New-Object System.Drawing.Size(566, 350)
+    $rtbHelp.ReadOnly = $true
+    $rtbHelp.BackColor = [System.Drawing.Color]::White
+    $rtbHelp.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    $tabHelp.Controls.Add($rtbHelp)
 
-QUICK START
-  1. Build tab: pick a Source (a folder/image file, or a USB drive to clone).
-  2. Choose Output Format (FAT32 .img or ISO) and a Volume Label.
-  3. Set the Output Target: a file (Browse) or a USB drive (Write to USB).
-  4. Click the action button (its label reflects what will happen).
-  Watch the Log tab for progress.
-
-OUTPUT FORMATS & OPTIONS (Options tab)
-  Partition Scheme: None (raw FAT32) / MBR / GPT. For MBR or GPT, add
-    partition rows (filesystem, size in MB or blank=auto, label, cluster,
-    source dir). A blank Source falls back to the Build source.
-  ISO: Hybrid (dd-writable to USB for UEFI boot) and UDF bridge (ISO 9660 +
-    UDF, for files larger than 4 GB).
-  Filesystems: FAT32, NTFS, exFAT are created natively (diskpart). ext4 is
-    not available on Windows (use the Linux/macOS build for live-Linux
-    persistence); UDF is available for ISOs.
-  Verify (SHA256/compare), Verbose (per-file log), Force (skip the
-    destructive-write confirmation).
-
-ACTIONS BY SOURCE x TARGET
-  Folder -> File   Create Image        Folder -> USB   Write to USB
-  USB    -> File   Clone to Image      USB    -> USB   Clone to USB
-  An .img/.iso source written to USB is raw-cloned (dd-style).
-
-TOOLS TAB
-  Format a drive, Wipe partition signatures, Check for bad blocks
-  (destructive write/verify pass), and List the partitions in an image.
-
-TIPS
-  - A .img.gz output target is gzip-compressed automatically.
-  - Everything is native Windows (diskpart / robocopy / IMAPI / oscdimg) -
-    no WSL required.
-  - FAT32 volume labels are limited to 11 characters.
-  - USB writes and clones require Administrator (you'll be prompted).
-"@
-    $txtHelp = New-Object System.Windows.Forms.TextBox
-    $txtHelp.Multiline = $true
-    $txtHelp.ReadOnly = $true
-    $txtHelp.ScrollBars = "Vertical"
-    $txtHelp.Location = New-Object System.Drawing.Point(12, 12)
-    $txtHelp.Size = New-Object System.Drawing.Size(566, 350)
-    $txtHelp.Font = New-Object System.Drawing.Font("Consolas", 8.5)
-    $txtHelp.BackColor = [System.Drawing.Color]::White
-    $txtHelp.Text = $helpText
-    $txtHelp.Select(0, 0)
-    $tabHelp.Controls.Add($txtHelp)
+    $hHead = New-Object System.Drawing.Font("Segoe UI Semibold", 10, [System.Drawing.FontStyle]::Bold)
+    $hBody = New-Object System.Drawing.Font("Consolas", 8.5)
+    $appendHelp = {
+        param($text, $font, $color)
+        $rtbHelp.SelectionStart = $rtbHelp.TextLength
+        $rtbHelp.SelectionLength = 0
+        $rtbHelp.SelectionFont = $font
+        $rtbHelp.SelectionColor = $color
+        $rtbHelp.AppendText($text)
+    }
+    $helpSections = @(
+        @{ H = "Keyboard Shortcuts"; B = @(
+            "F1-F5   Build / Options / Tools / Log / Help tabs",
+            "F6      Refresh the USB drive list (when shown)",
+            "F12     Run the current action (Create / Write / Clone)") }
+        @{ H = "Quick Start"; B = @(
+            "1. Build tab: pick a Source (a folder/image file, or a USB to clone).",
+            "2. Choose Output Format (Image .img or ISO) and a Volume Label.",
+            "3. Set the Output Target: a file (Browse) or a USB drive.",
+            "4. Click the action button; watch the Log tab for progress.") }
+        @{ H = "Output Formats & Options (Options tab)"; B = @(
+            "Partition Scheme: None (raw FAT32) / MBR / GPT. For MBR or GPT, add",
+            "  partition rows (filesystem, size, label, cluster, source).",
+            "ISO: Hybrid (dd-writable to USB) and UDF bridge (>4 GB files).",
+            "Filesystems: FAT32 / NTFS / exFAT are native; ext4 is not (use the",
+            "  Linux/macOS build); UDF is for ISOs.",
+            "Verify (SHA256), Verbose (per-file log), Force (skip the confirm).") }
+        @{ H = "Actions  (Source -> Target)"; B = @(
+            "Folder -> File   Create Image       Folder -> USB   Write to USB",
+            "USB    -> File   Clone to Image     USB    -> USB   Clone to USB",
+            "An .img/.iso source written to USB is raw-cloned (dd-style).") }
+        @{ H = "Tools Tab"; B = @(
+            "Format a drive, Wipe partition signatures, Check for bad blocks",
+            "(destructive), and List the partitions in an image.") }
+        @{ H = "Tips"; B = @(
+            "- A .img.gz output target is gzip-compressed automatically.",
+            "- All native Windows (diskpart / robocopy / IMAPI / oscdimg); no WSL.",
+            "- FAT32 volume labels are limited to 11 characters.",
+            "- USB writes and clones require Administrator (you'll be prompted).") }
+    )
+    foreach ($sec in $helpSections) {
+        & $appendHelp ($sec.H + "`r`n") $hHead $clrAccentDk
+        & $appendHelp (($sec.B -join "`r`n") + "`r`n`r`n") $hBody $clrText
+    }
+    $rtbHelp.SelectionStart = 0
+    $rtbHelp.ScrollToCaret()
 
     $lnkGitHub = New-Object System.Windows.Forms.LinkLabel
     $lnkGitHub.Text = "mkimage -- github.com/mgosha/mkimage"
@@ -2052,7 +2054,7 @@ TIPS
     # Extra includes
     $y += 35
     $lblInc = New-Object System.Windows.Forms.Label
-    $lblInc.Text = "Extra Includes:"
+    $lblInc.Text = "Additional Includes:"
     $lblInc.Location = New-Object System.Drawing.Point(15, $y)
     $lblInc.AutoSize = $true
     $tabBuild.Controls.Add($lblInc)
@@ -2103,7 +2105,7 @@ TIPS
     $tabBuild.Controls.Add($lblFmt)
 
     $rbImg = New-Object System.Windows.Forms.RadioButton
-    $rbImg.Text = "FAT32 (.img)"
+    $rbImg.Text = "Image (.img)"
     $rbImg.Location = New-Object System.Drawing.Point(120, ($y - 2))
     $rbImg.AutoSize = $true
     $rbImg.Checked = $true
@@ -2147,7 +2149,7 @@ TIPS
     # Image size
     $y += 30
     $lblSize = New-Object System.Windows.Forms.Label
-    $lblSize.Text = "Extra Space (MB):"
+    $lblSize.Text = "Extra (MB):"
     $lblSize.Location = New-Object System.Drawing.Point(15, $y)
     $lblSize.AutoSize = $true
     $tabBuild.Controls.Add($lblSize)

@@ -459,7 +459,7 @@ def _on_source_mode_change(sender: int) -> None:
     dpg.hide_item("source_file_group")
     dpg.hide_item("source_includes_group")
     dpg.hide_item("source_usb_group")
-    if mode == "USB":
+    if mode == "USB drive (clone)":
         dpg.show_item("source_usb_group")
         _refresh_source_drives()
     else:
@@ -490,11 +490,11 @@ def _on_target_mode_change(sender: int) -> None:
 def _update_action_label() -> None:
     src = dpg.get_value("source_mode")
     tgt = dpg.get_value("target_mode")
-    if src == "File" and tgt == "File":
+    if src == "Folder / image file" and tgt == "File":
         label = "Create Image"
-    elif src == "File" and tgt == "USB":
+    elif src == "Folder / image file" and tgt == "USB":
         label = "Write to USB"
-    elif src == "USB" and tgt == "File":
+    elif src == "USB drive (clone)" and tgt == "File":
         label = "Clone to Image"
     else:
         label = "Clone to USB"
@@ -573,7 +573,7 @@ def _do_create() -> None:
     source_mode = dpg.get_value("source_mode")
     target_mode = dpg.get_value("target_mode")
 
-    if source_mode == "USB":
+    if source_mode == "USB drive (clone)":
         sel = dpg.get_value("source_drive_combo")
         if not sel or "no USB" in sel:
             _log("Error: No source USB drive selected.")
@@ -585,7 +585,7 @@ def _do_create() -> None:
             _log("Error: Source directory is required.")
             return
 
-    includes = _get_includes() if source_mode == "File" else []
+    includes = _get_includes() if source_mode == "Folder / image file" else []
     label = dpg.get_value("vol_label").strip() or "UEFITOOLS"
 
     if target_mode == "File":
@@ -795,8 +795,8 @@ def gui_main() -> None:
                         dpg.bind_item_theme(t, "header_theme")
 
                         dpg.add_radio_button(
-                            ["File", "USB"], tag="source_mode",
-                            horizontal=True, default_value="File",
+                            ["Folder / image file", "USB drive (clone)"], tag="source_mode",
+                            horizontal=True, default_value="Folder / image file",
                             callback=_on_source_mode_change)
 
                         # File mode widgets
@@ -825,10 +825,10 @@ def gui_main() -> None:
                             dpg.add_text("Additional Includes:")
                             with dpg.group(horizontal=True):
                                 dpg.add_button(
-                                    label="File", width=40,
+                                    label="Add File", width=70,
                                     callback=_browse_include_file)
                                 dpg.add_button(
-                                    label="Dir", width=40,
+                                    label="Add Dir", width=70,
                                     callback=_browse_include_dir)
                                 dpg.add_button(
                                     label="Clear", width=40,
@@ -869,17 +869,17 @@ def gui_main() -> None:
                                 hint="Output .img, .iso, .img.gz")
                             dpg.add_spacer(height=2)
                             with dpg.group(horizontal=True):
-                                dpg.add_text("Format:")
+                                dpg.add_text("Output Format:")
                                 dpg.add_radio_button(
                                     ["Image (.img)", "ISO (.iso)"],
                                     tag="fmt_radio", horizontal=True,
                                     default_value="Image (.img)")
                             with dpg.group(horizontal=True):
-                                dpg.add_text("Label:")
+                                dpg.add_text("Volume Label:")
                                 dpg.add_input_text(
                                     tag="vol_label",
                                     default_value="UEFITOOLS", width=90)
-                                dpg.add_text("Extra:")
+                                dpg.add_text("Extra (MB):")
                                 dpg.add_input_text(
                                     tag="extra_space",
                                     default_value="32", width=40)
