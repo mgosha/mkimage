@@ -659,3 +659,30 @@ class TestPyzWindowsBuilds:
                         "C:/test/r_vfy.img", "--mbr", "--verify")
         assert "skipping verification" not in out and "mcopy not available" not in out, out
         assert "Verification passed" in out, out
+
+    def test_gui_keyboard_shortcuts(self) -> None:
+        """The GUI's F-key navigation is wired: the shortcut table is complete,
+        all actions are callable, every mvKey_* exists, and the handlers
+        register without error. Runs on the guest (Dear PyGui present there);
+        base64-exec avoids SSH quoting issues."""
+        import base64
+        script = (
+            "import sys\n"
+            "sys.path.insert(0, r'C:/Users/mike/mkimage/mkimage.pyz')\n"
+            "import dearpygui.dearpygui as dpg\n"
+            "dpg.create_context()\n"
+            "from mkimage.gui_dpg import _KEY_SHORTCUTS, _setup_key_handlers\n"
+            "keys = [k for k, _ in _KEY_SHORTCUTS]\n"
+            "exp = {'F1','F2','F3','F4','F5','F6','F7','F8','F9','F12'}\n"
+            "assert exp <= set(keys), keys\n"
+            "assert all(callable(fn) for _, fn in _KEY_SHORTCUTS)\n"
+            "assert all(getattr(dpg, 'mvKey_'+k, None) is not None for k in keys)\n"
+            "_setup_key_handlers()\n"
+            "dpg.destroy_context()\n"
+            "print('GUIKEYS-OK')\n"
+        )
+        b64 = base64.b64encode(script.encode()).decode()
+        r = winvm_ssh(
+            "python -c \"import base64;exec(base64.b64decode('"
+            + b64 + "').decode())\"", timeout=60)
+        assert "GUIKEYS-OK" in (r.stdout + r.stderr), r.stdout + r.stderr
