@@ -36,7 +36,11 @@ def _find_ps1() -> str | None:
         import importlib.resources as pkg_resources
         ref = pkg_resources.files("mkimage").joinpath("mkimage.ps1")
         data = ref.read_bytes()
-        shared_dir = os.path.join(os.environ.get("SystemDrive", "C:"), "temp")
+        # Absolute <drive>\temp shared path. NB: "C:" has no trailing sep, so
+        # os.path.join("C:", "temp") yields the *drive-relative* "C:temp" —
+        # append os.sep to anchor it at the drive root.
+        sysdrive = os.environ.get("SystemDrive", "C:")
+        shared_dir = os.path.join(sysdrive + os.sep, "temp")
         os.makedirs(shared_dir, exist_ok=True)
         tmp_path = os.path.join(shared_dir, "mkimage.ps1")
         with open(tmp_path, "wb") as f:
