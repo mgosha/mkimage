@@ -730,6 +730,49 @@ def _animate_progress() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Keyboard navigation
+# ---------------------------------------------------------------------------
+
+def _select_tab(tab_tag: str) -> None:
+    """Switch the main tab bar to the given tab."""
+    try:
+        dpg.set_value("tab_bar", dpg.get_alias_id(tab_tag))
+    except Exception:
+        pass
+
+
+# Function-key shortcuts: tab navigation (F1-F5), Tools actions (F6-F9), and
+# the Build action (F12). F-keys don't collide with text entry, and the
+# destructive Tools actions still go through their own confirmation. This
+# makes the GUI fully drivable from the keyboard — and lets automated tests
+# inject keystrokes deterministically instead of hunting mouse coordinates.
+_KEY_SHORTCUTS = [
+    ("F1", lambda: _select_tab("build_tab")),
+    ("F2", lambda: _select_tab("options_tab")),
+    ("F3", lambda: _select_tab("tools_tab")),
+    ("F4", lambda: _select_tab("log_tab")),
+    ("F5", lambda: _select_tab("help_tab")),
+    ("F6", _refresh_tools_drives),
+    ("F7", _tools_format_drive),
+    ("F8", _tools_wipe_drive),
+    ("F9", _tools_check_drive),
+    ("F12", _do_create),
+]
+
+
+def _setup_key_handlers() -> None:
+    """Register the function-key shortcuts in a global handler registry."""
+    with dpg.handler_registry():
+        for keyname, action in _KEY_SHORTCUTS:
+            key = getattr(dpg, f"mvKey_{keyname}", None)
+            if key is None:
+                continue
+            # Variadic: DPG may invoke the callback with 0-3 positional args.
+            dpg.add_key_press_handler(
+                key, callback=lambda *_a, fn=action: fn())
+
+
+# ---------------------------------------------------------------------------
 # GUI entry point
 # ---------------------------------------------------------------------------
 
@@ -983,6 +1026,17 @@ def gui_main() -> None:
             # ===================== HELP TAB =====================
             with dpg.tab(label="Help", tag="help_tab"):
                 with dpg.child_window(height=-1, border=False):
+                    # Keyboard shortcuts
+                    t = dpg.add_text("Keyboard Shortcuts")
+                    dpg.bind_item_theme(t, "header_theme")
+                    dpg.add_text("F1-F5         Build / Options / Tools / Log / Help tabs")
+                    dpg.add_text("F6            Tools: refresh USB drive list")
+                    dpg.add_text("F7 / F8 / F9  Tools: Format / Wipe / Check drive")
+                    dpg.add_text("F12           Create Image / Write to USB")
+
+                    dpg.add_spacer(height=1)
+                    dpg.add_separator()
+
                     # Quick Start
                     t = dpg.add_text("Quick Start")
                     dpg.bind_item_theme(t, "header_theme")
@@ -1052,6 +1106,7 @@ def gui_main() -> None:
     dpg.setup_dearpygui()
     dpg.show_viewport()
     dpg.set_primary_window("main", True)
+    _setup_key_handlers()
 
     while dpg.is_dearpygui_running():
         _flush_log()
