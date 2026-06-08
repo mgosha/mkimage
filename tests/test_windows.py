@@ -16,7 +16,8 @@ from pathlib import Path
 
 import pytest
 
-from conftest import MKIMAGE_PS1, MKIMAGE_PYZ, winvm_scp_to, winvm_ssh
+from conftest import (MKIMAGE_PS1, MKIMAGE_PYZ, winvm_scp_from, winvm_scp_to,
+                      winvm_ssh)
 
 pytestmark = pytest.mark.windows
 
@@ -561,3 +562,92 @@ class TestPyzUsbWrite:
             f"nested tools\\hello.txt missing on USB; files={files}"
         assert any(f.endswith("README.txt") for f in files), \
             f"README.txt missing on USB; files={files}"
+
+
+class TestPyzWindowsBuilds:
+    """Regression tests for the pure-Python Windows build paths that the
+    PS1-focused suite missed: GPT (had crashed via wsl/dd), UEFI-bootable ISO
+    (was data-only), and --modify (had required mtools). Each builds via
+    mkimage.pyz over SSH, then fetches the artifact and checks its structure.
+    """
+
+    VM_SRC = "C:/test/rsrc"
+
+    @pytest.fixture(autouse=True)
+    def setup(self) -> None:
+        # current pyz + ps1 (ISO path shells to the ps1)
+        assert winvm_scp_to(MKIMAGE_PYZ, VM_MKIMAGE_PYZ).returncode == 0
+        winvm_scp_to(MKIMAGE_PS1, VM_MKIMAGE_PS1)
+        # self-contained source tree with a (dummy) EFI fallback bootloader
+        winvm_ssh(
+            'powershell -NoProfile -Command "'
+            f"New-Item -ItemType Directory -Force -Path '{self.VM_SRC}\\EFI\\BOOT' | Out-Null; "
+            f"New-Item -ItemType Directory -Force -Path '{self.VM_SRC}\\tools' | Out-Null; "
+            f"Set-Content -Path '{self.VM_SRC}\\README.txt' -Value 'readme'; "
+            f"Set-Content -Path '{self.VM_SRC}\\tools\\hello.txt' -Value 'nested'; "
+            f"[IO.File]::WriteAllBytes('{self.VM_SRC}\\EFI\\BOOT\\BOOTX64.EFI', (New-Object byte[] 2048))"
+            '"', timeout=30)
+
+    def _pyz(self, *args: str, timeout: int = 200) -> str:
+        cmd = ("powershell -NoProfile -ExecutionPolicy Bypass -Command "
+               f"\"python.exe '{VM_MKIMAGE_PYZ}' {' '.join(args)} 2>&1 | Out-String\"")
+        r = winvm_ssh(cmd, timeout=timeout)
+        return r.stdout + r.stderr
+
+    def _fetch(self, vm_path: str) -> str:
+        fd, local = tempfile.mkstemp()
+        os.close(fd)
+        assert winvm_scp_from(vm_path, local).returncode == 0, f"scp {vm_path} failed"
+        return local
+
+    def test_gpt_builds_without_wsl(self) -> None:
+        """--gpt must use the pure-Python writer (no wsl/dd crash) and produce
+        a valid GPT (protective MBR + 'EFI PART' header)."""
+        out = self._pyz("--source", self.VM_SRC, "--target", "C:/test/r_gpt.img", "--gpt")
+        assert "Traceback" not in out and "charmap" not in out, out
+        assert "wsl" not in out.lower(), f"GPT still using WSL:\n{out}"
+        assert "[OK]" in out, out
+        local = self._fetch("C:/test/r_gpt.img")
+        try:
+            with open(local, "rb") as f:
+                head = f.read(34 * 512)
+            assert head[446 + 4] == 0xEE, "no protective MBR (0xEE) partition"
+            assert head[512:520] == b"EFI PART", "no primary GPT header"
+        finally:
+            os.unlink(local)
+
+    def test_iso_has_el_torito_efi_boot(self) -> None:
+        """An ISO built from a tree with EFI/BOOT/BOOTX64.EFI must carry an El
+        Torito boot record (i.e. be UEFI-bootable), not be data-only."""
+        out = self._pyz("--source", self.VM_SRC, "--target", "C:/test/r_boot.iso")
+        assert "Traceback" not in out and "[OK]" in out, out
+        local = self._fetch("C:/test/r_boot.iso")
+        try:
+            with open(local, "rb") as f:
+                f.seek(17 * 2048)  # Boot Record Volume Descriptor
+                br = f.read(2048)
+            assert br[1:6] == b"CD001", "no volume descriptor at sector 17"
+            assert b"EL TORITO SPECIFICATION" in br, "ISO has no El Torito boot record"
+        finally:
+            os.unlink(local)
+
+    def test_modify_without_mtools(self) -> None:
+        """--modify must work on Windows (no mcopy) and round-trip the file
+        set: added file present, removed file gone, boot file preserved."""
+        self._pyz("--source", self.VM_SRC, "--target", "C:/test/r_mod.img", "--mbr")
+        winvm_ssh('powershell -NoProfile -Command "Set-Content -Encoding ascii '
+                  '-Path C:\\test\\r_add.txt -Value added"', timeout=20)
+        out = self._pyz("--modify", "C:/test/r_mod.img",
+                        "--add", "C:/test/r_add.txt", "--remove", "README.txt")
+        assert "mcopy" not in out and "Traceback" not in out, out
+        assert "Modified" in out, out
+        local = self._fetch("C:/test/r_mod.img")
+        try:
+            from mkimage.modify import _read_fat32_image
+            names = {k.lower() for k in _read_fat32_image(local)["files"]}
+        finally:
+            os.unlink(local)
+        assert "r_add.txt" in names, f"added file missing: {names}"
+        assert "readme.txt" not in names, f"removed file still present: {names}"
+        assert any(n.endswith("bootx64.efi") for n in names), \
+            f"boot file lost after modify: {names}"
