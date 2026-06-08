@@ -62,6 +62,7 @@ mkimage.pyz --source <dir> --target output.img --gpt \
 mkimage.pyz --source <dir> --target output.iso
 
 # Write to a USB drive (auto-detect, with confirmation)
+# Needs elevation: Administrator on Windows (auto UAC prompt), sudo on Linux/macOS.
 mkimage.pyz --source <dir> --target usb
 
 # Write an existing image to USB
@@ -109,6 +110,17 @@ optional runtime dependency.
 
 ## Notes
 
+- **Writing to a USB device requires elevated privileges** (writing/cloning/
+  formatting `usb` or `/dev/sdX`):
+  - **Windows** — Administrator. The native engine self-elevates: a UAC prompt
+    appears automatically (the GUI runs elevated). No need to pre-launch as
+    admin from the CLI.
+  - **Linux** — root: run with `sudo` (e.g. `sudo mkimage.pyz --source <dir>
+    --target /dev/sdb`).
+  - **macOS** — admin: run with `sudo`.
+
+  Building image files (`.img`/`.iso`) needs no elevation — only USB *device*
+  access does.
 - USB writes always run safety checks and require confirmation (or `--force`).
 - **UEFI:NTFS** support (for booting NTFS USBs) is downloaded on demand from
   its upstream project (GPL-2.0); it is not bundled with mkimage.
