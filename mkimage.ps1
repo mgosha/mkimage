@@ -905,15 +905,58 @@ format fs=__FILESYSTEM__ quick label=__LABEL__
 # ---------------------------------------------------------------------------
 
 function Show-MainForm {
+    # --- Theme palette --------------------------------------------------------
+    $clrAccent   = [System.Drawing.Color]::FromArgb(0, 120, 215)    # Windows accent blue
+    $clrAccentDk = [System.Drawing.Color]::FromArgb(0, 78, 158)
+    $clrBg       = [System.Drawing.Color]::FromArgb(245, 246, 248)  # soft window bg
+    $clrText     = [System.Drawing.Color]::FromArgb(32, 38, 52)     # near-black ink
+    $clrBorder   = [System.Drawing.Color]::FromArgb(205, 210, 218)
+
     $form = New-Object System.Windows.Forms.Form
     $form.Text = "mkimage - Bootable Media Creator"
-    $form.Size = New-Object System.Drawing.Size(620, 580)
+    $form.Size = New-Object System.Drawing.Size(620, 648)
     $form.StartPosition = "CenterScreen"
     $form.FormBorderStyle = "FixedSingle"
     $form.MaximizeBox = $false
     $form.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    $form.BackColor = $clrBg
 
-    $y = 15
+    # --- Header banner (gradient) --------------------------------------------
+    $header = New-Object System.Windows.Forms.Panel
+    $header.Location = New-Object System.Drawing.Point(0, 0)
+    $header.Size = New-Object System.Drawing.Size(604, 66)
+    $header.Add_Paint({
+        param($s, $e)
+        $rect = $s.ClientRectangle
+        $brush = New-Object System.Drawing.Drawing2D.LinearGradientBrush(
+            $rect,
+            [System.Drawing.Color]::FromArgb(0, 120, 215),
+            [System.Drawing.Color]::FromArgb(0, 78, 158),
+            [System.Drawing.Drawing2D.LinearGradientMode]::Horizontal)
+        $e.Graphics.FillRectangle($brush, $rect)
+        $brush.Dispose()
+    })
+    $form.Controls.Add($header)
+
+    $lblTitle = New-Object System.Windows.Forms.Label
+    $lblTitle.Text = "mkimage"
+    $lblTitle.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 17, [System.Drawing.FontStyle]::Bold)
+    $lblTitle.ForeColor = [System.Drawing.Color]::White
+    $lblTitle.BackColor = [System.Drawing.Color]::Transparent
+    $lblTitle.AutoSize = $true
+    $lblTitle.Location = New-Object System.Drawing.Point(18, 9)
+    $header.Controls.Add($lblTitle)
+
+    $lblSub = New-Object System.Windows.Forms.Label
+    $lblSub.Text = "Bootable Media Creator"
+    $lblSub.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
+    $lblSub.ForeColor = [System.Drawing.Color]::FromArgb(208, 226, 246)
+    $lblSub.BackColor = [System.Drawing.Color]::Transparent
+    $lblSub.AutoSize = $true
+    $lblSub.Location = New-Object System.Drawing.Point(21, 40)
+    $header.Controls.Add($lblSub)
+
+    $y = 82
 
     # Source directory
     $lblSrc = New-Object System.Windows.Forms.Label
@@ -1252,6 +1295,46 @@ function Show-MainForm {
 
         $btnCreate.Enabled = $true
     })
+
+    # --- Apply the theme to all controls (single DRY pass) --------------------
+    # Secondary (neutral) buttons: flat white, hairline border, soft blue hover.
+    foreach ($b in @($btnSrc, $btnAddFile, $btnAddDir, $btnClear, $btnOut, $btnRefresh)) {
+        $b.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+        $b.FlatAppearance.BorderColor = $clrBorder
+        $b.FlatAppearance.BorderSize = 1
+        $b.FlatAppearance.MouseOverBackColor = [System.Drawing.Color]::FromArgb(232, 240, 250)
+        $b.BackColor = [System.Drawing.Color]::White
+        $b.ForeColor = $clrText
+        $b.Cursor = [System.Windows.Forms.Cursors]::Hand
+    }
+
+    # Primary action button: solid accent fill, white text, darker hover.
+    $btnCreate.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+    $btnCreate.FlatAppearance.BorderSize = 0
+    $btnCreate.FlatAppearance.MouseOverBackColor = $clrAccentDk
+    $btnCreate.BackColor = $clrAccent
+    $btnCreate.ForeColor = [System.Drawing.Color]::White
+    $btnCreate.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 10, [System.Drawing.FontStyle]::Bold)
+    $btnCreate.Cursor = [System.Windows.Forms.Cursors]::Hand
+
+    # Section heading labels: accent-tinted and semibold for visual hierarchy.
+    foreach ($lbl in @($lblSrc, $lblInc, $lblFmt, $lblOut, $lblLog)) {
+        $lbl.ForeColor = $clrAccentDk
+        $lbl.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 9, [System.Drawing.FontStyle]::Bold)
+    }
+
+    # Body field labels: consistent ink color.
+    foreach ($lbl in @($lblLabel, $lblFs, $lblSize)) { $lbl.ForeColor = $clrText }
+
+    # Terminal-style log pane: dark background, green mono text.
+    $txtLog.BackColor = [System.Drawing.Color]::FromArgb(24, 26, 32)
+    $txtLog.ForeColor = [System.Drawing.Color]::FromArgb(126, 224, 145)
+    $txtLog.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+
+    # Inputs: crisp single-line borders.
+    foreach ($tb in @($txtSrc, $txtOut, $txtLabel, $txtSize)) {
+        $tb.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+    }
 
     [void]$form.ShowDialog()
 }

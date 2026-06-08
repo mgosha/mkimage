@@ -40,6 +40,8 @@
 #   VM_SMP         guest vCPUs      (default: 4)
 #   NO_PROVISION=1 boot only; skip code sync + GUI auto-launch
 #   GUI=tk         force the Tkinter GUI instead of Dear PyGui
+#   GUI=ps1        launch the native PowerShell WinForms GUI (mkimage.ps1)
+#                  instead of the Python pyz GUI
 
 set -euo pipefail
 
@@ -125,11 +127,14 @@ provision_guest() {
     local guser="${GUEST_USER:-user}"
     local guest_dir="C:/Users/$guser/mkimage"
 
-    # Rebuild the zipapp so the guest always gets current source.
-    if [[ -f "$ROOT_DIR/build_pyz.py" ]]; then
-        ( cd "$ROOT_DIR" && python3 build_pyz.py ) >/dev/null 2>&1 || true
+    # The ps1 GUI ships the PowerShell helper as-is — no zipapp build needed.
+    if [[ "$gui" != ps1 ]]; then
+        # Rebuild the zipapp so the guest always gets current source.
+        if [[ -f "$ROOT_DIR/build_pyz.py" ]]; then
+            ( cd "$ROOT_DIR" && python3 build_pyz.py ) >/dev/null 2>&1 || true
+        fi
+        tlog "pyz built"
     fi
-    tlog "pyz built"
 
     echo "[provision] waiting for winvm SSH (this can take 30-90s while Windows boots)..." >&2
     local tries=0
@@ -142,11 +147,16 @@ provision_guest() {
         sleep 3
     done
     tlog "winvm SSH up"
-    echo "[provision] winvm is up — syncing mkimage.pyz" >&2
+    echo "[provision] winvm is up — syncing $([[ "$gui" == ps1 ]] && echo mkimage.ps1 || echo mkimage.pyz)" >&2
 
     ssh -o BatchMode=yes winvm "powershell -NoProfile -Command \"New-Item -ItemType Directory -Force -Path '$guest_dir' | Out-Null\"" 2>/dev/null || true
-    scp -o BatchMode=yes "$pyz" "winvm:$guest_dir/mkimage.pyz" >/dev/null 2>&1 || {
-        echo "[provision] scp of mkimage.pyz failed" >&2; return 1; }
+    if [[ "$gui" == ps1 ]]; then
+        scp -o BatchMode=yes "$ROOT_DIR/mkimage.ps1" "winvm:$guest_dir/mkimage.ps1" >/dev/null 2>&1 || {
+            echo "[provision] scp of mkimage.ps1 failed" >&2; return 1; }
+    else
+        scp -o BatchMode=yes "$pyz" "winvm:$guest_dir/mkimage.pyz" >/dev/null 2>&1 || {
+            echo "[provision] scp of mkimage.pyz failed" >&2; return 1; }
+    fi
 
     # Keep the guest display awake so a slow capture never lands on a blanked
     # (black) screen. Idempotent; cheap. (AC + DC, monitor + standby.)
@@ -178,9 +188,13 @@ provision_guest() {
     # quoting through ssh -> cmd -> powershell -> cmd is a minefield. A .cmd
     # file sidesteps all of it and makes the dpg/tk choice a content swap.
     local win_pyz="C:\\Users\\$guser\\mkimage\\mkimage.pyz"
+    local win_ps1="C:\\Users\\$guser\\mkimage\\mkimage.ps1"
     local win_cmd="C:\\Users\\$guser\\mkimage\\run-gui.cmd"
     local tmpcmd; tmpcmd="$(mktemp "${TMPDIR:-/tmp}/mkimage-gui.XXXXXX")"
-    if [[ "$gui" == tk ]]; then
+    if [[ "$gui" == ps1 ]]; then
+        # No args = WinForms GUI. Bypass execution policy for the unsigned script.
+        printf '@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -File "%s"\r\n' "$win_ps1" > "$tmpcmd"
+    elif [[ "$gui" == tk ]]; then
         printf '@echo off\r\npython -c "import sys; sys.path.insert(0, r'\''%s'\''); from mkimage.gui_tk import gui_main; gui_main()"\r\n' "$win_pyz" > "$tmpcmd"
     else
         printf '@echo off\r\npython "%s"\r\n' "$win_pyz" > "$tmpcmd"
