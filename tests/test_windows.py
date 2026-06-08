@@ -651,3 +651,11 @@ class TestPyzWindowsBuilds:
         assert "readme.txt" not in names, f"removed file still present: {names}"
         assert any(n.endswith("bootx64.efi") for n in names), \
             f"boot file lost after modify: {names}"
+
+    def test_verify_runs_on_windows(self) -> None:
+        """--verify must actually verify (pure-Python FAT read), not skip for
+        lack of mtools."""
+        out = self._pyz("--source", self.VM_SRC, "--target",
+                        "C:/test/r_vfy.img", "--mbr", "--verify")
+        assert "skipping verification" not in out and "mcopy not available" not in out, out
+        assert "Verification passed" in out, out
