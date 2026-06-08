@@ -45,6 +45,38 @@ def _parse_partition_spec(spec: str) -> PartitionSpec:
     )
 
 
+def _launch_native_gui() -> bool:
+    """Launch the native PowerShell WinForms GUI (mkimage.ps1, no -Action).
+
+    Windows-only. Returns True if the GUI was launched (and has since been
+    closed), False if it could not run — in which case the caller falls back
+    to the cross-platform Python GUI.
+    """
+    if not _is_windows():
+        print("--native-gui is only available on Windows.")
+        return False
+
+    from mkimage.platform import _find_ps1
+
+    ps1 = _find_ps1()
+    if not ps1:
+        print("Could not locate mkimage.ps1 for the native GUI.")
+        return False
+
+    import subprocess
+
+    try:
+        subprocess.run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+             "-File", ps1],
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"Failed to launch the native GUI: {exc}")
+        return False
+    return True
+
+
 def main() -> None:
     # Make output robust regardless of the platform's default stream encoding.
     # On Windows a piped stdout defaults to the legacy console code page
@@ -262,13 +294,23 @@ tips:
         help="Launch graphical interface (Dear PyGui or Tkinter)",
     )
     gen_group.add_argument(
+        "--native-gui", action="store_true",
+        help="On Windows, launch the native PowerShell WinForms GUI instead "
+             "of the cross-platform Dear PyGui interface",
+    )
+    gen_group.add_argument(
         "--check", action="store_true",
         help="Check tool availability and exit",
     )
 
     args = parser.parse_args()
 
-    if args.gui or len(sys.argv) == 1:
+    if args.native_gui:
+        if _launch_native_gui():
+            return
+        print("Native GUI unavailable; falling back to the Python GUI.")
+
+    if args.gui or args.native_gui or len(sys.argv) == 1:
         try:
             from mkimage.gui_dpg import gui_main
         except ImportError:
