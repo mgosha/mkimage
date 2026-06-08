@@ -293,6 +293,12 @@ tips:
         "--persistent", metavar="SIZE",
         help="Add persistent storage partition (e.g. 4G). Creates ext4 'casper-rw' partition.",
     )
+    usb_group.add_argument(
+        "--full-wipe", action="store_true",
+        help="Zero the entire disk before writing (scrubs stale signatures). "
+             "Slow on large drives (~minutes per 30GB). Default: fast clean "
+             "(partition table only).",
+    )
 
     # --- Modify ---
     mod_group = parser.add_argument_group("Image Modification")
@@ -402,6 +408,7 @@ tips:
         force=args.force,
         iso_hybrid=args.iso_hybrid,
         udf_bridge=args.udf_bridge,
+        full_wipe=args.full_wipe,
         partitions=partitions,
     )
 

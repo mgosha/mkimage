@@ -15,7 +15,8 @@ from mkimage.files import (
     collect_files,
 )
 from mkimage.partition import _check_root, _format_partition, _populate_partition
-from mkimage.platform import _is_macos, _is_windows, _resolve, _run, _which
+from mkimage.platform import (_find_ps1, _is_macos, _is_windows, _resolve,
+                              _run, _which)
 from mkimage.tools import ensure_tools
 from mkimage.usb.detect import MAX_USB_SIZE_GB, _list_removable_drives
 from mkimage.usb.safety import (
@@ -207,323 +208,85 @@ def write_usb(
         _write_usb_linux(cfg, image_path, img_size, img_resolved, target)
 
 
+def _run_ps1_windows(cfg: Config, action: str, args: list[str]) -> bool:
+    """Delegate a Windows USB operation to mkimage.ps1, the single native
+    Windows engine (diskpart + robocopy + fat32format, self-elevating).
+
+    Runs ``mkimage.ps1 -Action <action> ...`` non-elevated; the script
+    requests Administrator via UAC for its diskpart worker and relays progress
+    to stdout, which we stream to ``cfg.log``. Returns True on success.
+    """
+    ps1 = _find_ps1()
+    if not ps1:
+        cfg.log("[ERROR] Could not locate mkimage.ps1 (the Windows USB engine).")
+        return False
+    cmd = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
+           "-File", ps1, "-Action", action, "-SkipConfirm", *args]
+    cfg.log("  Requesting Administrator access...")
+    try:
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8", errors="replace", bufsize=1)
+    except OSError as exc:
+        cfg.log(f"[ERROR] Failed to launch mkimage.ps1: {exc}")
+        return False
+
+    saw_ok = False
+    saw_err = False
+    assert proc.stdout is not None
+    for raw in proc.stdout:
+        line = raw.rstrip()
+        if not line:
+            continue
+        cfg.log(line)
+        stripped = line.lstrip()
+        if "[OK]" in line or stripped.startswith("OK:"):
+            saw_ok = True
+        if "[ERROR]" in line or stripped.startswith("ERROR:"):
+            saw_err = True
+    rc = proc.wait()
+    return saw_ok and not saw_err and rc == 0
+
+
 def _write_usb_windows(
     cfg: Config, source_dir: str, includes: list[str],
     target: dict[str, str],
 ) -> None:
-    """Format USB as FAT32 via diskpart and copy files directly.
+    """Write files to a USB drive on Windows via mkimage.ps1.
 
-    Uses an elevated PowerShell subprocess for the diskpart + copy.
-    No raw disk write -- just format and file copy.
+    Delegates to the native PowerShell engine (``-Action WriteUsb``), which
+    formats with diskpart, copies with robocopy, and — for FAT32 on a drive
+    larger than 32GB — uses fat32format for a whole-disk volume. Both GPT and
+    MBR layouts route through here, so there is a single Windows USB engine.
     """
-    target_path = target["path"]  # \\.\PhysicalDriveN
-    disk_num = target_path.rsplit("PhysicalDrive", 1)[-1]
-    label_trim = cfg.label[:11]
+    disk_num = target["path"].rsplit("PhysicalDrive", 1)[-1]
 
-    # Determine filesystem from first partition spec
+    # Filesystem from the first partition spec (esp == FAT32).
     fs_type = "FAT32"
     if cfg.partitions:
         fs_map = {"fat32": "FAT32", "ntfs": "NTFS", "exfat": "exFAT",
                   "esp": "FAT32"}
         fs_type = fs_map.get(cfg.partitions[0].fs_type, "FAT32")
 
-    cfg.log(f"Formatting disk {disk_num} as {fs_type} and copying files...")
-
-    fd, progress_file = tempfile.mkstemp(suffix=".txt")
-    os.close(fd)
-    fd, script_file = tempfile.mkstemp(suffix=".ps1")
-    os.close(fd)
-
-    prg_esc = progress_file.replace("'", "''")
-
-    # Build source paths list for the elevated script
-    sources: list[str] = []
+    args = ["-DiskNumber", disk_num, "-Label", cfg.label[:11],
+            "-FileSystem", fs_type]
     if source_dir and os.path.isdir(source_dir):
-        sources.append(source_dir)
-    for inc in includes:
-        if inc and os.path.exists(inc):
-            sources.append(inc)
-    sources_str = ",".join(f"'{s.replace(chr(39), chr(39)*2)}'" for s in sources)
-    verbose_str = "$true" if cfg.verbose else "$false"
-    verify_str = "$true" if cfg.verify else "$false"
-    gpt_str = "$true" if cfg.gpt else "$false"
+        args += ["-SourceDir", source_dir]
+    inc = [i for i in includes if i and os.path.exists(i)]
+    if inc:
+        args += ["-Includes", ",".join(inc)]
+    if cfg.gpt:
+        args.append("-UseGpt")
+    if cfg.verify:
+        args.append("-Verify")
+    if cfg.verbose:
+        args.append("-Verbose")
+    if cfg.full_wipe:
+        args.append("-FullWipe")
 
-    ps_script = f"""
-# Force every Out-File below to UTF-8 so the Python side (which reads the
-# progress file as utf-8-sig) gets clean text. Windows PowerShell's default
-# Out-File encoding is UTF-16, which the reader would turn into mojibake.
-$PSDefaultParameterValues['Out-File:Encoding'] = 'utf8'
-try {{
-    "Preparing USB drive (disk {disk_num})... [native Windows, no WSL]" | Out-File -Append '{prg_esc}'
-
-    $useGpt = {gpt_str}
-    $partStyle = if ($useGpt) {{ "GPT" }} else {{ "MBR" }}
-
-    # Step 1: Take disk offline
-    "  Taking disk offline..." | Out-File -Append '{prg_esc}'
-    Set-Disk -Number {disk_num} -IsOffline $true -ErrorAction SilentlyContinue
-    Start-Sleep -Seconds 1
-
-    # Step 2: clean (separate session)
-    "  diskpart: clean..." | Out-File -Append '{prg_esc}'
-    ("select disk {disk_num}`r`nclean all" | diskpart 2>&1) | Out-Null
-    Start-Sleep -Seconds 1
-
-    # Step 3: convert (separate session, ignore failure if already correct type)
-    "  diskpart: convert $partStyle..." | Out-File -Append '{prg_esc}'
-    ("select disk {disk_num}`r`nconvert $($partStyle.ToLower())" | diskpart 2>&1) | Out-Null
-    Start-Sleep -Seconds 1
-
-    # Step 4: create + format (separate session)
-    $fsType = "{fs_type.lower()}"
-    if ($useGpt) {{
-        $dpCreate = @"
-select disk {disk_num}
-create partition primary
-select partition 1
-format fs=$fsType quick label={label_trim}
-"@
-    }} else {{
-        $dpCreate = @"
-select disk {disk_num}
-create partition primary
-active
-format fs=$fsType quick label={label_trim}
-"@
-    }}
-    "  diskpart: create + format..." | Out-File -Append '{prg_esc}'
-    $dpOut = ($dpCreate | diskpart 2>&1) | Out-String
-    $dpSummary = $dpOut.Trim() -replace '[\r\n]+', ' | '
-    "  diskpart: $dpSummary" | Out-File -Append '{prg_esc}'
-    if ($dpOut -notmatch "successfully formatted") {{
-        throw "diskpart failed. Output: $dpSummary"
-    }}
-
-    # Step 5: Disable automount, bring online
-    "  Disabling automount, bringing disk online..." | Out-File -Append '{prg_esc}'
-    "automount disable" | diskpart 2>&1 | Out-Null
-    Set-Disk -Number {disk_num} -IsOffline $false -ErrorAction SilentlyContinue
-    Set-Disk -Number {disk_num} -IsReadOnly $false -ErrorAction SilentlyContinue
-    Start-Sleep -Seconds 2
-
-    # Step 6: Get or assign drive letter
-    $part = Get-Partition -DiskNumber {disk_num} -ErrorAction SilentlyContinue |
-        Where-Object {{ $_.Type -ne 'Reserved' -and $_.Type -ne 'System' }} |
-        Select-Object -First 1
-    if (-not $part) {{ throw "No partition found after diskpart" }}
-
-    $driveLetter = $part.DriveLetter
-    if ($driveLetter -and $driveLetter -ne "`0") {{
-        "  Partition already has drive letter ${{driveLetter}}:" | Out-File -Append '{prg_esc}'
-    }} else {{
-        $used = @((Get-CimInstance Win32_LogicalDisk).DeviceID -replace ':', '')
-        $driveLetter = (69..90 | ForEach-Object {{ [char]$_ }} |
-            Where-Object {{ "$_" -notin $used }} | Select-Object -First 1)
-        if (-not $driveLetter) {{ throw "No free drive letters" }}
-        "  Add-PartitionAccessPath ${{driveLetter}}:\\" | Out-File -Append '{prg_esc}'
-        $part | Add-PartitionAccessPath -AccessPath "${{driveLetter}}:\\" -ErrorAction Stop
-    }}
-    Start-Sleep -Seconds 3
-
-    $destRoot = "${{driveLetter}}:\\"
-    if (Test-Path $destRoot) {{
-        "  Drive ${{driveLetter}}: accessible (FAT32)" | Out-File -Append '{prg_esc}'
-    }} else {{
-        throw "Drive ${{driveLetter}}: not accessible after mount"
-    }}
-
-    $sources = @({sources_str})
-    $verbose = {verbose_str}
-    $totalFiles = 0
-    foreach ($s in $sources) {{
-        if (-not $s) {{ continue }}
-        if (Test-Path $s -PathType Leaf) {{ $totalFiles++ }}
-        elseif (Test-Path $s -PathType Container) {{
-            $totalFiles += (Get-ChildItem -LiteralPath $s -Recurse -File).Count
-        }}
-    }}
-    "Copying $totalFiles files from $($sources.Count) source path(s) to $destRoot [robocopy]..." | Out-File -Append '{prg_esc}'
-    $totalCopied = 0
-    $totalFailed = 0
-
-    foreach ($src in $sources) {{
-        if (-not $src) {{ continue }}
-        if (Test-Path $src -PathType Leaf) {{
-            $fileName = Split-Path $src -Leaf
-            $srcDir = Split-Path $src -Parent
-            "  Copying file: $fileName" | Out-File -Append '{prg_esc}'
-            robocopy $srcDir $destRoot $fileName /NJH /NJS /NP 2>&1 | Out-Null
-            $rcExit = $LASTEXITCODE
-            if ($rcExit -lt 8) {{ $totalCopied++ }} else {{
-                "  WARN: robocopy exit $rcExit for $fileName" | Out-File -Append '{prg_esc}'
-                $totalFailed++
-            }}
-        }} elseif (Test-Path $src -PathType Container) {{
-            $srcNorm = $src.TrimEnd('\\', '/')
-            "Copying directory: $srcNorm -> $destRoot" | Out-File -Append '{prg_esc}'
-            if ($verbose) {{
-                $rcOut = robocopy $srcNorm $destRoot /S /E /NP /NJH /NJS 2>&1
-            }} else {{
-                $rcOut = robocopy $srcNorm $destRoot /S /E /NP /NFL /NDL /NJH /NJS 2>&1
-            }}
-            $rcExit = $LASTEXITCODE
-            $rcText = ($rcOut | Out-String).Trim()
-            if ($verbose -and $rcText) {{
-                "ROBOCOPY output:`r`n$rcText" | Out-File -Append '{prg_esc}'
-            }}
-            if ($rcExit -lt 8) {{
-                $fileCount = (Get-ChildItem -LiteralPath $srcNorm -Recurse -File).Count
-                $totalCopied += $fileCount
-                "Copied $fileCount files (robocopy exit $rcExit)" | Out-File -Append '{prg_esc}'
-            }} else {{
-                "robocopy FAILED for $srcNorm (exit $rcExit)`r`nOutput: $rcText" | Out-File -Append '{prg_esc}'
-                $totalFailed++
-            }}
-        }}
-    }}
-
-    if (Test-Path "${{driveLetter}}:\\") {{
-        $fileCount = (Get-ChildItem "${{driveLetter}}:\\" -Recurse -File -ErrorAction SilentlyContinue).Count
-        "  Drive ${{driveLetter}}: accessible, $fileCount files on disk" | Out-File -Append '{prg_esc}'
-    }} else {{
-        "  WARNING: Drive ${{driveLetter}}: not accessible" | Out-File -Append '{prg_esc}'
-    }}
-
-    # Verify files if requested
-    $verify = {verify_str}
-    $verifyFailed = 0
-    if ($verify -and $totalCopied -gt 0) {{
-        "Verifying $totalCopied files [Get-FileHash MD5]..." | Out-File -Append '{prg_esc}'
-        foreach ($src in $sources) {{
-            if (-not $src) {{ continue }}
-            if (Test-Path $src -PathType Leaf) {{
-                $fileName = Split-Path $src -Leaf
-                $destFile = Join-Path $destRoot $fileName
-                $srcHash = (Get-FileHash -LiteralPath $src -Algorithm MD5).Hash
-                if (Test-Path $destFile) {{
-                    $dstHash = (Get-FileHash -LiteralPath $destFile -Algorithm MD5).Hash
-                    if ($srcHash -ne $dstHash) {{
-                        "  VERIFY FAIL: $fileName (hash mismatch)" | Out-File -Append '{prg_esc}'
-                        $verifyFailed++
-                    }} else {{
-                        if ($verbose) {{ "  VERIFY OK: $fileName" | Out-File -Append '{prg_esc}' }}
-                    }}
-                }} else {{
-                    "  VERIFY FAIL: $fileName (missing on USB)" | Out-File -Append '{prg_esc}'
-                    $verifyFailed++
-                }}
-            }} elseif (Test-Path $src -PathType Container) {{
-                $srcNorm = $src.TrimEnd('\\', '/')
-                $files = Get-ChildItem -LiteralPath $srcNorm -Recurse -File
-                foreach ($f in $files) {{
-                    $relPath = $f.FullName.Substring($srcNorm.Length + 1)
-                    $destFile = Join-Path $destRoot $relPath
-                    if (Test-Path $destFile) {{
-                        $srcHash = (Get-FileHash -LiteralPath $f.FullName -Algorithm MD5).Hash
-                        $dstHash = (Get-FileHash -LiteralPath $destFile -Algorithm MD5).Hash
-                        if ($srcHash -ne $dstHash) {{
-                            "  VERIFY FAIL: $relPath (hash mismatch)" | Out-File -Append '{prg_esc}'
-                            $verifyFailed++
-                        }} else {{
-                            if ($verbose) {{ "  VERIFY OK: $relPath" | Out-File -Append '{prg_esc}' }}
-                        }}
-                    }} else {{
-                        "  VERIFY FAIL: $relPath (missing on USB)" | Out-File -Append '{prg_esc}'
-                        $verifyFailed++
-                    }}
-                }}
-            }}
-        }}
-        if ($verifyFailed -eq 0) {{
-            "Verification passed: all $totalCopied files match" | Out-File -Append '{prg_esc}'
-        }} else {{
-            "Verification FAILED: $verifyFailed file(s) differ" | Out-File -Append '{prg_esc}'
-        }}
-    }}
-
-    if ($totalFailed -gt 0 -or $verifyFailed -gt 0) {{
-        "OK:${{totalCopied}}:WARN:${{totalFailed}} copy errors, ${{verifyFailed}} verify errors" | Out-File -Append '{prg_esc}'
-    }} else {{
-        "OK:$totalCopied" | Out-File -Append '{prg_esc}'
-    }}
-}} catch {{
-    "ERROR: $_" | Out-File -Append '{prg_esc}'
-}}
-"""
-    with open(script_file, "w") as f:
-        f.write(ps_script)
-
-    try:
-        cfg.log("  Requesting Administrator access...")
-        proc = subprocess.Popen([
-            "powershell.exe", "-NoProfile", "-Command",
-            f"Start-Process -FilePath 'powershell.exe' "
-            f"-ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','{script_file}' "
-            f"-Verb RunAs -Wait"
-        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-
-        _poll_progress(proc, progress_file, cfg.log)
-
-    except Exception as exc:
-        cfg.log(f"[ERROR] {exc}")
-    finally:
-        for f in (script_file, progress_file):
-            try:
-                os.unlink(f)
-            except OSError:
-                pass
-
-
-def _poll_progress(proc: subprocess.Popen[bytes], progress_file: str,
-                   log: Callable[..., None]) -> None:
-    """Poll a progress file while a subprocess runs, logging new lines.
-
-    Reads the final status line after the process exits and logs the result.
-    """
-    import time
-    lines_read = 0
-    while proc.poll() is None:
-        time.sleep(0.3)
-        if os.path.exists(progress_file):
-            try:
-                with open(progress_file, "r", encoding="utf-8-sig", errors="replace") as pf:
-                    all_lines = pf.readlines()
-                if len(all_lines) > lines_read:
-                    for line in all_lines[lines_read:]:
-                        stripped = line.rstrip()
-                        if stripped:
-                            log(f"  {stripped}")
-                    lines_read = len(all_lines)
-            except OSError:
-                pass
-
-    # Read remaining lines after process exits
-    time.sleep(0.5)
-    final_msg = ""
-    if os.path.exists(progress_file):
-        try:
-            with open(progress_file, "r", encoding="utf-8", errors="replace") as pf:
-                all_lines = pf.readlines()
-            if len(all_lines) > lines_read:
-                for line in all_lines[lines_read:]:
-                    stripped = line.rstrip()
-                    if stripped:
-                        log(f"  {stripped}")
-            final_msg = all_lines[-1].strip() if all_lines else ""
-        except OSError:
-            pass
-
-    if final_msg.startswith("OK:"):
-        count = final_msg.split(":")[1]
-        log(f"[OK] Wrote {count} files to USB drive. "
-            f"You can safely remove it.")
-    elif final_msg.startswith("ERROR:"):
-        log(f"[ERROR] {final_msg}")
-    elif final_msg:
-        log(f"  {final_msg}")
-    else:
-        log("[ERROR] Write subprocess produced no output. UAC may have been denied.")
-
+    cfg.log(f"Writing disk {disk_num} as {fs_type} via mkimage.ps1...")
+    if not _run_ps1_windows(cfg, "WriteUsb", args):
+        cfg.log("[ERROR] USB write failed.")
 
 def _write_usb_linux(
     cfg: Config, image_path: str, img_size: int, img_resolved: str,
@@ -587,12 +350,14 @@ def _write_usb_from_dir(cfg: Config, files: dict[str, str],
     _unmount_device(cfg, device)
     _wipe_device(cfg, device)
 
-    if cfg.gpt:
+    if _is_windows():
+        # Single Windows engine: mkimage.ps1 handles both MBR and GPT
+        # (sgdisk-based _write_gpt_to_device is Linux/macOS only).
+        _write_usb_windows(cfg, source_dir, includes or [], drive)
+    elif cfg.gpt:
         # GPT direct to device
         cfg.log(f"Writing GPT layout to {device}...")
         _write_gpt_to_device(cfg, files, device)
-    elif _is_windows():
-        _write_usb_windows(cfg, source_dir, includes or [], drive)
     else:
         # Build temp FAT32 image, then dd
         with tempfile.NamedTemporaryFile(suffix=".img", delete=False) as tmp:
@@ -763,98 +528,25 @@ def _format_device_macos(cfg: Config, device: str) -> None:
 
 
 def _format_device_windows(cfg: Config, device: str) -> None:
-    """Format a USB device on Windows via PowerShell/diskpart."""
+    """Format a USB device on Windows via mkimage.ps1 (-Action Format)."""
     from mkimage import PartitionSpec
     partitions = cfg.partitions or [PartitionSpec("fat32", "0", cfg.label)]
     part = partitions[0]
     fs_type = part.fs_type if part.fs_type != "esp" else "fat32"
-    label = part.label[:11] if part.label else cfg.label[:11]
+    label = (part.label or cfg.label)[:11]
+    fs_map = {"fat32": "FAT32", "exfat": "exFAT", "ntfs": "NTFS"}
+    diskpart_fs = fs_map.get(fs_type, "FAT32")
+    disk_num = (device.rsplit("PhysicalDrive", 1)[-1]
+                if "PhysicalDrive" in device else device)
 
-    fs_map = {"fat32": "fat32", "exfat": "exfat", "ntfs": "ntfs"}
-    diskpart_fs = fs_map.get(fs_type, "fat32")
-
-    gpt_str = "$true" if cfg.gpt else "$false"
-    # Extract disk number from device path (\\.\PhysicalDriveN)
-    disk_num = device.rsplit("PhysicalDrive", 1)[-1] if "PhysicalDrive" in device else device
-
-    cfg.log(f"  Formatting disk {disk_num} as {diskpart_fs}...")
-    _write_usb_windows_format_only(cfg, disk_num, diskpart_fs, label, gpt_str)
-
-
-def _write_usb_windows_format_only(
-    cfg: Config, disk_num: str, fs: str, label: str, gpt_str: str,
-) -> None:
-    """Run a format-only diskpart script on Windows (no file copy)."""
-    fd, progress_file = tempfile.mkstemp(suffix=".txt")
-    os.close(fd)
-    fd, script_file = tempfile.mkstemp(suffix=".ps1")
-    os.close(fd)
-
-    prg_esc = progress_file.replace("'", "''")
-    ps_script = f"""
-# UTF-8 progress file (default Out-File is UTF-16, which the reader would
-# turn into mojibake -> "produced no output"). Matches _write_usb_windows.
-$PSDefaultParameterValues['Out-File:Encoding'] = 'utf8'
-try {{
-    $useGpt = {gpt_str}
-    $partStyle = if ($useGpt) {{ "GPT" }} else {{ "MBR" }}
-    "Formatting disk {disk_num} as {fs} ($partStyle)..." | Out-File -Append '{prg_esc}'
-    Set-Disk -Number {disk_num} -IsOffline $true -ErrorAction SilentlyContinue
-    Start-Sleep -Seconds 1
-    ("select disk {disk_num}`r`nclean" | diskpart 2>&1) | Out-Null
-    Start-Sleep -Seconds 1
-    ("select disk {disk_num}`r`nconvert $($partStyle.ToLower())" | diskpart 2>&1) | Out-Null
-    Start-Sleep -Seconds 1
-    $dpCreate = @"
-select disk {disk_num}
-create partition primary
-format fs={fs} quick label={label}
-"@
-    ($dpCreate | diskpart 2>&1) | Out-Null
-    "automount disable" | diskpart 2>&1 | Out-Null
-    Set-Disk -Number {disk_num} -IsOffline $false -ErrorAction SilentlyContinue
-    Start-Sleep -Seconds 2
-    "automount enable" | diskpart 2>&1 | Out-Null
-    "OK" | Out-File -Append '{prg_esc}'
-}} catch {{
-    "ERROR: $_" | Out-File -Append '{prg_esc}'
-}}
-"""
-    with open(script_file, "w") as f:
-        f.write(ps_script)
-
-    try:
-        proc = subprocess.Popen([
-            "powershell.exe", "-NoProfile", "-Command",
-            f"Start-Process -FilePath 'powershell.exe' "
-            f"-ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','{script_file}' "
-            f"-Verb RunAs -Wait"
-        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        proc.wait()
-
-        final_msg = ""
-        if os.path.exists(progress_file):
-            with open(progress_file, "r", encoding="utf-8", errors="replace") as pf:
-                lines = pf.readlines()
-            for line in lines:
-                stripped = line.rstrip()
-                if stripped:
-                    cfg.log(f"  {stripped}")
-            final_msg = lines[-1].strip() if lines else ""
-
-        if final_msg.startswith("OK"):
-            cfg.log(f"  [OK] Disk {disk_num} formatted.")
-        elif final_msg.startswith("ERROR"):
-            raise RuntimeError(final_msg)
-        else:
-            raise RuntimeError("Format subprocess produced no output.")
-    finally:
-        for path in (script_file, progress_file):
-            try:
-                os.unlink(path)
-            except OSError:
-                pass
-
+    args = ["-DiskNumber", disk_num, "-Label", label, "-FileSystem", diskpart_fs]
+    if cfg.gpt:
+        args.append("-UseGpt")
+    if cfg.full_wipe:
+        args.append("-FullWipe")
+    cfg.log(f"  Formatting disk {disk_num} as {diskpart_fs} via mkimage.ps1...")
+    if not _run_ps1_windows(cfg, "Format", args):
+        raise RuntimeError(f"Format failed for disk {disk_num}")
 
 def _partition_device_fmt(device: str) -> str:
     """Determine partition device naming: sdX1, sdXp1, or diskNs1 (macOS)."""

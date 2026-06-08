@@ -67,9 +67,13 @@ mkimage.ps1 (Windows-native, PowerShell, independent)
 mkimage.bat (launcher for mkimage.ps1)
 ```
 
-mkimage.py and mkimage.ps1 are independent implementations — they
-share no code. mkimage.py is the primary tool; mkimage.ps1 exists
-for Windows environments without WSL.
+mkimage.py and mkimage.ps1 are independent implementations for image
+and ISO building — they share no build code. The one exception is the
+Windows USB write/format path: `mkimage/usb/write.py` DELEGATES to
+`mkimage.ps1 -Action WriteUsb|Format` (via `_run_ps1_windows`), so there
+is a single Windows USB engine (diskpart + robocopy + fat32format) rather
+than two parallel diskpart scripts. mkimage.py is the primary tool;
+mkimage.ps1 is the Windows engine and standalone GUI/CLI.
 
 ## CLI Interface
 

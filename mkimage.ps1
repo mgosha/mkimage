@@ -18,6 +18,7 @@ param(
     [switch]$Verify,
     [switch]$Udf,
     [switch]$Hybrid,
+    [switch]$FullWipe,
     [string]$ProgressFile = '',
     [string]$BootImage = ''
 )
@@ -54,7 +55,7 @@ $MAX_USB_SIZE_GB = 2048
 # drive larger than 32GB; falls back to a 32GB-capped partition if unavailable.
 # Override the source with MKIMAGE_FAT32FORMAT_URL (point at an approved mirror)
 # and verify it with MKIMAGE_FAT32FORMAT_SHA256.
-$FAT32FORMAT_URL = "http://www.ridgecrop.co.uk/download/fat32format.zip"
+$FAT32FORMAT_URL = "http://ridgecrop.co.uk/download/fat32format.zip"
 
 # ---------------------------------------------------------------------------
 # Helper functions
@@ -1009,6 +1010,7 @@ function Write-UsbDrive {
         [switch]$UseGpt,
         [switch]$Verbose,
         [switch]$Verify,
+        [switch]$FullWipe,
         [switch]$SkipConfirm,
         [string]$CliProgressFile = '',
         $LogBox = $null
@@ -1102,13 +1104,22 @@ try {
     Set-Disk -Number __DISKNUM__ -IsOffline $true -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 1
 
-    # Step 1a: clean the disk (clean all wipes entire disk including
-    # stale GPT backup headers and filesystem signatures)
+    # Step 1a: clean the disk. Plain "clean" wipes the partition table in
+    # seconds; the subsequent convert + create writes fresh tables. "clean
+    # all" (FullWipe) zeros EVERY sector to scrub stale GPT backup headers /
+    # filesystem signatures, but that runs at disk write speed (~tens of
+    # minutes on a large USB), so it is opt-in via -FullWipe, not the default.
+    $fullWipe = __FULLWIPE__
+    $cleanVerb = if ($fullWipe) { "clean all" } else { "clean" }
     $dpClean = @"
 select disk __DISKNUM__
-clean all
+$cleanVerb
 "@
-    "  diskpart: clean all (wiping signatures)..." | Out-File -Append __PROGRESS__
+    if ($fullWipe) {
+        "  diskpart: clean all (zeroing entire disk - this can take many minutes on a large drive)..." | Out-File -Append __PROGRESS__
+    } else {
+        "  diskpart: clean (wiping partition table)..." | Out-File -Append __PROGRESS__
+    }
     ($dpClean | diskpart 2>&1) | Out-Null
     Start-Sleep -Seconds 2
 
@@ -1199,7 +1210,10 @@ $fmtLine
     # Whole-disk FAT32: fat32format the (still-raw) mounted volume in place.
     if ($useF32fmt) {
         "  fat32format ${driveLetter}: (whole-disk FAT32)..." | Out-File -Append __PROGRESS__
-        $f32out = (& $fat32fmt -y "${driveLetter}:" 2>&1) | Out-String
+        # Ridgecrop fat32format (v1.07) has no auto-confirm flag; it prompts
+        # "...(y/n)" on stdin. Pipe "y" to confirm (harmless on builds that
+        # don't prompt). Older code passed -y, which this build rejects.
+        $f32out = ('y' | & $fat32fmt "${driveLetter}:" 2>&1) | Out-String
         "  fat32format: $($f32out.Trim() -replace '[\r\n]+', ' | ')" | Out-File -Append __PROGRESS__
         Start-Sleep -Seconds 2
         $vol = Get-Volume -DriveLetter $driveLetter -ErrorAction SilentlyContinue
@@ -1348,6 +1362,7 @@ $fmtLine
         if (-not $fat32fmt) { $fat32fmt = "" }
     }
     $writeScript = $writeScript.Replace('__FAT32FMT__', ($fat32fmt -replace '"', ''))
+    $writeScript = $writeScript.Replace('__FULLWIPE__', "$(if ($FullWipe) { '$true' } else { '$false' })")
     $writeScript = $writeScript.Replace('__PROGRESS__', "'$($progressFile -replace "'","''")'")
     $writeScript = $writeScript.Replace('__DISKNUM__', "$diskNum")
     $writeScript = $writeScript.Replace('__LABEL__', $labelTrim)
@@ -1881,6 +1896,10 @@ function Show-MainForm {
     $chkFmtGpt = New-Object System.Windows.Forms.CheckBox
     $chkFmtGpt.Text = "GPT"; $chkFmtGpt.Location = New-Object System.Drawing.Point(360, 23); $chkFmtGpt.AutoSize = $true
     $grpFmt.Controls.Add($chkFmtGpt)
+    $chkFmtFullWipe = New-Object System.Windows.Forms.CheckBox
+    $chkFmtFullWipe.Text = "Full wipe (zero entire disk - slow on large drives)"
+    $chkFmtFullWipe.Location = New-Object System.Drawing.Point(12, 50); $chkFmtFullWipe.AutoSize = $true
+    $grpFmt.Controls.Add($chkFmtFullWipe)
     $btnFmt = New-Object System.Windows.Forms.Button
     $btnFmt.Text = "Format"; $btnFmt.Location = New-Object System.Drawing.Point(458, 20); $btnFmt.Size = New-Object System.Drawing.Size(95, 27)
     $btnFmt.Add_Click({
@@ -1889,7 +1908,7 @@ function Show-MainForm {
         $empty = Join-Path $env:TEMP ("mkimage-empty-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
         New-Item -ItemType Directory -Force -Path $empty | Out-Null
         $txtLog.AppendText("`r`n--- Format $($drv.Path) ($($cmbFmtFs.SelectedItem)) ---`r`n")
-        Write-UsbDrive -TargetDrive $drv -SourceDir $empty -Label $txtFmtLabel.Text -FileSystem $cmbFmtFs.SelectedItem -UseGpt:$chkFmtGpt.Checked -LogBox $txtLog
+        Write-UsbDrive -TargetDrive $drv -SourceDir $empty -Label $txtFmtLabel.Text -FileSystem $cmbFmtFs.SelectedItem -UseGpt:$chkFmtGpt.Checked -FullWipe:$chkFmtFullWipe.Checked -LogBox $txtLog
         Remove-Item $empty -Recurse -Force -ErrorAction SilentlyContinue
     })
     $grpFmt.Controls.Add($btnFmt)
@@ -2312,6 +2331,14 @@ function Show-MainForm {
     $chkForce.AutoSize = $true
     $grpDest.Controls.Add($chkForce)
 
+    $chkFullWipe = New-Object System.Windows.Forms.CheckBox
+    $chkFullWipe.Text = "Full wipe"
+    $chkFullWipe.Location = New-Object System.Drawing.Point(396, 84)
+    $chkFullWipe.AutoSize = $true
+    $tipFullWipe = New-Object System.Windows.Forms.ToolTip
+    $tipFullWipe.SetToolTip($chkFullWipe, "Zero the entire disk before writing (diskpart clean all). Scrubs stale signatures but is slow on large drives (~minutes per 30GB). Off = fast clean (partition table only).")
+    $grpDest.Controls.Add($chkFullWipe)
+
     # Destination file widgets
     $txtOut = New-Object System.Windows.Forms.TextBox
     $txtOut.Location = New-Object System.Drawing.Point(14, 114)
@@ -2547,6 +2574,7 @@ function Show-MainForm {
             if ($chkVerbose.Checked) { $optSwitches['Verbose'] = $true }
             if ($chkVerify.Checked) { $optSwitches['Verify'] = $true }
             if ($chkGpt.Checked) { $optSwitches['UseGpt'] = $true }
+            if ($chkFullWipe.Checked) { $optSwitches['FullWipe'] = $true }
             if ($force) { $optSwitches['SkipConfirm'] = $true }
             $fs = $cmbFs.SelectedItem
             Write-UsbDrive -TargetDrive $targetDrive -SourceDir $src `
@@ -2696,8 +2724,8 @@ if ($Action) {
                 Path      = "\\.\PhysicalDrive$DiskNumber"
             }
             Write-UsbDrive -TargetDrive $drive -SourceDir $SourceDir `
-                -Includes $Includes -Label $Label `
-                -UseGpt:$UseGpt -Verbose:$Verbose -Verify:$Verify `
+                -Includes $Includes -Label $Label -FileSystem $FileSystem `
+                -UseGpt:$UseGpt -Verbose:$Verbose -Verify:$Verify -FullWipe:$FullWipe `
                 -SkipConfirm:$SkipConfirm -CliProgressFile $ProgressFile
         }
         'CreateImg' {
@@ -2781,7 +2809,7 @@ if ($Action) {
                 SizeBytes = $d.Size; Model = $d.FriendlyName; Path = "\\.\PhysicalDrive$DiskNumber"
             }
             Write-UsbDrive -TargetDrive $drive -SourceDir $empty -Label $Label -FileSystem $FileSystem `
-                -UseGpt:$UseGpt -Verbose:$Verbose -SkipConfirm:$SkipConfirm -CliProgressFile $ProgressFile
+                -UseGpt:$UseGpt -Verbose:$Verbose -FullWipe:$FullWipe -SkipConfirm:$SkipConfirm -CliProgressFile $ProgressFile
             Remove-Item $empty -Recurse -Force -ErrorAction SilentlyContinue
         }
         'ListImage' {

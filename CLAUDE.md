@@ -78,6 +78,9 @@ mkimage.py --source <dir> --target /dev/sdb
 # Write existing image to USB
 mkimage.py --source output.img --target usb
 
+# Write to USB, zeroing the whole disk first (slow; scrubs stale signatures)
+mkimage.py --source <dir> --target usb --full-wipe
+
 # Verify after build (SHA256 comparison)
 mkimage.py --source <dir> --target output.img --verify
 
@@ -144,7 +147,12 @@ mkimage.py <dir> -o output.img
 - Cross-platform: use `platform.system()` checks, not hardcoded paths
 - Windows: calls mkimage.ps1 natively for all operations (no WSL)
 - Linux/macOS: uses native shell commands via `_run()`
-- mkimage.ps1 is independent — shares no code with mkimage.py
+- mkimage.ps1 is the single Windows USB engine: on Windows the Python USB
+  write/format paths (`usb/write.py`) DELEGATE to `mkimage.ps1 -Action
+  WriteUsb|Format` (via `_run_ps1_windows`), so diskpart/robocopy/fat32format
+  logic lives in ONE place. Image/ISO building is still implemented
+  independently in each (they share no build code). Don't reintroduce a
+  parallel Windows USB diskpart script in Python.
 
 ## Key Constraints
 
@@ -165,3 +173,13 @@ mkimage.py <dir> -o output.img
 - Supported filesystems: FAT32, exFAT, NTFS, ext4, UDF
   (availability varies by platform — use --check to verify)
 - UEFI:NTFS: downloaded on demand from GitHub (GPL-2.0, not shipped)
+- FAT32 >32GB (Windows): Windows' formatter caps FAT32 at 32GB. mkimage.ps1
+  uses fat32format.exe (Ridgecrop, downloaded on demand from
+  http://ridgecrop.co.uk — note: no `www.`) for a whole-disk FAT32 volume;
+  if unavailable it caps the partition at 32GB. fat32format v1.07 has no
+  auto-confirm flag — pipe "y" to stdin, do NOT pass -y. Not shipped (GPL,
+  redistribution unclear). Override via MKIMAGE_FAT32FORMAT_URL / _SHA256.
+- Disk wipe: default is fast `diskpart clean` (partition table only).
+  `--full-wipe` / -FullWipe / the GUI "Full wipe" checkbox uses `clean all`
+  (zeros every sector ~25MB/s → minutes on large drives) to scrub stale
+  signatures. Opt-in, never the default.

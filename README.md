@@ -67,6 +67,9 @@ mkimage.pyz --source <dir> --target usb
 # Write an existing image to USB
 mkimage.pyz --source output.img --target usb
 
+# Write to USB, zeroing the entire disk first (slow; scrubs stale signatures)
+mkimage.pyz --source <dir> --target usb --full-wipe
+
 # Verify after writing (SHA256)
 mkimage.pyz --source <dir> --target output.img --verify
 

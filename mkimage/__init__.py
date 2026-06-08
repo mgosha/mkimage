@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable
 
-__version__ = "1.1.1"
+__version__ = "1.1.2"
 
 
 # ---------------------------------------------------------------------------
@@ -37,6 +37,7 @@ class Config:
     log: Callable[..., None] = field(default=print)
     iso_hybrid: bool = False
     udf_bridge: bool = False
+    full_wipe: bool = False    # zero the whole disk before writing (slow); Windows clean all
     partitions: list[PartitionSpec] = field(default_factory=list)
 
 
