@@ -27,6 +27,10 @@ mkimage is a Python package (~3200 lines) distributed as a 57KB zipapp.
 - Bad block detection: --check-usb destructive write/read test
 - Persistent storage: --persistent adds ext4 casper-rw for live USBs
 - UEFI:NTFS: auto-download GPL-2.0 driver for NTFS boot partitions
+- fat32format (Ridgecrop, GPL): auto-download for whole-disk FAT32 >32GB on
+  Windows; 32GB-cap fallback. Optional third-party tool licensing is recorded
+  in docs/THIRD_PARTY.md (both download-on-demand, not bundled in the public
+  build; bundling permitted for an open-source app if source+GPL text ship).
 - GUIs: native PowerShell WinForms GUI is the default on Windows; Dear
   PyGui (modern, auto-installed) + Tkinter fallback elsewhere. Both share
   the same tabbed layout/widget names; --native-gui / --python-gui override.

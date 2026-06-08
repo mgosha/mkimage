@@ -177,8 +177,10 @@ mkimage.py <dir> -o output.img
   uses fat32format.exe (Ridgecrop, downloaded on demand from
   http://ridgecrop.co.uk — note: no `www.`) for a whole-disk FAT32 volume;
   if unavailable it caps the partition at 32GB. fat32format v1.07 has no
-  auto-confirm flag — pipe "y" to stdin, do NOT pass -y. Not shipped (GPL,
-  redistribution unclear). Override via MKIMAGE_FAT32FORMAT_URL / _SHA256.
+  auto-confirm flag — pipe "y" to stdin, do NOT pass -y. GPL (redistribution
+  IS allowed for open-source apps); not bundled in the public build to keep
+  the MIT release GPL-free — see docs/THIRD_PARTY.md before bundling. Override
+  via MKIMAGE_FAT32FORMAT_URL / _SHA256.
 - Disk wipe: default is fast `diskpart clean` (partition table only).
   `--full-wipe` / -FullWipe / the GUI "Full wipe" checkbox uses `clean all`
   (zeros every sector ~25MB/s → minutes on large drives) to scrub stale

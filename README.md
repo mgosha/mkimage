@@ -112,7 +112,13 @@ optional runtime dependency.
 - USB writes always run safety checks and require confirmation (or `--force`).
 - **UEFI:NTFS** support (for booting NTFS USBs) is downloaded on demand from
   its upstream project (GPL-2.0); it is not bundled with mkimage.
+- **fat32format** (Ridgecrop, GPL) is used on Windows for whole-disk FAT32 on
+  drives >32GB; downloaded on demand, not bundled. Falls back to a 32GB cap if
+  unavailable.
+- Optional, externally licensed tools and their terms are documented in
+  [docs/THIRD_PARTY.md](docs/THIRD_PARTY.md).
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE). Third-party tool licensing: see
+[docs/THIRD_PARTY.md](docs/THIRD_PARTY.md).
