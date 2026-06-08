@@ -1229,14 +1229,28 @@ function Show-MainForm {
 
     $y = 12
 
-    # Source directory
+    # --- Source: a folder/image file, or a whole USB drive to clone ---------
     $lblSrc = New-Object System.Windows.Forms.Label
-    $lblSrc.Text = "Source Directory:"
+    $lblSrc.Text = "Source:"
     $lblSrc.Location = New-Object System.Drawing.Point(15, $y)
     $lblSrc.AutoSize = $true
     $tabBuild.Controls.Add($lblSrc)
 
-    $y += 22
+    $rbSrcFile = New-Object System.Windows.Forms.RadioButton
+    $rbSrcFile.Text = "Folder / image file"
+    $rbSrcFile.Location = New-Object System.Drawing.Point(80, ($y - 3))
+    $rbSrcFile.AutoSize = $true
+    $rbSrcFile.Checked = $true
+    $tabBuild.Controls.Add($rbSrcFile)
+
+    $rbSrcUsb = New-Object System.Windows.Forms.RadioButton
+    $rbSrcUsb.Text = "USB drive (clone)"
+    $rbSrcUsb.Location = New-Object System.Drawing.Point(225, ($y - 3))
+    $rbSrcUsb.AutoSize = $true
+    $tabBuild.Controls.Add($rbSrcUsb)
+
+    $y += 26
+    # File-mode source: a directory, .img, or .iso path.
     $txtSrc = New-Object System.Windows.Forms.TextBox
     $txtSrc.Location = New-Object System.Drawing.Point(15, $y)
     $txtSrc.Size = New-Object System.Drawing.Size(470, 23)
@@ -1247,11 +1261,48 @@ function Show-MainForm {
     $btnSrc.Location = New-Object System.Drawing.Point(495, ($y - 1))
     $btnSrc.Size = New-Object System.Drawing.Size(90, 25)
     $btnSrc.Add_Click({
-        $fbd = New-Object System.Windows.Forms.FolderBrowserDialog
-        $fbd.Description = "Select Source Directory"
-        if ($fbd.ShowDialog() -eq "OK") { $txtSrc.Text = $fbd.SelectedPath }
+        # Folder picker by default; hold Shift while clicking to pick an image.
+        if ([System.Windows.Forms.Control]::ModifierKeys -band [System.Windows.Forms.Keys]::Shift) {
+            $ofd = New-Object System.Windows.Forms.OpenFileDialog
+            $ofd.Title = "Select Source Image (.img/.iso)"
+            $ofd.Filter = "Disk images (*.img;*.iso)|*.img;*.iso|All Files (*.*)|*.*"
+            if ($ofd.ShowDialog() -eq "OK") { $txtSrc.Text = $ofd.FileName }
+        } else {
+            $fbd = New-Object System.Windows.Forms.FolderBrowserDialog
+            $fbd.Description = "Select Source Directory (Shift+Browse to pick an image file)"
+            if ($fbd.ShowDialog() -eq "OK") { $txtSrc.Text = $fbd.SelectedPath }
+        }
     })
     $tabBuild.Controls.Add($btnSrc)
+
+    # USB-mode source: pick a drive to clone FROM (hidden until selected).
+    $cmbSrcDrive = New-Object System.Windows.Forms.ComboBox
+    $cmbSrcDrive.Location = New-Object System.Drawing.Point(15, $y)
+    $cmbSrcDrive.Size = New-Object System.Drawing.Size(470, 23)
+    $cmbSrcDrive.DropDownStyle = "DropDownList"
+    $cmbSrcDrive.Font = New-Object System.Drawing.Font("Consolas", 9)
+    $cmbSrcDrive.Visible = $false
+    $tabBuild.Controls.Add($cmbSrcDrive)
+
+    $btnSrcRefresh = New-Object System.Windows.Forms.Button
+    $btnSrcRefresh.Text = "Refresh"
+    $btnSrcRefresh.Location = New-Object System.Drawing.Point(495, ($y - 1))
+    $btnSrcRefresh.Size = New-Object System.Drawing.Size(90, 25)
+    $btnSrcRefresh.Visible = $false
+    $btnSrcRefresh.Add_Click({
+        $cmbSrcDrive.Items.Clear()
+        $script:srcDrives = Get-UsbDrives
+        if ($script:srcDrives.Count -eq 0) {
+            $cmbSrcDrive.Items.Add("(no USB drives found)")
+        } else {
+            foreach ($d in $script:srcDrives) {
+                $cmbSrcDrive.Items.Add("$($d.Path)  $($d.Size)  $($d.Model)")
+            }
+        }
+        if ($cmbSrcDrive.Items.Count -gt 0) { $cmbSrcDrive.SelectedIndex = 0 }
+    })
+    $tabBuild.Controls.Add($btnSrcRefresh)
+    $script:srcDrives = @()
 
     # Extra includes
     $y += 35
@@ -1364,28 +1415,34 @@ function Show-MainForm {
 
     $rbIso.Add_CheckedChanged({ $txtSize.Enabled = -not $rbIso.Checked })
 
-    # Write to USB toggle
+    # Build options + target toggle (one row)
     $chkVerbose = New-Object System.Windows.Forms.CheckBox
     $chkVerbose.Text = "Verbose"
-    $chkVerbose.Location = New-Object System.Drawing.Point(200, ($y - 2))
+    $chkVerbose.Location = New-Object System.Drawing.Point(195, ($y - 2))
     $chkVerbose.AutoSize = $true
     $tabBuild.Controls.Add($chkVerbose)
 
     $chkVerify = New-Object System.Windows.Forms.CheckBox
     $chkVerify.Text = "Verify"
-    $chkVerify.Location = New-Object System.Drawing.Point(280, ($y - 2))
+    $chkVerify.Location = New-Object System.Drawing.Point(268, ($y - 2))
     $chkVerify.AutoSize = $true
     $tabBuild.Controls.Add($chkVerify)
 
     $chkGpt = New-Object System.Windows.Forms.CheckBox
     $chkGpt.Text = "GPT"
-    $chkGpt.Location = New-Object System.Drawing.Point(345, ($y - 2))
+    $chkGpt.Location = New-Object System.Drawing.Point(328, ($y - 2))
     $chkGpt.AutoSize = $true
     $tabBuild.Controls.Add($chkGpt)
 
+    $chkForce = New-Object System.Windows.Forms.CheckBox
+    $chkForce.Text = "Force"
+    $chkForce.Location = New-Object System.Drawing.Point(378, ($y - 2))
+    $chkForce.AutoSize = $true
+    $tabBuild.Controls.Add($chkForce)
+
     $chkUsb = New-Object System.Windows.Forms.CheckBox
     $chkUsb.Text = "Write to USB"
-    $chkUsb.Location = New-Object System.Drawing.Point(405, ($y - 2))
+    $chkUsb.Location = New-Object System.Drawing.Point(440, ($y - 2))
     $chkUsb.AutoSize = $true
     $tabBuild.Controls.Add($chkUsb)
 
@@ -1452,23 +1509,14 @@ function Show-MainForm {
 
     $script:usbDrives = @()
 
-    # Toggle handler
+    # Target toggle: show file widgets vs USB-drive widgets. The action-button
+    # label is updated centrally by $setActionLabel (wired after $btnCreate).
     $chkUsb.Add_CheckedChanged({
-        if ($chkUsb.Checked) {
-            $txtOut.Visible = $false
-            $btnOut.Visible = $false
-            $cmbDrive.Visible = $true
-            $btnRefresh.Visible = $true
-            $btnCreate.Text = "Write to Target"
-            # Auto-refresh drives
-            $btnRefresh.PerformClick()
-        } else {
-            $txtOut.Visible = $true
-            $btnOut.Visible = $true
-            $cmbDrive.Visible = $false
-            $btnRefresh.Visible = $false
-            $btnCreate.Text = "Create Image"
-        }
+        $txtOut.Visible = -not $chkUsb.Checked
+        $btnOut.Visible = -not $chkUsb.Checked
+        $cmbDrive.Visible = $chkUsb.Checked
+        $btnRefresh.Visible = $chkUsb.Checked
+        if ($chkUsb.Checked) { $btnRefresh.PerformClick() }
     })
 
     # Action button (single)
@@ -1478,6 +1526,34 @@ function Show-MainForm {
     $btnCreate.Location = New-Object System.Drawing.Point(220, $y)
     $btnCreate.Size = New-Object System.Drawing.Size(160, 30)
     $tabBuild.Controls.Add($btnCreate)
+
+    # Action-button label reflects the source x target combination, matching
+    # the Python GUI: Create Image / Write to USB / Clone to Image / Clone to USB.
+    $setActionLabel = {
+        $btnCreate.Text = if ($rbSrcUsb.Checked) {
+            if ($chkUsb.Checked) { "Clone to USB" } else { "Clone to Image" }
+        } else {
+            if ($chkUsb.Checked) { "Write to USB" } else { "Create Image" }
+        }
+    }
+    # Source-mode toggle: swap file<->USB-drive source widgets, disable the
+    # build-only controls when cloning a whole device, and relabel the button.
+    $rbSrcUsb.Add_CheckedChanged({
+        $usbSrc = $rbSrcUsb.Checked
+        $txtSrc.Visible = -not $usbSrc
+        $btnSrc.Visible = -not $usbSrc
+        $cmbSrcDrive.Visible = $usbSrc
+        $btnSrcRefresh.Visible = $usbSrc
+        foreach ($c in @($lblInc, $btnAddFile, $btnAddDir, $btnClear, $lstInc,
+                         $lblFmt, $rbImg, $rbIso, $lblLabel, $txtLabel,
+                         $lblFs, $cmbFs, $lblSize, $txtSize, $chkGpt)) {
+            $c.Enabled = -not $usbSrc
+        }
+        if ($usbSrc) { $btnSrcRefresh.PerformClick() }
+        & $setActionLabel
+    })
+    $chkUsb.Add_CheckedChanged($setActionLabel)
+    & $setActionLabel
 
     # Log tab content (fills the Log tab page)
     $lblLog = New-Object System.Windows.Forms.Label
@@ -1498,36 +1574,45 @@ function Show-MainForm {
 
     # No external dependencies — all native Windows
 
-    # Event handler
+    # Event handler -- dispatches build / write / clone from source x target.
     $btnCreate.Add_Click({
-        $src = $txtSrc.Text.Trim()
-        if (-not $src) {
-            [System.Windows.Forms.MessageBox]::Show("Source directory is required.", "Error", "OK", "Error")
-            return
-        }
+        $usbSrc = $rbSrcUsb.Checked
+        $toUsb  = $chkUsb.Checked
+        $force  = $chkForce.Checked
 
-        $toUsb = $chkUsb.Checked
-
+        # Resolve + validate the target
+        $targetDrive = $null; $out = ""
         if ($toUsb) {
-            # Validate USB drive selection
             if ($script:usbDrives.Count -eq 0 -or $cmbDrive.SelectedIndex -lt 0) {
-                [System.Windows.Forms.MessageBox]::Show(
-                    "No USB drive selected.`nClick Refresh if no drives appear.",
-                    "Error", "OK", "Error")
-                return
+                [System.Windows.Forms.MessageBox]::Show("No target USB drive selected.`nClick Refresh if no drives appear.", "Error", "OK", "Error"); return
             }
             $targetDrive = $script:usbDrives[$cmbDrive.SelectedIndex]
         } else {
             $out = $txtOut.Text.Trim()
-            if (-not $out) {
-                [System.Windows.Forms.MessageBox]::Show("Output file is required.", "Error", "OK", "Error")
-                return
-            }
+            if (-not $out) { [System.Windows.Forms.MessageBox]::Show("Output file is required.", "Error", "OK", "Error"); return }
         }
+
+        # Resolve + validate the source
+        $srcDrive = $null; $src = ""
+        if ($usbSrc) {
+            if ($script:srcDrives.Count -eq 0 -or $cmbSrcDrive.SelectedIndex -lt 0) {
+                [System.Windows.Forms.MessageBox]::Show("No source USB drive selected.`nClick Refresh if no drives appear.", "Error", "OK", "Error"); return
+            }
+            $srcDrive = $script:srcDrives[$cmbSrcDrive.SelectedIndex]
+            if ($targetDrive -and $srcDrive.Number -eq $targetDrive.Number) {
+                [System.Windows.Forms.MessageBox]::Show("Source and target are the same drive.", "Error", "OK", "Error"); return
+            }
+        } else {
+            $src = $txtSrc.Text.Trim()
+            if (-not $src) { [System.Windows.Forms.MessageBox]::Show("Source is required.", "Error", "OK", "Error"); return }
+            if (-not (Test-Path $src)) { [System.Windows.Forms.MessageBox]::Show("Source not found: $src", "Error", "OK", "Error"); return }
+        }
+
+        # A file source that is an existing disk image -> raw write/clone.
+        $srcIsImage = (-not $usbSrc) -and (Test-Path $src -PathType Leaf) -and ($src -match '\.(img|iso)$')
 
         $includes = @()
         foreach ($item in $lstInc.Items) { $includes += $item.ToString() }
-
         $label = if ($txtLabel.Text.Trim()) { $txtLabel.Text.Trim() } else { "UEFITOOLS" }
         $sizeMB = if ($txtSize.Text -match '^\d+$') { [int]$txtSize.Text } else { 32 }
 
@@ -1536,30 +1621,41 @@ function Show-MainForm {
         $progress.MarqueeAnimationSpeed = 30
         $lblStatus.Text = "Working..."
         $txtLog.AppendText("`r`n--- $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') ---`r`n")
-        $txtLog.AppendText("Source: $src`r`n")
-        if ($includes.Count -gt 0) { $txtLog.AppendText("Includes: $($includes -join ', ')`r`n") }
-        $txtLog.AppendText("Format: $(if ($rbImg.Checked) { 'FAT32 (.img)' } else { 'ISO (.iso)' })`r`n")
-        $txtLog.AppendText("Label: $label`r`n")
-        if ($toUsb) {
-            $txtLog.AppendText("Target: USB - $($targetDrive.Path) ($($targetDrive.Size) $($targetDrive.Model))`r`n")
-        } else {
-            $txtLog.AppendText("Target: File - $out`r`n")
-        }
-        $txtLog.AppendText("Verbose: $($chkVerbose.Checked), Verify: $($chkVerify.Checked), GPT: $($chkGpt.Checked)`r`n")
-        $txtLog.AppendText("`r`nCreating image...`r`n")
+        $txtLog.AppendText("Action: $($btnCreate.Text)`r`n")
         $form.Refresh()
 
-        if ($toUsb) {
-            # Format USB and copy files directly — no temp image needed
+        if ($usbSrc -or $srcIsImage) {
+            # --- Raw clone: device/image -> device/file --------------------
+            $cloneArgs = @{ LogBox = $txtLog }
+            if ($force) { $cloneArgs['SkipConfirm'] = $true }
+            if ($chkVerify.Checked) { $cloneArgs['Verify'] = $true }
+            if ($usbSrc) {
+                $cloneArgs['SourceDiskNum'] = $srcDrive.Number
+                $cloneArgs['SourceSizeBytes'] = $srcDrive.SizeBytes
+            } else {
+                $cloneArgs['SourcePath'] = $src
+            }
+            if ($toUsb) {
+                $cloneArgs['DestDiskNum'] = $targetDrive.Number
+                $cloneArgs['DestSizeBytes'] = $targetDrive.SizeBytes
+                $cloneArgs['DestModel'] = $targetDrive.Model
+            } else {
+                $cloneArgs['DestPath'] = $out
+            }
+            Copy-DiskImage @cloneArgs
+        } elseif ($toUsb) {
+            # --- Build from files + write to USB ---------------------------
             $optSwitches = @{}
             if ($chkVerbose.Checked) { $optSwitches['Verbose'] = $true }
             if ($chkVerify.Checked) { $optSwitches['Verify'] = $true }
             if ($chkGpt.Checked) { $optSwitches['UseGpt'] = $true }
+            if ($force) { $optSwitches['SkipConfirm'] = $true }
             $fs = $cmbFs.SelectedItem
             Write-UsbDrive -TargetDrive $targetDrive -SourceDir $src `
                 -Includes $includes -Label $label -FileSystem $fs `
                 -LogBox $txtLog @optSwitches
         } else {
+            # --- Build an image file ---------------------------------------
             $verboseSwitch = if ($chkVerbose.Checked) { @{Verbose=$true} } else { @{} }
             New-UefiImage -SourceDir $src -Includes $includes -OutputFile $out `
                 -Label $label -SizeMB $sizeMB -LogBox $txtLog @verboseSwitch
@@ -1587,7 +1683,7 @@ function Show-MainForm {
 
     # --- Apply the theme to all controls (single DRY pass) --------------------
     # Secondary (neutral) buttons: flat white, hairline border, soft blue hover.
-    foreach ($b in @($btnSrc, $btnAddFile, $btnAddDir, $btnClear, $btnOut, $btnRefresh)) {
+    foreach ($b in @($btnSrc, $btnSrcRefresh, $btnAddFile, $btnAddDir, $btnClear, $btnOut, $btnRefresh)) {
         $b.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
         $b.FlatAppearance.BorderColor = $clrBorder
         $b.FlatAppearance.BorderSize = 1
