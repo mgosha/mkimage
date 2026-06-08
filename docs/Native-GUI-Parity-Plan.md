@@ -234,8 +234,8 @@ boot/screenshot-verified before the next begins.
 
 ## Verification harness
 
-- `GUEST_USER=mike GUI=ps1 ./tests/show-win11.sh` — interactive
+- `GUEST_USER=<winuser> GUI=ps1 ./tests/show-win11.sh` — interactive
   reverse-VNC, native GUI on the desktop.
-- `GUEST_USER=mike GUI=ps1 ./tests/show-win11.sh --screenshot out.png` —
-  headless per-phase screenshot.
+- `GUEST_USER=<winuser> GUI=ps1 ./tests/show-win11.sh --screenshot out.png`
+  — headless per-phase screenshot.
 - Boot-verify produced media with throwaway QEMU + OVMF (see HANDOFF).

@@ -7,6 +7,11 @@ no admin/root required for the common paths, and no external tools on Windows.
 Runs on **Linux, macOS, and Windows** from a single self-contained file
 (`mkimage.pyz`), with a CLI and an optional GUI.
 
+![mkimage native GUI on Windows](docs/screenshots/native-gui.png)
+
+*The native PowerShell/WinForms GUI on Windows (the default there). Linux and
+macOS get a matching Dear PyGui interface.*
+
 ## Features
 
 - **FAT32 disk images** (`.img`) — pure-Python writer, no mtools/admin needed
