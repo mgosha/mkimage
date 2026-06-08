@@ -1633,14 +1633,66 @@ function Show-MainForm {
     [void]$form.Controls.Add($tabs)
 
     # Placeholders for tabs filled in by later parity phases.
-    foreach ($pair in @(, @($tabHelp, 'Help & shortcuts'))) {
-        $note = New-Object System.Windows.Forms.Label
-        $note.Text = "$($pair[1]) -- coming in a later phase.`r`nSee docs/Native-GUI-Parity-Plan.md"
-        $note.AutoSize = $true
-        $note.ForeColor = [System.Drawing.Color]::FromArgb(120, 128, 140)
-        $note.Location = New-Object System.Drawing.Point(18, 18)
-        [void]$pair[0].Controls.Add($note)
-    }
+    # --- Help tab: shortcuts, quick start, reference, tips ------------------
+    $helpText = @"
+KEYBOARD SHORTCUTS
+  F1-F5   Build / Options / Tools / Log / Help tabs
+  F6      Refresh USB drive list (when a USB list is shown)
+  F12     Run the current action (Create / Write / Clone)
+
+QUICK START
+  1. Build tab: pick a Source (a folder/image file, or a USB drive to clone).
+  2. Choose Output Format (FAT32 .img or ISO) and a Volume Label.
+  3. Set the Output Target: a file (Browse) or a USB drive (Write to USB).
+  4. Click the action button (its label reflects what will happen).
+  Watch the Log tab for progress.
+
+OUTPUT FORMATS & OPTIONS (Options tab)
+  Partition Scheme: None (raw FAT32) / MBR / GPT. For MBR or GPT, add
+    partition rows (filesystem, size in MB or blank=auto, label, cluster,
+    source dir). A blank Source falls back to the Build source.
+  ISO: Hybrid (dd-writable to USB for UEFI boot) and UDF bridge (ISO 9660 +
+    UDF, for files larger than 4 GB).
+  Filesystems: FAT32, NTFS, exFAT are created natively (diskpart). ext4 is
+    not available on Windows (use the Linux/macOS build for live-Linux
+    persistence); UDF is available for ISOs.
+  Verify (SHA256/compare), Verbose (per-file log), Force (skip the
+    destructive-write confirmation).
+
+ACTIONS BY SOURCE x TARGET
+  Folder -> File   Create Image        Folder -> USB   Write to USB
+  USB    -> File   Clone to Image      USB    -> USB   Clone to USB
+  An .img/.iso source written to USB is raw-cloned (dd-style).
+
+TOOLS TAB
+  Format a drive, Wipe partition signatures, Check for bad blocks
+  (destructive write/verify pass), and List the partitions in an image.
+
+TIPS
+  - A .img.gz output target is gzip-compressed automatically.
+  - Everything is native Windows (diskpart / robocopy / IMAPI / oscdimg) -
+    no WSL required.
+  - FAT32 volume labels are limited to 11 characters.
+  - USB writes and clones require Administrator (you'll be prompted).
+"@
+    $txtHelp = New-Object System.Windows.Forms.TextBox
+    $txtHelp.Multiline = $true
+    $txtHelp.ReadOnly = $true
+    $txtHelp.ScrollBars = "Vertical"
+    $txtHelp.Location = New-Object System.Drawing.Point(12, 12)
+    $txtHelp.Size = New-Object System.Drawing.Size(566, 350)
+    $txtHelp.Font = New-Object System.Drawing.Font("Consolas", 8.5)
+    $txtHelp.BackColor = [System.Drawing.Color]::White
+    $txtHelp.Text = $helpText
+    $txtHelp.Select(0, 0)
+    $tabHelp.Controls.Add($txtHelp)
+
+    $lnkGitHub = New-Object System.Windows.Forms.LinkLabel
+    $lnkGitHub.Text = "mkimage -- github.com/mgosha/mkimage"
+    $lnkGitHub.Location = New-Object System.Drawing.Point(12, 370)
+    $lnkGitHub.AutoSize = $true
+    $lnkGitHub.Add_LinkClicked({ Start-Process "https://github.com/mgosha/mkimage" -ErrorAction SilentlyContinue })
+    $tabHelp.Controls.Add($lnkGitHub)
 
     # --- Tools tab: shared drive selector + Format / Wipe / Check / List -----
     $script:toolDrives = @()
