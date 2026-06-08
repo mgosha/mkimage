@@ -32,6 +32,9 @@
 # Env:
 #   SHOW_IT_HOST   viewer IP        (default: $SSH_CONNECTION field 1)
 #   SHOW_IT_PORT   viewer port      (default: 9999)
+#   SHOW_IT_SSH_USER         user to SSH back to the viewer host as, to verify
+#                            the listener (default: $USER)
+#   SHOW_IT_NO_VIEWER_CHECK  =1 to skip the pre-launch viewer-listening check
 #   SHOT_WAIT      secs to wait for the GUI to render before capture (def 8;
 #                  raise it if the guest must pip-install dearpygui first)
 #   QEMU           qemu binary      (default: qemu-system-x86_64 / qemu-kvm)
@@ -230,6 +233,43 @@ CMD=(
     -nic user,model=virtio-net-pci,hostfwd=tcp::2222-:22,hostfwd=tcp::3389-:3389
 )
 
+# ---- reverse-VNC viewer readiness check ------------------------------------
+# QEMU dials OUT to the viewer at launch and exits FATALLY if the port refuses
+# the connection (e.g. the listener loop is mid-restart between one-shot
+# viewers). Verify the viewer is LISTENing first — but do it WITHOUT opening
+# the port (that would consume a one-shot vncviewer's single accept). Instead
+# SSH back to the viewer host (derived from $SSH_CONNECTION) and inspect for a
+# LISTEN socket. Best-effort: if we can't SSH there, warn and proceed rather
+# than block the launch.
+#   SHOW_IT_SSH_USER        user to SSH back as     (default: $USER)
+#   SHOW_IT_NO_VIEWER_CHECK =1 to skip this check entirely
+wait_for_viewer() {
+    [[ "${SHOW_IT_NO_VIEWER_CHECK:-}" == "1" ]] && return 0
+    local user="${SHOW_IT_SSH_USER:-$USER}"
+    if ! ssh -o BatchMode=yes -o ConnectTimeout=5 "$user@$HOST" true 2>/dev/null; then
+        echo "show-win11: can't SSH to viewer host $user@$HOST to verify the listener;" >&2
+        echo "            proceeding unchecked (set SHOW_IT_SSH_USER, or SHOW_IT_NO_VIEWER_CHECK=1)." >&2
+        return 0
+    fi
+    local tries=0 max=15   # ~30s
+    while (( tries < max )); do
+        if ssh -o BatchMode=yes -o ConnectTimeout=5 "$user@$HOST" \
+            "lsof -nP -iTCP:$PORT -sTCP:LISTEN >/dev/null 2>&1 || netstat -an 2>/dev/null | grep -q '[.:]$PORT .*LISTEN'" 2>/dev/null; then
+            [[ $tries -gt 0 ]] && echo "show-win11: viewer is now listening on $HOST:$PORT." >&2
+            return 0
+        fi
+        if (( tries == 0 )); then
+            echo "show-win11: no VNC viewer listening on $HOST:$PORT yet. Start it with:" >&2
+            echo "            while true; do vncviewer -listen $PORT -SecurityTypes None; done" >&2
+            echo "show-win11: waiting up to 30s for it..." >&2
+        fi
+        tries=$((tries + 1)); sleep 2
+    done
+    echo "show-win11: viewer still not listening on $HOST:$PORT after 30s — aborting" >&2
+    echo "            (QEMU would exit with 'Connection refused')." >&2
+    return 1
+}
+
 if [[ -z "$SCREENSHOT" ]]; then
     # ---- interactive mode: stream to the user's VNC viewer, block on QEMU ---
     # A monitor socket lets us shut the guest down GRACEFULLY (ACPI
@@ -257,6 +297,10 @@ if [[ -z "$SCREENSHOT" ]]; then
     echo "show-win11: reverse VNC -> $HOST:$PORT  (your TigerVNC must be listening there)"
     echo "show-win11: QEMU=$QEMU  disk=$DISK"
     echo "show-win11: winvm SSH on localhost:2222; Ctrl-C here for a CLEAN guest shutdown."
+
+    # Make sure the viewer is listening before QEMU dials out (avoids a fatal
+    # connection-refused). Abort cleanly if it never comes up.
+    wait_for_viewer || { rm -f "$MONSOCK" "$QMPSOCK" 2>/dev/null || true; exit 1; }
 
     if [[ "${NO_PROVISION:-}" != "1" ]]; then
         provision_guest &
