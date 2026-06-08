@@ -188,10 +188,32 @@ def _check_bad_blocks(cfg: Config, device: str) -> bool:
     be erased.
     """
     if _is_windows():
-        # Use chkdsk via PowerShell (non-destructive scan)
-        cfg.log(f"  Running chkdsk scan on {device}...")
-        r = _run(cfg, ["chkdsk", device], check=False, verbose=True)
-        return r.returncode == 0
+        # chkdsk needs a volume/drive letter, not a \\.\PhysicalDriveN path,
+        # and must run NATIVELY (not via _run, which routes through WSL where
+        # chkdsk doesn't exist -> false "bad blocks"). Resolve the disk's
+        # drive letter, then run a read-only chkdsk scan against it.
+        import subprocess as _sp
+        disk_num = device.rsplit("PhysicalDrive", 1)[-1]
+        ps = (f"Get-Partition -DiskNumber {disk_num} -ErrorAction SilentlyContinue"
+              f" | Where-Object DriveLetter | Select-Object -First 1"
+              f" -ExpandProperty DriveLetter")
+        pr = _sp.run(["powershell", "-NoProfile", "-Command", ps],
+                     capture_output=True, text=True)
+        letter = (pr.stdout or "").strip()
+        if not letter:
+            cfg.log(f"  {device} has no mounted volume to scan "
+                    f"(format it first); skipping bad-block check.")
+            return True
+        # Plain read-only chkdsk (no /scan: that's NTFS-only and errors on
+        # FAT). Reports problems without modifying the volume.
+        cfg.log(f"  Running chkdsk {letter}: (read-only) ...")
+        cr = _sp.run(["chkdsk", f"{letter}:"],
+                     capture_output=True, text=True)
+        if cfg.verbose and (cr.stdout or cr.stderr):
+            for line in ((cr.stdout or "") + (cr.stderr or "")).splitlines():
+                if line.strip():
+                    cfg.log(f"    {line.rstrip()}")
+        return cr.returncode == 0
 
     if _is_macos():
         # macOS: use diskutil verifyDisk

@@ -792,6 +792,9 @@ def _write_usb_windows_format_only(
 
     prg_esc = progress_file.replace("'", "''")
     ps_script = f"""
+# UTF-8 progress file (default Out-File is UTF-16, which the reader would
+# turn into mojibake -> "produced no output"). Matches _write_usb_windows.
+$PSDefaultParameterValues['Out-File:Encoding'] = 'utf8'
 try {{
     $useGpt = {gpt_str}
     $partStyle = if ($useGpt) {{ "GPT" }} else {{ "MBR" }}
