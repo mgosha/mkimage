@@ -16,36 +16,69 @@ if TYPE_CHECKING:
 
 
 def _build_iso_windows(cfg: Config, files: dict[str, str], output: str) -> None:
-    """Create ISO image on Windows via mkimage.ps1 (IMAPI2, no WSL needed)."""
+    """Create ISO image on Windows via mkimage.ps1 (IMAPI2/oscdimg, no WSL).
+
+    If the tree contains an EFI fallback bootloader (EFI/BOOT/BOOT*.EFI), also
+    generate a FAT boot image and make the ISO UEFI-bootable (El Torito EFI).
+    """
+    import os as _os
+
     ps1 = _find_ps1()
     if not ps1:
         raise RuntimeError("mkimage.ps1 not found. Cannot create ISOs on Windows.")
 
-    with tempfile.TemporaryDirectory() as staging:
-        _stage_files(files, Path(staging))
+    # Detect a UEFI fallback bootloader and, if present, build the FAT boot
+    # image (the firmware mounts this and runs \EFI\BOOT\BOOTX64.EFI from it).
+    efi_files = {k: v for k, v in files.items()
+                 if k.replace("\\", "/").upper().startswith("EFI/")}
+    has_boot = any(
+        k.replace("\\", "/").upper().startswith("EFI/BOOT/BOOT")
+        and k.upper().endswith(".EFI") for k in files)
 
-        cmd = [
-            "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-            "-File", ps1,
-            "-Action", "CreateIso",
-            "-SourceDir", staging,
-            "-OutputFile", str(Path(output).resolve()),
-            "-Label", cfg.label[:32],
-        ]
-        if cfg.verbose:
-            cmd.append("-Verbose")
+    efisys: str | None = None
+    try:
+        if has_boot:
+            from mkimage.builders.img import _write_fat32_image
+            fd, efisys = tempfile.mkstemp(suffix=".efisys")
+            _os.close(fd)
+            # 34 MB: smallest reliable FAT32 (needs >= 65525 clusters).
+            cfg.log("  Building EFI boot image (El Torito)...")
+            _write_fat32_image(cfg, efi_files, efisys, 34, "EFIBOOT", 0, mbr=False)
 
-        cfg.log("  Creating ISO via PowerShell...")
-        r = _sp.run(cmd, capture_output=True, text=True)
-        if r.stdout.strip():
-            for line in r.stdout.strip().splitlines():
-                cfg.log(f"  {line}")
-        if r.returncode != 0:
-            err = r.stderr.strip() or r.stdout.strip()
-            raise RuntimeError(f"ISO creation failed: {err}")
+        with tempfile.TemporaryDirectory() as staging:
+            _stage_files(files, Path(staging))
+
+            cmd = [
+                "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                "-File", ps1,
+                "-Action", "CreateIso",
+                "-SourceDir", staging,
+                "-OutputFile", str(Path(output).resolve()),
+                "-Label", cfg.label[:32],
+            ]
+            if efisys:
+                cmd += ["-BootImage", efisys]
+            if cfg.verbose:
+                cmd.append("-Verbose")
+
+            cfg.log("  Creating ISO via PowerShell...")
+            r = _sp.run(cmd, capture_output=True, text=True)
+            if r.stdout.strip():
+                for line in r.stdout.strip().splitlines():
+                    cfg.log(f"  {line}")
+            if r.returncode != 0:
+                err = r.stderr.strip() or r.stdout.strip()
+                raise RuntimeError(f"ISO creation failed: {err}")
+    finally:
+        if efisys:
+            try:
+                _os.unlink(efisys)
+            except OSError:
+                pass
 
     actual_size = os.path.getsize(output)
-    cfg.log(f"  [OK] Created {output} ({actual_size // 1024}KB, ISO)")
+    boot_note = ", UEFI-bootable" if has_boot else ""
+    cfg.log(f"  [OK] Created {output} ({actual_size // 1024}KB, ISO{boot_note})")
 
 
 def build_iso(cfg: Config, files: dict[str, str], output: str) -> None:

@@ -11,7 +11,8 @@ param(
     [switch]$SkipConfirm,
     [switch]$Verbose,
     [switch]$Verify,
-    [string]$ProgressFile = ''
+    [string]$ProgressFile = '',
+    [string]$BootImage = ''
 )
 
 <#
@@ -319,12 +320,58 @@ detach vdisk
 
 # Create an ISO image using oscdimg.exe (Windows ADK) or a staging directory.
 # Falls back to a simple copy-to-directory if no ISO tool is found.
+# Compile the IStream interop helper: CopyToFile (drain a COM IStream to a
+# file) and OpenFileStream (wrap a file as an IStream for IMAPI2 boot images).
+function Add-IStreamCopierType {
+    if ([System.Management.Automation.PSTypeName]'IStreamCopier'.Type) { return }
+    Add-Type -TypeDefinition @"
+using System;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.ComTypes;
+
+public static class IStreamCopier {
+    [DllImport("shlwapi.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+    static extern int SHCreateStreamOnFileEx(string file, uint mode, uint attrs,
+        bool create, IStream template, out IStream stream);
+
+    public static void CopyToFile(object comStream, string path) {
+        IStream src = (IStream)comStream;
+        using (FileStream dst = File.Create(path)) {
+            byte[] buf = new byte[65536];
+            while (true) {
+                IntPtr pcbRead = Marshal.AllocHGlobal(sizeof(int));
+                try {
+                    src.Read(buf, buf.Length, pcbRead);
+                    int cbRead = Marshal.ReadInt32(pcbRead);
+                    if (cbRead <= 0) break;
+                    dst.Write(buf, 0, cbRead);
+                } finally {
+                    Marshal.FreeHGlobal(pcbRead);
+                }
+            }
+        }
+    }
+
+    public static IStream OpenFileStream(string path) {
+        IStream s;
+        // STGM_READ | STGM_SHARE_DENY_WRITE
+        int hr = SHCreateStreamOnFileEx(path, 0x20u, 0u, false, null, out s);
+        if (hr != 0) throw new IOException("SHCreateStreamOnFileEx failed: 0x" + hr.ToString("X"));
+        return s;
+    }
+}
+"@
+}
+
+
 function New-IsoImage {
     param(
         [string]$SourceDir,
         [string[]]$Includes,
         [string]$OutputFile,
         [string]$Label,
+        [string]$BootImage = '',
         [switch]$Verbose,
         $LogBox = $null
     )
@@ -379,7 +426,13 @@ function New-IsoImage {
         if ($oscdimg) {
             Write-Log "Creating ISO with oscdimg.exe..."
             Refresh-Log
-            $args = "-l$isoLabel", "-o", "-m", $staging, $OutputFile
+            $args = "-l$isoLabel", "-o", "-m"
+            if ($BootImage -and (Test-Path $BootImage)) {
+                # UEFI El Torito: no-emulation EFI boot from the FAT boot image
+                $args += "-bootdata:1#pEF,e,b$BootImage"
+                Write-Log "  (UEFI bootable: EFI El Torito)"
+            }
+            $args += $staging, $OutputFile
             $proc = Start-Process -FilePath $oscdimg -ArgumentList $args `
                 -NoNewWindow -Wait -PassThru
             if ($proc.ExitCode -ne 0) {
@@ -400,39 +453,26 @@ function New-IsoImage {
             # Add all staged files
             $fsi.Root.AddTree($staging, $false)
 
+            # UEFI El Torito boot (no emulation) from the FAT boot image
+            if ($BootImage -and (Test-Path $BootImage)) {
+                if (-not ([System.Management.Automation.PSTypeName]'IStreamCopier').Type) {
+                    Add-IStreamCopierType
+                }
+                $bootStream = [IStreamCopier]::OpenFileStream($BootImage)
+                $bopt = New-Object -ComObject IMAPI2FS.BootOptions
+                $bopt.PlatformId = 0xEF   # EFI
+                $bopt.Emulation = 0       # FsiBootEmulationNone
+                $bopt.AssignBootImage($bootStream)
+                $fsi.BootImageOptions = $bopt
+                Write-Log "  (UEFI bootable: EFI El Torito)"
+            }
+
             $resultStream = $fsi.CreateResultImage()
             $isoStream = $resultStream.ImageStream
 
             # Write IStream to file using .NET COM interop helper
             # (IStream::Read is not directly callable from PowerShell)
-            if (-not ([System.Management.Automation.PSTypeName]'IStreamCopier').Type) {
-                Add-Type -TypeDefinition @"
-using System;
-using System.IO;
-using System.Runtime.InteropServices;
-using System.Runtime.InteropServices.ComTypes;
-
-public static class IStreamCopier {
-    public static void CopyToFile(object comStream, string path) {
-        IStream src = (IStream)comStream;
-        using (FileStream dst = File.Create(path)) {
-            byte[] buf = new byte[65536];
-            while (true) {
-                IntPtr pcbRead = Marshal.AllocHGlobal(sizeof(int));
-                try {
-                    src.Read(buf, buf.Length, pcbRead);
-                    int cbRead = Marshal.ReadInt32(pcbRead);
-                    if (cbRead <= 0) break;
-                    dst.Write(buf, 0, cbRead);
-                } finally {
-                    Marshal.FreeHGlobal(pcbRead);
-                }
-            }
-        }
-    }
-}
-"@
-            }
+            Add-IStreamCopierType
             [IStreamCopier]::CopyToFile($isoStream, $OutputFile)
             [System.Runtime.InteropServices.Marshal]::ReleaseComObject($isoStream) | Out-Null
             [System.Runtime.InteropServices.Marshal]::ReleaseComObject($fsi) | Out-Null
@@ -1252,7 +1292,8 @@ if ($Action) {
             if (-not $OutputFile) { Write-Error "OutputFile required for CreateIso"; exit 1 }
             if (-not $SourceDir) { Write-Error "SourceDir required for CreateIso"; exit 1 }
             $result = New-IsoImage -SourceDir $SourceDir -Includes $Includes `
-                -OutputFile $OutputFile -Label $Label -Verbose:$Verbose
+                -OutputFile $OutputFile -Label $Label -BootImage $BootImage `
+                -Verbose:$Verbose
             if (-not $result) { exit 1 }
         }
         default {
