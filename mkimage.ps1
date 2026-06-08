@@ -49,6 +49,13 @@ param(
 
 $MAX_USB_SIZE_GB = 2048
 
+# fat32format (Ridgecrop) makes whole-disk FAT32 volumes >32GB, which Windows'
+# own formatter refuses. Downloaded on demand only when FAT32 is chosen for a
+# drive larger than 32GB; falls back to a 32GB-capped partition if unavailable.
+# Override the source with MKIMAGE_FAT32FORMAT_URL (point at an approved mirror)
+# and verify it with MKIMAGE_FAT32FORMAT_SHA256.
+$FAT32FORMAT_URL = "http://www.ridgecrop.co.uk/download/fat32format.zip"
+
 # ---------------------------------------------------------------------------
 # Helper functions
 # ---------------------------------------------------------------------------
@@ -79,6 +86,75 @@ function Get-UsbDrives {
         # Get-Disk may not be available on all systems
     }
     return $drives
+}
+
+# Locate fat32format.exe for whole-disk FAT32 >32GB. Order: cached copy, a copy
+# beside mkimage.ps1, one on PATH, else download (default URL or the
+# MKIMAGE_FAT32FORMAT_URL override; .zip or .exe). Verifies SHA256 when
+# MKIMAGE_FAT32FORMAT_SHA256 is set. Returns the path, or $null on ANY failure
+# so the caller can fall back to a 32GB-capped FAT32 partition.
+function Get-Fat32Format {
+    param([string]$ProgressFile = "", $LogBox = $null)
+    function L([string]$m) {
+        if ($ProgressFile) { $m | Out-File -Append $ProgressFile }
+        elseif ($LogBox) { $LogBox.AppendText("$m`r`n") } else { Write-Host $m }
+    }
+    # 1. An installed copy wins: PATH first (e.g. C:\bin on PATH)...
+    $onPath = (Get-Command "fat32format.exe" -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+    if ($onPath) { L "  Using installed fat32format: $onPath"; return $onPath }
+    # ...then common install locations in case it isn't on PATH.
+    foreach ($d in @("C:\bin", "C:\Tools", (Join-Path $env:ProgramData "mkimage"),
+                     (Join-Path ${env:ProgramFiles} "mkimage"))) {
+        if ($d) {
+            $p = Join-Path $d "fat32format.exe"
+            if (Test-Path $p) { L "  Using installed fat32format: $p"; return $p }
+        }
+    }
+    # 2. A copy shipped alongside mkimage.ps1.
+    if ($PSCommandPath) {
+        $beside = Join-Path (Split-Path -Parent $PSCommandPath) "fat32format.exe"
+        if (Test-Path $beside) { return $beside }
+    }
+    # 3. A copy we downloaded earlier.
+    $cacheDir = Join-Path $env:LOCALAPPDATA "mkimage"
+    $cached = Join-Path $cacheDir "fat32format.exe"
+    if (Test-Path $cached) { return $cached }
+
+    # 4. Otherwise download (default URL, or MKIMAGE_FAT32FORMAT_URL override).
+    $url = if ($env:MKIMAGE_FAT32FORMAT_URL) { $env:MKIMAGE_FAT32FORMAT_URL } else { $FAT32FORMAT_URL }
+    if (-not $url) { return $null }
+    try {
+        New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
+        $isZip = ($url -match '\.zip($|\?)')
+        $tmp = Join-Path $cacheDir ("dl-" + [guid]::NewGuid().ToString('N').Substring(0, 8) + $(if ($isZip) { '.zip' } else { '.exe' }))
+        L "  Downloading fat32format from $url ..."
+        try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch {}
+        Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing -TimeoutSec 25 -ErrorAction Stop
+        if ($isZip) {
+            $ex = Join-Path $cacheDir "f32extract"
+            Remove-Item $ex -Recurse -Force -ErrorAction SilentlyContinue
+            Expand-Archive -Path $tmp -DestinationPath $ex -Force
+            $exe = (Get-ChildItem $ex -Recurse -Filter "fat32format.exe" -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+        } else {
+            $exe = $tmp
+        }
+        if (-not $exe -or -not (Test-Path $exe)) { throw "fat32format.exe not found in download" }
+
+        $want = $env:MKIMAGE_FAT32FORMAT_SHA256
+        if ($want) {
+            $got = (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash
+            if ($got -ne $want.Trim().ToUpper()) { throw "SHA256 mismatch (expected $want, got $got)" }
+            L "  fat32format SHA256 verified."
+        } else {
+            L "  WARNING: fat32format downloaded WITHOUT checksum verification. Set MKIMAGE_FAT32FORMAT_SHA256 (and ideally MKIMAGE_FAT32FORMAT_URL to an approved mirror) to verify it."
+        }
+        Copy-Item -LiteralPath $exe -Destination $cached -Force
+        Remove-Item $tmp -ErrorAction SilentlyContinue
+        return $cached
+    } catch {
+        L "  fat32format unavailable ($($_.Exception.Message)); falling back to a 32GB-capped FAT32 partition."
+        return $null
+    }
 }
 
 function New-UefiImage {
@@ -1047,40 +1123,50 @@ convert $($partStyle.ToLower())
     ($dpConvert | diskpart 2>&1) | Out-Null
     Start-Sleep -Seconds 1
 
-    # Step 1c: create partition + format. Windows' formatter caps FAT32 at
-    # 32GB, so on a larger drive cap the FAT32 partition at 32000MB (rest left
-    # unallocated) instead of spanning the whole disk and failing with "The
-    # volume size is too big". Other filesystems use the whole disk.
+    # Step 1c: create partition + format. Windows' formatter caps FAT32 at 32GB.
+    # On a larger drive: if fat32format.exe is available, create a whole-disk
+    # partition and FAT32-format it AFTER mount (it has no cap); otherwise cap
+    # the diskpart FAT32 partition at 32000MB. Other filesystems use the disk.
     $fsType = "__FILESYSTEM__"
+    $fat32fmt = "__FAT32FMT__"
     $diskBytes = (Get-Disk -Number __DISKNUM__).Size
+    $bigFat32 = ($fsType -eq "fat32" -and $diskBytes -gt 32GB)
+    $useF32fmt = ($bigFat32 -and $fat32fmt -ne "" -and (Test-Path $fat32fmt))
     $createPart = "create partition primary"
-    if ($fsType -eq "fat32" -and $diskBytes -gt 32GB) {
+    if ($bigFat32 -and -not $useF32fmt) {
         $createPart = "create partition primary size=32000"
         "  NOTE: Windows limits FAT32 formatting to 32GB; creating a 32000MB FAT32 partition (remaining ~$([math]::Round(($diskBytes/1GB) - 32))GB left unallocated). Use exFAT/NTFS to use the whole drive." | Out-File -Append __PROGRESS__
+    } elseif ($useF32fmt) {
+        "  Whole-disk FAT32 on this $([math]::Round($diskBytes/1GB))GB drive via fat32format." | Out-File -Append __PROGRESS__
     }
+    # diskpart formats the volume EXCEPT when fat32format will (after mount).
+    $fmtLine = if ($useF32fmt) { "" } else { "format fs=__FILESYSTEM__ quick label=__LABEL__" }
     if ($useGpt) {
         $dpSetup = @"
 select disk __DISKNUM__
 $createPart
 select partition 1
-format fs=__FILESYSTEM__ quick label=__LABEL__
+$fmtLine
 "@
     } else {
         $dpSetup = @"
 select disk __DISKNUM__
 $createPart
 active
-format fs=__FILESYSTEM__ quick label=__LABEL__
+$fmtLine
 "@
     }
-    "  diskpart: create + format..." | Out-File -Append __PROGRESS__
+    "  diskpart: create$(if (-not $useF32fmt) { ' + format' })..." | Out-File -Append __PROGRESS__
     $dpOut = ($dpSetup | diskpart 2>&1) | Out-String
     $dpSummary = $dpOut.Trim() -replace '[\r\n]+', ' | '
     "  diskpart: $dpSummary" | Out-File -Append __PROGRESS__
     Start-Sleep -Seconds 1
 
-    if ($dpOut -notmatch "successfully formatted") {
+    if (-not $useF32fmt -and $dpOut -notmatch "successfully formatted") {
         throw "diskpart failed. Output: $dpSummary"
+    }
+    if ($useF32fmt -and $dpOut -notmatch "succeeded in creating") {
+        throw "diskpart failed to create partition. Output: $dpSummary"
     }
 
     # Disable automount, then bring online
@@ -1109,6 +1195,19 @@ format fs=__FILESYSTEM__ quick label=__LABEL__
         $part | Add-PartitionAccessPath -AccessPath "${driveLetter}:\" -ErrorAction Stop
     }
     Start-Sleep -Seconds 3
+
+    # Whole-disk FAT32: fat32format the (still-raw) mounted volume in place.
+    if ($useF32fmt) {
+        "  fat32format ${driveLetter}: (whole-disk FAT32)..." | Out-File -Append __PROGRESS__
+        $f32out = (& $fat32fmt -y "${driveLetter}:" 2>&1) | Out-String
+        "  fat32format: $($f32out.Trim() -replace '[\r\n]+', ' | ')" | Out-File -Append __PROGRESS__
+        Start-Sleep -Seconds 2
+        $vol = Get-Volume -DriveLetter $driveLetter -ErrorAction SilentlyContinue
+        if (-not $vol -or $vol.FileSystem -ne 'FAT32') {
+            throw "fat32format did not produce a FAT32 volume on ${driveLetter}: (output: $($f32out.Trim() -replace '[\r\n]+', ' | '))"
+        }
+        Set-Volume -DriveLetter $driveLetter -NewFileSystemLabel "__LABEL__" -ErrorAction SilentlyContinue
+    }
 
     $destRoot = "${driveLetter}:\"
     if (Test-Path $destRoot) {
@@ -1241,6 +1340,14 @@ format fs=__FILESYSTEM__ quick label=__LABEL__
     "automount enable" | diskpart 2>&1 | Out-Null
 }
 '@
+    # FAT32 on a >32GB drive: try fat32format (download-on-demand) for a
+    # whole-disk FAT32 volume; "" -> the worker falls back to a 32GB cap.
+    $fat32fmt = ""
+    if ($FileSystem.ToLower() -eq "fat32" -and $TargetDrive.SizeBytes -gt 32GB) {
+        $fat32fmt = Get-Fat32Format -ProgressFile $CliProgressFile -LogBox $LogBox
+        if (-not $fat32fmt) { $fat32fmt = "" }
+    }
+    $writeScript = $writeScript.Replace('__FAT32FMT__', ($fat32fmt -replace '"', ''))
     $writeScript = $writeScript.Replace('__PROGRESS__', "'$($progressFile -replace "'","''")'")
     $writeScript = $writeScript.Replace('__DISKNUM__', "$diskNum")
     $writeScript = $writeScript.Replace('__LABEL__', $labelTrim)
@@ -1691,6 +1798,8 @@ function Show-MainForm {
             "- A .img.gz output target is gzip-compressed automatically.",
             "- All native Windows (diskpart / robocopy / IMAPI / oscdimg); no WSL.",
             "- FAT32 volume labels are limited to 11 characters.",
+            "- Windows caps FAT32 formatting at 32GB; on a larger drive mkimage caps the FAT32 partition at 32GB unless fat32format.exe is found (on PATH, C:\bin, beside mkimage.ps1) or downloaded on demand for a whole-disk FAT32 volume.",
+            "- Set MKIMAGE_FAT32FORMAT_URL (approved mirror) and MKIMAGE_FAT32FORMAT_SHA256 to control/verify the fat32format download.",
             "- USB writes and clones require Administrator (you'll be prompted).") }
         @{ H = "About"; B = @(
             "mkimage - Bootable Media Creator",
