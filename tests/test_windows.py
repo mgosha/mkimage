@@ -619,6 +619,47 @@ class TestPyzWindowsBuilds:
         finally:
             os.unlink(local)
 
+    def test_createdisk_gpt_multipartition(self) -> None:
+        """New-DiskImage (-Action CreateDisk) builds a GPT image with an ESP +
+        data partition: protective MBR, 'EFI PART' header, and the first
+        partition typed as an EFI System Partition."""
+        src = self.VM_SRC.replace("/", "\\")
+        spec = (
+            '[{"Fs":"esp","SizeMB":40,"Label":"BOOT","Source":"' + src.replace("\\", "\\\\") + '"},'
+            '{"Fs":"fat32","SizeMB":40,"Label":"DATA","Source":"' + src.replace("\\", "\\\\") + '"}]'
+        )
+        fd, localjson = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
+        with open(localjson, "w") as f:
+            f.write(spec)
+        try:
+            assert winvm_scp_to(localjson, "C:/test/parts.json").returncode == 0
+        finally:
+            os.unlink(localjson)
+        out = winvm_ssh(
+            "powershell -NoProfile -ExecutionPolicy Bypass -Command "
+            f"\"& '{VM_MKIMAGE_PS1}' -Action CreateDisk -OutputFile C:/test/r_disk.img "
+            "-PartStyle GPT -PartitionsJson (Get-Content C:/test/parts.json -Raw) "
+            "2>&1 | Out-String\"",
+            timeout=240,
+        ).stdout
+        assert "[OK]" in out, out
+        local = self._fetch("C:/test/r_disk.img")
+        try:
+            with open(local, "rb") as f:
+                data = f.read(64 * 1024)
+            assert data[446 + 4] == 0xEE, "no protective MBR (0xEE)"
+            assert data[512:520] == b"EFI PART", "no primary GPT header"
+            # GPT partition entries start at LBA 2 (offset 1024), 128 bytes each.
+            esp_guid = bytes([0x28, 0x73, 0x2A, 0xC1, 0x1F, 0xF8, 0xD2, 0x11,
+                              0xBA, 0x4B, 0x00, 0xA0, 0xC9, 0x3E, 0xC9, 0x3B])
+            entry1 = data[1024:1024 + 128]
+            entry2 = data[1024 + 128:1024 + 256]
+            assert entry1[0:16] == esp_guid, "partition 1 is not an EFI System Partition"
+            assert entry2[0:16] != b"\x00" * 16, "partition 2 missing"
+        finally:
+            os.unlink(local)
+
     def test_iso_has_el_torito_efi_boot(self) -> None:
         """An ISO built from a tree with EFI/BOOT/BOOTX64.EFI must carry an El
         Torito boot record (i.e. be UEFI-bootable), not be data-only."""
