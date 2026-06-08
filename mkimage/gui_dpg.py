@@ -487,6 +487,14 @@ def _on_target_mode_change(sender: int) -> None:
     _update_action_label()
 
 
+def _on_fmt_change(sender: int = 0) -> None:
+    """Extra (MB) sizes a raw .img; it's irrelevant for an ISO (which carries
+    its own filesystem), so disable it when ISO is selected. (Format itself is
+    already hidden for a USB target -- it lives in target_file_group.)"""
+    is_iso = dpg.get_value("fmt_radio") == "ISO (.iso)"
+    dpg.configure_item("extra_space", enabled=not is_iso)
+
+
 def _update_action_label() -> None:
     src = dpg.get_value("source_mode")
     tgt = dpg.get_value("target_mode")
@@ -850,7 +858,7 @@ def gui_main() -> None:
 
                     # === TARGET PANEL ===
                     with dpg.child_window(width=350, height=250, border=True):
-                        t = dpg.add_text("Target")
+                        t = dpg.add_text("Destination")
                         dpg.bind_item_theme(t, "header_theme")
 
                         dpg.add_radio_button(
@@ -869,11 +877,12 @@ def gui_main() -> None:
                                 hint="Output .img, .iso, .img.gz")
                             dpg.add_spacer(height=2)
                             with dpg.group(horizontal=True):
-                                dpg.add_text("Output Format:")
+                                dpg.add_text("Format:")
                                 dpg.add_radio_button(
                                     ["Image (.img)", "ISO (.iso)"],
                                     tag="fmt_radio", horizontal=True,
-                                    default_value="Image (.img)")
+                                    default_value="Image (.img)",
+                                    callback=_on_fmt_change)
                             with dpg.group(horizontal=True):
                                 dpg.add_text("Volume Label:")
                                 dpg.add_input_text(

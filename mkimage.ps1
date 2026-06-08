@@ -1978,39 +1978,39 @@ function Show-MainForm {
     [void]$statusStrip.Items.Add($progress)
     [void]$form.Controls.Add($statusStrip)
 
-    $y = 12
+    # Frame title font/color (large + accent), drawn as labels over the box
+    # borders so child controls don't inherit the big font.
+    $fFrameTitle = New-Object System.Drawing.Font("Segoe UI Semibold", 11.5, [System.Drawing.FontStyle]::Bold)
 
-    # --- Source: a folder/image file, or a whole USB drive to clone ---------
-    $lblSrc = New-Object System.Windows.Forms.Label
-    $lblSrc.Text = "Source:"
-    $lblSrc.Location = New-Object System.Drawing.Point(15, $y)
-    $lblSrc.AutoSize = $true
-    $tabBuild.Controls.Add($lblSrc)
+    # =========================== SOURCE frame (top) ==========================
+    $grpSource = New-Object System.Windows.Forms.GroupBox
+    $grpSource.Text = ""
+    $grpSource.Location = New-Object System.Drawing.Point(8, 14)
+    $grpSource.Size = New-Object System.Drawing.Size(578, 150)
+    $tabBuild.Controls.Add($grpSource)
 
     $rbSrcFile = New-Object System.Windows.Forms.RadioButton
     $rbSrcFile.Text = "Folder / image file"
-    $rbSrcFile.Location = New-Object System.Drawing.Point(80, ($y - 3))
+    $rbSrcFile.Location = New-Object System.Drawing.Point(14, 22)
     $rbSrcFile.AutoSize = $true
     $rbSrcFile.Checked = $true
-    $tabBuild.Controls.Add($rbSrcFile)
+    $grpSource.Controls.Add($rbSrcFile)
 
     $rbSrcUsb = New-Object System.Windows.Forms.RadioButton
     $rbSrcUsb.Text = "USB drive (clone)"
-    $rbSrcUsb.Location = New-Object System.Drawing.Point(225, ($y - 3))
+    $rbSrcUsb.Location = New-Object System.Drawing.Point(170, 22)
     $rbSrcUsb.AutoSize = $true
-    $tabBuild.Controls.Add($rbSrcUsb)
+    $grpSource.Controls.Add($rbSrcUsb)
 
-    $y += 26
-    # File-mode source: a directory, .img, or .iso path.
     $txtSrc = New-Object System.Windows.Forms.TextBox
-    $txtSrc.Location = New-Object System.Drawing.Point(15, $y)
-    $txtSrc.Size = New-Object System.Drawing.Size(470, 23)
-    $tabBuild.Controls.Add($txtSrc)
+    $txtSrc.Location = New-Object System.Drawing.Point(14, 48)
+    $txtSrc.Size = New-Object System.Drawing.Size(466, 23)
+    $grpSource.Controls.Add($txtSrc)
 
     $btnSrc = New-Object System.Windows.Forms.Button
     $btnSrc.Text = "Browse..."
-    $btnSrc.Location = New-Object System.Drawing.Point(495, ($y - 1))
-    $btnSrc.Size = New-Object System.Drawing.Size(90, 25)
+    $btnSrc.Location = New-Object System.Drawing.Point(486, 47)
+    $btnSrc.Size = New-Object System.Drawing.Size(82, 25)
     $btnSrc.Add_Click({
         # Folder picker by default; hold Shift while clicking to pick an image.
         if ([System.Windows.Forms.Control]::ModifierKeys -band [System.Windows.Forms.Keys]::Shift) {
@@ -2024,21 +2024,21 @@ function Show-MainForm {
             if ($fbd.ShowDialog() -eq "OK") { $txtSrc.Text = $fbd.SelectedPath }
         }
     })
-    $tabBuild.Controls.Add($btnSrc)
+    $grpSource.Controls.Add($btnSrc)
 
     # USB-mode source: pick a drive to clone FROM (hidden until selected).
     $cmbSrcDrive = New-Object System.Windows.Forms.ComboBox
-    $cmbSrcDrive.Location = New-Object System.Drawing.Point(15, $y)
-    $cmbSrcDrive.Size = New-Object System.Drawing.Size(470, 23)
+    $cmbSrcDrive.Location = New-Object System.Drawing.Point(14, 48)
+    $cmbSrcDrive.Size = New-Object System.Drawing.Size(466, 23)
     $cmbSrcDrive.DropDownStyle = "DropDownList"
     $cmbSrcDrive.Font = New-Object System.Drawing.Font("Consolas", 9)
     $cmbSrcDrive.Visible = $false
-    $tabBuild.Controls.Add($cmbSrcDrive)
+    $grpSource.Controls.Add($cmbSrcDrive)
 
     $btnSrcRefresh = New-Object System.Windows.Forms.Button
     $btnSrcRefresh.Text = "Refresh"
-    $btnSrcRefresh.Location = New-Object System.Drawing.Point(495, ($y - 1))
-    $btnSrcRefresh.Size = New-Object System.Drawing.Size(90, 25)
+    $btnSrcRefresh.Location = New-Object System.Drawing.Point(486, 47)
+    $btnSrcRefresh.Size = New-Object System.Drawing.Size(82, 25)
     $btnSrcRefresh.Visible = $false
     $btnSrcRefresh.Add_Click({
         $cmbSrcDrive.Items.Clear()
@@ -2052,41 +2052,38 @@ function Show-MainForm {
         }
         if ($cmbSrcDrive.Items.Count -gt 0) { $cmbSrcDrive.SelectedIndex = 0 }
     })
-    $tabBuild.Controls.Add($btnSrcRefresh)
+    $grpSource.Controls.Add($btnSrcRefresh)
     $script:srcDrives = @()
 
-    # Extra includes
-    $y += 35
     $lblInc = New-Object System.Windows.Forms.Label
     $lblInc.Text = "Additional Includes:"
-    $lblInc.Location = New-Object System.Drawing.Point(15, $y)
+    $lblInc.Location = New-Object System.Drawing.Point(14, 82)
     $lblInc.AutoSize = $true
-    $tabBuild.Controls.Add($lblInc)
+    $grpSource.Controls.Add($lblInc)
 
     $btnAddFile = New-Object System.Windows.Forms.Button
     $btnAddFile.Text = "Add File"
-    $btnAddFile.Location = New-Object System.Drawing.Point(120, ($y - 3))
+    $btnAddFile.Location = New-Object System.Drawing.Point(140, 79)
     $btnAddFile.Size = New-Object System.Drawing.Size(70, 23)
-    $tabBuild.Controls.Add($btnAddFile)
+    $grpSource.Controls.Add($btnAddFile)
 
     $btnAddDir = New-Object System.Windows.Forms.Button
     $btnAddDir.Text = "Add Dir"
-    $btnAddDir.Location = New-Object System.Drawing.Point(195, ($y - 3))
+    $btnAddDir.Location = New-Object System.Drawing.Point(215, 79)
     $btnAddDir.Size = New-Object System.Drawing.Size(70, 23)
-    $tabBuild.Controls.Add($btnAddDir)
+    $grpSource.Controls.Add($btnAddDir)
 
     $btnClear = New-Object System.Windows.Forms.Button
     $btnClear.Text = "Clear"
-    $btnClear.Location = New-Object System.Drawing.Point(270, ($y - 3))
+    $btnClear.Location = New-Object System.Drawing.Point(290, 79)
     $btnClear.Size = New-Object System.Drawing.Size(60, 23)
-    $tabBuild.Controls.Add($btnClear)
+    $grpSource.Controls.Add($btnClear)
 
-    $y += 25
     $lstInc = New-Object System.Windows.Forms.ListBox
-    $lstInc.Location = New-Object System.Drawing.Point(15, $y)
-    $lstInc.Size = New-Object System.Drawing.Size(570, 65)
+    $lstInc.Location = New-Object System.Drawing.Point(14, 106)
+    $lstInc.Size = New-Object System.Drawing.Size(554, 36)
     $lstInc.Font = New-Object System.Drawing.Font("Consolas", 8)
-    $tabBuild.Controls.Add($lstInc)
+    $grpSource.Controls.Add($lstInc)
 
     $btnAddFile.Add_Click({
         $ofd = New-Object System.Windows.Forms.OpenFileDialog
@@ -2100,130 +2097,112 @@ function Show-MainForm {
     })
     $btnClear.Add_Click({ $lstInc.Items.Clear() })
 
-    # Output format
-    $y += 75
+    # ========================= DESTINATION frame (bottom) ====================
+    $grpDest = New-Object System.Windows.Forms.GroupBox
+    $grpDest.Text = ""
+    $grpDest.Location = New-Object System.Drawing.Point(8, 172)
+    $grpDest.Size = New-Object System.Drawing.Size(578, 152)
+    $tabBuild.Controls.Add($grpDest)
+
     $lblFmt = New-Object System.Windows.Forms.Label
-    $lblFmt.Text = "Output Format:"
-    $lblFmt.Location = New-Object System.Drawing.Point(15, $y)
+    $lblFmt.Text = "Format:"
+    $lblFmt.Location = New-Object System.Drawing.Point(14, 24)
     $lblFmt.AutoSize = $true
-    $tabBuild.Controls.Add($lblFmt)
+    $grpDest.Controls.Add($lblFmt)
 
     $rbImg = New-Object System.Windows.Forms.RadioButton
     $rbImg.Text = "Image (.img)"
-    $rbImg.Location = New-Object System.Drawing.Point(120, ($y - 2))
+    $rbImg.Location = New-Object System.Drawing.Point(70, 22)
     $rbImg.AutoSize = $true
     $rbImg.Checked = $true
-    $tabBuild.Controls.Add($rbImg)
+    $grpDest.Controls.Add($rbImg)
 
     $rbIso = New-Object System.Windows.Forms.RadioButton
     $rbIso.Text = "ISO (.iso)"
-    $rbIso.Location = New-Object System.Drawing.Point(250, ($y - 2))
+    $rbIso.Location = New-Object System.Drawing.Point(185, 22)
     $rbIso.AutoSize = $true
-    $tabBuild.Controls.Add($rbIso)
+    $grpDest.Controls.Add($rbIso)
 
-    # Volume label
-    $y += 30
+    $chkUsb = New-Object System.Windows.Forms.CheckBox
+    $chkUsb.Text = "Write to USB"
+    $chkUsb.Location = New-Object System.Drawing.Point(290, 23)
+    $chkUsb.AutoSize = $true
+    $grpDest.Controls.Add($chkUsb)
+
     $lblLabel = New-Object System.Windows.Forms.Label
     $lblLabel.Text = "Volume Label:"
-    $lblLabel.Location = New-Object System.Drawing.Point(15, $y)
+    $lblLabel.Location = New-Object System.Drawing.Point(14, 54)
     $lblLabel.AutoSize = $true
-    $tabBuild.Controls.Add($lblLabel)
+    $grpDest.Controls.Add($lblLabel)
 
     $txtLabel = New-Object System.Windows.Forms.TextBox
     $txtLabel.Text = "UEFITOOLS"
-    $txtLabel.Location = New-Object System.Drawing.Point(120, ($y - 2))
-    $txtLabel.Size = New-Object System.Drawing.Size(150, 23)
-    $tabBuild.Controls.Add($txtLabel)
+    $txtLabel.Location = New-Object System.Drawing.Point(100, 52)
+    $txtLabel.Size = New-Object System.Drawing.Size(120, 23)
+    $grpDest.Controls.Add($txtLabel)
 
-    # Filesystem
     $lblFs = New-Object System.Windows.Forms.Label
     $lblFs.Text = "Filesystem:"
-    $lblFs.Location = New-Object System.Drawing.Point(290, $y)
+    $lblFs.Location = New-Object System.Drawing.Point(238, 54)
     $lblFs.AutoSize = $true
-    $tabBuild.Controls.Add($lblFs)
+    $grpDest.Controls.Add($lblFs)
 
     $cmbFs = New-Object System.Windows.Forms.ComboBox
     $cmbFs.DropDownStyle = "DropDownList"
     $cmbFs.Items.AddRange(@("FAT32", "NTFS", "exFAT"))
     $cmbFs.SelectedIndex = 0
-    $cmbFs.Location = New-Object System.Drawing.Point(370, ($y - 2))
+    $cmbFs.Location = New-Object System.Drawing.Point(312, 52)
     $cmbFs.Size = New-Object System.Drawing.Size(80, 23)
-    $tabBuild.Controls.Add($cmbFs)
+    $grpDest.Controls.Add($cmbFs)
 
-    # Image size
-    $y += 30
     $lblSize = New-Object System.Windows.Forms.Label
     $lblSize.Text = "Extra (MB):"
-    $lblSize.Location = New-Object System.Drawing.Point(15, $y)
+    $lblSize.Location = New-Object System.Drawing.Point(14, 84)
     $lblSize.AutoSize = $true
-    $tabBuild.Controls.Add($lblSize)
+    $grpDest.Controls.Add($lblSize)
 
     $txtSize = New-Object System.Windows.Forms.TextBox
     $txtSize.Text = "32"
-    $txtSize.Location = New-Object System.Drawing.Point(120, ($y - 2))
-    $txtSize.Size = New-Object System.Drawing.Size(60, 23)
-    $tabBuild.Controls.Add($txtSize)
+    $txtSize.Location = New-Object System.Drawing.Point(85, 82)
+    $txtSize.Size = New-Object System.Drawing.Size(50, 23)
+    $grpDest.Controls.Add($txtSize)
 
-    $rbIso.Add_CheckedChanged({ $txtSize.Enabled = -not $rbIso.Checked })
+    $rbIso.Add_CheckedChanged({ & $updateDestRelevance })
 
-    # Build options + target toggle (one row)
     $chkVerbose = New-Object System.Windows.Forms.CheckBox
     $chkVerbose.Text = "Verbose"
-    $chkVerbose.Location = New-Object System.Drawing.Point(195, ($y - 2))
+    $chkVerbose.Location = New-Object System.Drawing.Point(150, 84)
     $chkVerbose.AutoSize = $true
-    $tabBuild.Controls.Add($chkVerbose)
+    $grpDest.Controls.Add($chkVerbose)
 
     $chkVerify = New-Object System.Windows.Forms.CheckBox
     $chkVerify.Text = "Verify"
-    $chkVerify.Location = New-Object System.Drawing.Point(268, ($y - 2))
+    $chkVerify.Location = New-Object System.Drawing.Point(225, 84)
     $chkVerify.AutoSize = $true
-    $tabBuild.Controls.Add($chkVerify)
+    $grpDest.Controls.Add($chkVerify)
 
     $chkGpt = New-Object System.Windows.Forms.CheckBox
     $chkGpt.Text = "GPT"
-    $chkGpt.Location = New-Object System.Drawing.Point(328, ($y - 2))
+    $chkGpt.Location = New-Object System.Drawing.Point(288, 84)
     $chkGpt.AutoSize = $true
-    $tabBuild.Controls.Add($chkGpt)
+    $grpDest.Controls.Add($chkGpt)
 
     $chkForce = New-Object System.Windows.Forms.CheckBox
     $chkForce.Text = "Force"
-    $chkForce.Location = New-Object System.Drawing.Point(378, ($y - 2))
+    $chkForce.Location = New-Object System.Drawing.Point(338, 84)
     $chkForce.AutoSize = $true
-    $tabBuild.Controls.Add($chkForce)
+    $grpDest.Controls.Add($chkForce)
 
-    $chkUsb = New-Object System.Windows.Forms.CheckBox
-    $chkUsb.Text = "Write to USB"
-    $chkUsb.Location = New-Object System.Drawing.Point(440, ($y - 2))
-    $chkUsb.AutoSize = $true
-    $tabBuild.Controls.Add($chkUsb)
-
-    # Output target -- set off as the destination with a divider + down arrow
-    # (the vertical-layout equivalent of the Python GUI's source->target arrow).
-    $y += 26
-    $divOut = New-Object System.Windows.Forms.Panel
-    $divOut.Location = New-Object System.Drawing.Point(15, $y)
-    $divOut.Size = New-Object System.Drawing.Size(570, 1)
-    $divOut.BackColor = $clrBorder
-    $tabBuild.Controls.Add($divOut)
-
-    $y += 10
-    $lblOut = New-Object System.Windows.Forms.Label
-    $lblOut.Text = [string][char]0x2193 + "  Output Target:"
-    $lblOut.Location = New-Object System.Drawing.Point(15, $y)
-    $lblOut.AutoSize = $true
-    $tabBuild.Controls.Add($lblOut)
-
-    $y += 22
-    # File mode widgets
+    # Destination file widgets
     $txtOut = New-Object System.Windows.Forms.TextBox
-    $txtOut.Location = New-Object System.Drawing.Point(15, $y)
-    $txtOut.Size = New-Object System.Drawing.Size(470, 23)
-    $tabBuild.Controls.Add($txtOut)
+    $txtOut.Location = New-Object System.Drawing.Point(14, 114)
+    $txtOut.Size = New-Object System.Drawing.Size(466, 23)
+    $grpDest.Controls.Add($txtOut)
 
     $btnOut = New-Object System.Windows.Forms.Button
     $btnOut.Text = "Browse..."
-    $btnOut.Location = New-Object System.Drawing.Point(495, ($y - 1))
-    $btnOut.Size = New-Object System.Drawing.Size(90, 25)
+    $btnOut.Location = New-Object System.Drawing.Point(486, 113)
+    $btnOut.Size = New-Object System.Drawing.Size(82, 25)
     $btnOut.Add_Click({
         $sfd = New-Object System.Windows.Forms.SaveFileDialog
         $sfd.Title = "Save Image As"
@@ -2236,21 +2215,21 @@ function Show-MainForm {
         }
         if ($sfd.ShowDialog() -eq "OK") { $txtOut.Text = $sfd.FileName }
     })
-    $tabBuild.Controls.Add($btnOut)
+    $grpDest.Controls.Add($btnOut)
 
-    # USB mode widgets (hidden by default)
+    # Destination USB widgets (hidden by default)
     $cmbDrive = New-Object System.Windows.Forms.ComboBox
-    $cmbDrive.Location = New-Object System.Drawing.Point(15, $y)
-    $cmbDrive.Size = New-Object System.Drawing.Size(470, 23)
+    $cmbDrive.Location = New-Object System.Drawing.Point(14, 114)
+    $cmbDrive.Size = New-Object System.Drawing.Size(466, 23)
     $cmbDrive.DropDownStyle = "DropDownList"
     $cmbDrive.Font = New-Object System.Drawing.Font("Consolas", 9)
     $cmbDrive.Visible = $false
-    $tabBuild.Controls.Add($cmbDrive)
+    $grpDest.Controls.Add($cmbDrive)
 
     $btnRefresh = New-Object System.Windows.Forms.Button
     $btnRefresh.Text = "Refresh"
-    $btnRefresh.Location = New-Object System.Drawing.Point(495, ($y - 1))
-    $btnRefresh.Size = New-Object System.Drawing.Size(90, 25)
+    $btnRefresh.Location = New-Object System.Drawing.Point(486, 113)
+    $btnRefresh.Size = New-Object System.Drawing.Size(82, 25)
     $btnRefresh.Visible = $false
     $btnRefresh.Add_Click({
         $cmbDrive.Items.Clear()
@@ -2264,8 +2243,7 @@ function Show-MainForm {
         }
         if ($cmbDrive.Items.Count -gt 0) { $cmbDrive.SelectedIndex = 0 }
     })
-    $tabBuild.Controls.Add($btnRefresh)
-
+    $grpDest.Controls.Add($btnRefresh)
     $script:usbDrives = @()
 
     # Target toggle: show file widgets vs USB-drive widgets. The action-button
@@ -2278,12 +2256,32 @@ function Show-MainForm {
         if ($chkUsb.Checked) { $btnRefresh.PerformClick() }
     })
 
+    # Frame title labels: large + accent, drawn over each box's top border.
+    $lblSrcTitle = New-Object System.Windows.Forms.Label
+    $lblSrcTitle.Text = "  Source  "
+    $lblSrcTitle.Font = $fFrameTitle
+    $lblSrcTitle.ForeColor = $clrAccentDk
+    $lblSrcTitle.BackColor = $clrBg
+    $lblSrcTitle.AutoSize = $true
+    $lblSrcTitle.Location = New-Object System.Drawing.Point(20, 5)
+    $tabBuild.Controls.Add($lblSrcTitle)
+    $lblSrcTitle.BringToFront()
+
+    $lblDestTitle = New-Object System.Windows.Forms.Label
+    $lblDestTitle.Text = "  Destination  "
+    $lblDestTitle.Font = $fFrameTitle
+    $lblDestTitle.ForeColor = $clrAccentDk
+    $lblDestTitle.BackColor = $clrBg
+    $lblDestTitle.AutoSize = $true
+    $lblDestTitle.Location = New-Object System.Drawing.Point(20, 163)
+    $tabBuild.Controls.Add($lblDestTitle)
+    $lblDestTitle.BringToFront()
+
     # Action button (single)
-    $y += 35
     $btnCreate = New-Object System.Windows.Forms.Button
     $btnCreate.Text = "Create Image"
-    $btnCreate.Location = New-Object System.Drawing.Point(220, $y)
-    $btnCreate.Size = New-Object System.Drawing.Size(160, 30)
+    $btnCreate.Location = New-Object System.Drawing.Point(212, 334)
+    $btnCreate.Size = New-Object System.Drawing.Size(170, 32)
     $tabBuild.Controls.Add($btnCreate)
 
     # Action-button label reflects the source x target combination, matching
@@ -2294,6 +2292,23 @@ function Show-MainForm {
         } else {
             if ($chkUsb.Checked) { "Write to USB" } else { "Create Image" }
         }
+    }
+    # Show only the fields relevant to the current Format x target. Format
+    # (Image/ISO) is a file-container concept, so it is HIDDEN when writing to
+    # USB; Filesystem/GPT are greyed for an ISO file; Extra (MB) applies only
+    # to an .img file. Skipped in clone mode (srcModeToggle owns the row then).
+    $updateDestRelevance = {
+        if ($rbSrcUsb.Checked) { return }
+        $toUsb = $chkUsb.Checked
+        $iso = $rbIso.Checked
+        $lblFmt.Visible = -not $toUsb
+        $rbImg.Visible = -not $toUsb
+        $rbIso.Visible = -not $toUsb
+        $fsOk = $toUsb -or (-not $iso)
+        foreach ($c in @($lblFs, $cmbFs, $chkGpt)) { $c.Enabled = $fsOk }
+        $extraOk = (-not $toUsb) -and (-not $iso)
+        $lblSize.Enabled = $extraOk
+        $txtSize.Enabled = $extraOk
     }
     # Source-mode toggle: swap file<->USB-drive source widgets, disable the
     # build-only controls when cloning a whole device, and relabel the button.
@@ -2310,9 +2325,12 @@ function Show-MainForm {
         }
         if ($usbSrc) { $btnSrcRefresh.PerformClick() }
         & $setActionLabel
+        & $updateDestRelevance
     })
     $chkUsb.Add_CheckedChanged($setActionLabel)
+    $chkUsb.Add_CheckedChanged({ & $updateDestRelevance })
     & $setActionLabel
+    & $updateDestRelevance
 
     # Log tab content (fills the Log tab page)
     $lblLog = New-Object System.Windows.Forms.Label
@@ -2506,14 +2524,13 @@ function Show-MainForm {
     $btnCreate.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 10, [System.Drawing.FontStyle]::Bold)
     $btnCreate.Cursor = [System.Windows.Forms.Cursors]::Hand
 
-    # Section heading labels: accent-tinted and semibold for visual hierarchy.
-    foreach ($lbl in @($lblSrc, $lblInc, $lblFmt, $lblOut, $lblLog)) {
+    # The Source/Destination frame titles are the headers now (styled inline);
+    # the Log label stays accent. In-frame sub-labels use normal ink.
+    foreach ($lbl in @($lblLog)) {
         $lbl.ForeColor = $clrAccentDk
         $lbl.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 9, [System.Drawing.FontStyle]::Bold)
     }
-
-    # Body field labels: consistent ink color.
-    foreach ($lbl in @($lblLabel, $lblFs, $lblSize)) { $lbl.ForeColor = $clrText }
+    foreach ($lbl in @($lblInc, $lblFmt, $lblLabel, $lblFs, $lblSize)) { $lbl.ForeColor = $clrText }
 
     # Terminal-style log pane: dark background, green mono text.
     $txtLog.BackColor = [System.Drawing.Color]::FromArgb(24, 26, 32)
