@@ -1381,8 +1381,7 @@ function Show-MainForm {
     [void]$form.Controls.Add($tabs)
 
     # Placeholders for tabs filled in by later parity phases.
-    foreach ($pair in @(@($tabOptions, 'Advanced options'),
-                        @($tabTools, 'Drive tools'),
+    foreach ($pair in @(@($tabTools, 'Drive tools'),
                         @($tabHelp, 'Help & shortcuts'))) {
         $note = New-Object System.Windows.Forms.Label
         $note.Text = "$($pair[1]) -- coming in a later phase.`r`nSee docs/Native-GUI-Parity-Plan.md"
@@ -1391,6 +1390,106 @@ function Show-MainForm {
         $note.Location = New-Object System.Drawing.Point(18, 18)
         [void]$pair[0].Controls.Add($note)
     }
+
+    # --- Options tab: partition scheme + multi-partition editor --------------
+    $lblScheme = New-Object System.Windows.Forms.Label
+    $lblScheme.Text = "Partition Scheme:"
+    $lblScheme.Location = New-Object System.Drawing.Point(15, 18)
+    $lblScheme.AutoSize = $true
+    $lblScheme.ForeColor = $clrAccentDk
+    $lblScheme.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 9, [System.Drawing.FontStyle]::Bold)
+    $tabOptions.Controls.Add($lblScheme)
+
+    $rbSchemeNone = New-Object System.Windows.Forms.RadioButton
+    $rbSchemeNone.Text = "None (raw FAT32)"
+    $rbSchemeNone.Location = New-Object System.Drawing.Point(135, 16)
+    $rbSchemeNone.AutoSize = $true
+    $rbSchemeNone.Checked = $true
+    $tabOptions.Controls.Add($rbSchemeNone)
+
+    $rbSchemeMbr = New-Object System.Windows.Forms.RadioButton
+    $rbSchemeMbr.Text = "MBR"
+    $rbSchemeMbr.Location = New-Object System.Drawing.Point(280, 16)
+    $rbSchemeMbr.AutoSize = $true
+    $tabOptions.Controls.Add($rbSchemeMbr)
+
+    $rbSchemeGpt = New-Object System.Windows.Forms.RadioButton
+    $rbSchemeGpt.Text = "GPT"
+    $rbSchemeGpt.Location = New-Object System.Drawing.Point(350, 16)
+    $rbSchemeGpt.AutoSize = $true
+    $tabOptions.Controls.Add($rbSchemeGpt)
+
+    $lblParts = New-Object System.Windows.Forms.Label
+    $lblParts.Text = "Partitions (used when scheme is MBR/GPT; blank Source falls back to the Build source):"
+    $lblParts.Location = New-Object System.Drawing.Point(15, 50)
+    $lblParts.AutoSize = $true
+    $tabOptions.Controls.Add($lblParts)
+
+    $grid = New-Object System.Windows.Forms.DataGridView
+    $grid.Location = New-Object System.Drawing.Point(15, 72)
+    $grid.Size = New-Object System.Drawing.Size(566, 250)
+    $grid.AllowUserToAddRows = $false
+    $grid.AllowUserToResizeRows = $false
+    $grid.RowHeadersVisible = $false
+    $grid.SelectionMode = [System.Windows.Forms.DataGridViewSelectionMode]::FullRowSelect
+    $grid.BackgroundColor = [System.Drawing.Color]::White
+    $grid.AutoSizeColumnsMode = [System.Windows.Forms.DataGridViewAutoSizeColumnsMode]::None
+
+    $colFs = New-Object System.Windows.Forms.DataGridViewComboBoxColumn
+    $colFs.HeaderText = "Filesystem"
+    $colFs.Name = "Fs"
+    [void]$colFs.Items.AddRange(@("esp", "fat32", "ntfs", "exfat"))
+    $colFs.Width = 90
+    [void]$grid.Columns.Add($colFs)
+
+    foreach ($c in @(@("Size", "Size (MB, blank=auto)", 120),
+                     @("Label", "Label", 110),
+                     @("Cluster", "Cluster (bytes)", 100),
+                     @("Source", "Source dir (blank=Build source)", 140))) {
+        $col = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
+        $col.Name = $c[0]; $col.HeaderText = $c[1]; $col.Width = $c[2]
+        [void]$grid.Columns.Add($col)
+    }
+    $tabOptions.Controls.Add($grid)
+
+    $btnAddPart = New-Object System.Windows.Forms.Button
+    $btnAddPart.Text = "Add Partition"
+    $btnAddPart.Location = New-Object System.Drawing.Point(15, 330)
+    $btnAddPart.Size = New-Object System.Drawing.Size(110, 26)
+    $btnAddPart.Add_Click({
+        $r = $grid.Rows.Add()
+        $grid.Rows[$r].Cells["Fs"].Value = "fat32"
+        $grid.Rows[$r].Cells["Label"].Value = "UEFITOOLS"
+    })
+    $tabOptions.Controls.Add($btnAddPart)
+
+    $btnRemovePart = New-Object System.Windows.Forms.Button
+    $btnRemovePart.Text = "Remove Last"
+    $btnRemovePart.Location = New-Object System.Drawing.Point(135, 330)
+    $btnRemovePart.Size = New-Object System.Drawing.Size(110, 26)
+    $btnRemovePart.Add_Click({
+        if ($grid.Rows.Count -gt 0) { $grid.Rows.RemoveAt($grid.Rows.Count - 1) }
+    })
+    $tabOptions.Controls.Add($btnRemovePart)
+
+    # Selecting MBR/GPT seeds a sensible default partition row; None clears.
+    $schemeChanged = {
+        $on = -not $rbSchemeNone.Checked
+        $grid.Enabled = $on; $btnAddPart.Enabled = $on; $btnRemovePart.Enabled = $on
+        if ($on -and $grid.Rows.Count -eq 0) {
+            if ($rbSchemeGpt.Checked) {
+                $r = $grid.Rows.Add(); $grid.Rows[$r].Cells["Fs"].Value = "esp"
+                $grid.Rows[$r].Cells["Label"].Value = "BOOT"
+            } else {
+                $r = $grid.Rows.Add(); $grid.Rows[$r].Cells["Fs"].Value = "fat32"
+                $grid.Rows[$r].Cells["Label"].Value = "UEFITOOLS"
+            }
+        }
+    }
+    $rbSchemeNone.Add_CheckedChanged($schemeChanged)
+    $rbSchemeMbr.Add_CheckedChanged($schemeChanged)
+    $rbSchemeGpt.Add_CheckedChanged($schemeChanged)
+    & $schemeChanged
 
     # --- Native status bar (docked bottom): status text left, progress right --
     $statusStrip = New-Object System.Windows.Forms.StatusStrip
@@ -1835,10 +1934,31 @@ function Show-MainForm {
                 -Includes $includes -Label $label -FileSystem $fs `
                 -LogBox $txtLog @optSwitches
         } else {
-            # --- Build an image file ---------------------------------------
-            $verboseSwitch = if ($chkVerbose.Checked) { @{Verbose=$true} } else { @{} }
-            New-UefiImage -SourceDir $src -Includes $includes -OutputFile $out `
-                -Label $label -SizeMB $sizeMB -LogBox $txtLog @verboseSwitch
+            # --- Build an image file: multi-partition (Options scheme) or
+            #     the simple single-FAT32 path ------------------------------
+            $scheme = if ($rbSchemeGpt.Checked) { 'GPT' } elseif ($rbSchemeMbr.Checked) { 'MBR' } else { 'None' }
+            if ($scheme -ne 'None' -and $grid.Rows.Count -gt 0) {
+                $parts = @()
+                foreach ($row in $grid.Rows) {
+                    $fsv = "$($row.Cells['Fs'].Value)"; if (-not $fsv) { $fsv = 'fat32' }
+                    $szv = "$($row.Cells['Size'].Value)".Trim()
+                    $clv = "$($row.Cells['Cluster'].Value)".Trim()
+                    $srcv = "$($row.Cells['Source'].Value)".Trim(); if (-not $srcv) { $srcv = $src }
+                    $parts += @{
+                        Fs      = $fsv
+                        SizeMB  = if ($szv -match '^\d+$') { [int]$szv } else { 0 }
+                        Label   = "$($row.Cells['Label'].Value)"
+                        Cluster = if ($clv -match '^\d+$') { [int]$clv } else { 0 }
+                        Source  = $srcv
+                    }
+                }
+                New-DiskImage -OutputFile $out -PartStyle $scheme -Partitions $parts `
+                    -Verbose:$chkVerbose.Checked -LogBox $txtLog
+            } else {
+                $verboseSwitch = if ($chkVerbose.Checked) { @{Verbose=$true} } else { @{} }
+                New-UefiImage -SourceDir $src -Includes $includes -OutputFile $out `
+                    -Label $label -SizeMB $sizeMB -LogBox $txtLog @verboseSwitch
+            }
         }
 
         $progress.MarqueeAnimationSpeed = 0
