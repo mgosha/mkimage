@@ -701,6 +701,28 @@ class TestPyzWindowsBuilds:
         finally:
             os.unlink(local)
 
+    def test_listimage_parses_gpt(self) -> None:
+        """Get-ImageInfo (-Action ListImage) parses a GPT partition table and
+        reports the EFI System Partition."""
+        src = self.VM_SRC.replace("/", "\\").replace("\\", "\\\\")
+        spec = ('[{"Fs":"esp","SizeMB":40,"Label":"B","Source":"' + src + '"},'
+                '{"Fs":"fat32","SizeMB":40,"Label":"D","Source":"' + src + '"}]')
+        fd, lj = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
+        with open(lj, "w") as f:
+            f.write(spec)
+        try:
+            assert winvm_scp_to(lj, "C:/test/li.json").returncode == 0
+        finally:
+            os.unlink(lj)
+        mk = (lambda a: "powershell -NoProfile -ExecutionPolicy Bypass -Command "
+              f"\"& '{VM_MKIMAGE_PS1}' {a} 2>&1 | Out-String\"")
+        winvm_ssh(mk("-Action CreateDisk -OutputFile C:/test/r_li.img -PartStyle GPT "
+                     "-PartitionsJson (Get-Content C:/test/li.json -Raw)"), timeout=200)
+        out = winvm_ssh(mk("-Action ListImage -SourceDir C:/test/r_li.img"), timeout=60).stdout
+        assert "Partition table: GPT" in out, out
+        assert "EFI System" in out, out
+
     def test_iso_has_el_torito_efi_boot(self) -> None:
         """An ISO built from a tree with EFI/BOOT/BOOTX64.EFI must carry an El
         Torito boot record (i.e. be UEFI-bootable), not be data-only."""

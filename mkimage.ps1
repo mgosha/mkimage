@@ -1,10 +1,12 @@
 param(
-    [ValidateSet('', 'WriteUsb', 'CreateImg', 'CreateIso', 'CreateDisk', 'Clone')]
+    [ValidateSet('', 'WriteUsb', 'CreateImg', 'CreateIso', 'CreateDisk', 'Clone',
+                 'Wipe', 'Check', 'Format', 'ListImage')]
     [string]$Action = '',
     [int]$DiskNumber = -1,
     [int]$SourceDiskNumber = -1,
     [string]$PartStyle = 'GPT',
     [string]$PartitionsJson = '',
+    [string]$FileSystem = 'FAT32',
     [string]$SourceDir = '',
     [string[]]$Includes = @(),
     [string]$Label = 'UEFITOOLS',
@@ -532,6 +534,205 @@ function Compress-FileGzip {
         Write-Log "[ERROR] gzip compression failed: $_"
         return $false
     }
+}
+
+# ---------------------------------------------------------------------------
+# Drive tools: wipe, bad-blocks check, and image listing.
+# ---------------------------------------------------------------------------
+
+# Run a self-contained elevated PowerShell worker that appends progress lines
+# (including a final OK:/ERROR: line) to $ProgressFile, polling it live to the
+# log. Returns the final status line. Mirrors Write-UsbDrive's elevation flow.
+function Invoke-ElevatedWorker {
+    param([string]$Body, [string]$ProgressFile, $LogBox = $null)
+    function WL([string]$m) { if ($LogBox) { $LogBox.AppendText("$m`r`n") } else { Write-Host $m } }
+    $tmp = [System.IO.Path]::GetTempFileName() -replace '\.tmp$', '.ps1'
+    [System.IO.File]::WriteAllText($tmp, $Body)
+    try {
+        $proc = Start-Process -FilePath "powershell.exe" `
+            -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $tmp `
+            -Verb RunAs -PassThru -WindowStyle Hidden
+        if ($null -eq $proc) { WL "Aborted - Administrator access denied."; return "" }
+        $read = 0
+        while (-not $proc.HasExited) {
+            if ($LogBox) { [System.Windows.Forms.Application]::DoEvents() }
+            Start-Sleep -Milliseconds 300
+            if (Test-Path $ProgressFile) {
+                $all = @(Get-Content $ProgressFile -ErrorAction SilentlyContinue)
+                for ($i = $read; $i -lt $all.Count; $i++) { if ($all[$i]) { WL "  $($all[$i])" } }
+                $read = $all.Count
+                if ($LogBox -and $LogBox.Parent) { $LogBox.Parent.Refresh() }
+            }
+        }
+        Start-Sleep -Milliseconds 400
+        $final = ""
+        if (Test-Path $ProgressFile) {
+            $all = @(Get-Content $ProgressFile -ErrorAction SilentlyContinue)
+            for ($i = $read; $i -lt $all.Count; $i++) { if ($all[$i]) { WL "  $($all[$i])" } }
+            if ($all.Count -gt 0) { $final = $all[-1].Trim() }
+        }
+        return $final
+    } catch {
+        if ($_.Exception.Message -match 'canceled by the user') { WL "Aborted - Administrator access denied." }
+        else { WL "[ERROR] $_" }
+        return ""
+    } finally {
+        Remove-Item $tmp -ErrorAction SilentlyContinue
+    }
+}
+
+# Shared destructive-device safety: reject the C: disk and oversized disks.
+function Test-DriveSafe {
+    param([int]$DiskNumber, [double]$DiskSizeBytes, $LogBox = $null)
+    function WL([string]$m) { if ($LogBox) { $LogBox.AppendText("$m`r`n") } else { Write-Host $m } }
+    $parts = Get-Partition -DiskNumber $DiskNumber -ErrorAction SilentlyContinue
+    if ($parts | Where-Object { $_.DriveLetter -eq 'C' }) {
+        WL "ERROR: Disk $DiskNumber contains the C: drive. Refusing."
+        if ($LogBox) { [System.Windows.Forms.MessageBox]::Show("Disk $DiskNumber contains the C: drive. Refusing.", "Safety Check Failed", "OK", "Error") }
+        return $false
+    }
+    if ($DiskSizeBytes -gt ($MAX_USB_SIZE_GB * 1GB)) {
+        WL "ERROR: Disk $DiskNumber larger than ${MAX_USB_SIZE_GB}GB. Refusing."
+        return $false
+    }
+    return $true
+}
+
+# Wipe all partition signatures from a disk (diskpart clean).
+function Invoke-WipeDrive {
+    param([int]$DiskNumber, [double]$DiskSizeBytes = 0, [string]$Model = '',
+          [switch]$SkipConfirm, [string]$CliProgressFile = '', $LogBox = $null)
+    function WL([string]$m) { if ($CliProgressFile) { $m | Out-File -Append $CliProgressFile } elseif ($LogBox) { $LogBox.AppendText("$m`r`n") } else { Write-Host $m } }
+    if (-not (Test-DriveSafe -DiskNumber $DiskNumber -DiskSizeBytes $DiskSizeBytes -LogBox $LogBox)) { return }
+    if (-not $SkipConfirm) {
+        if ($LogBox) {
+            $c = [System.Windows.Forms.MessageBox]::Show("WARNING: ALL DATA on \\.\PhysicalDrive$DiskNumber ($Model) WILL BE ERASED.`n`nProceed?", "Confirm Wipe", "YesNo", "Warning")
+            if ($c -ne "Yes") { WL "Aborted."; return }
+        } else { WL "WARNING: would wipe disk $DiskNumber. Aborted (use -SkipConfirm)."; return }
+    }
+    $pf = if ($CliProgressFile) { $CliProgressFile } else { [System.IO.Path]::GetTempFileName() }
+    $pfEsc = $pf -replace "'", "''"
+    $body = @"
+try {
+    '  Wiping disk __N__ (diskpart clean)...' | Out-File -Append '$pfEsc'
+    Set-Disk -Number __N__ -IsReadOnly `$false -ErrorAction SilentlyContinue
+    "select disk __N__`r`nclean" | diskpart | Out-Null
+    'OK:wiped' | Out-File -Append '$pfEsc'
+} catch { "ERROR: `$_" | Out-File -Append '$pfEsc' }
+"@.Replace('__N__', "$DiskNumber")
+    $final = Invoke-ElevatedWorker -Body $body -ProgressFile $pf -LogBox $LogBox
+    if (-not $CliProgressFile) { Remove-Item $pf -ErrorAction SilentlyContinue }
+    if ($final -match '^OK:') { WL "[OK] Disk $DiskNumber wiped." } elseif ($final -match '^ERROR:') { WL "[ERROR] $final" }
+}
+
+# Destructive bad-blocks test: write a pattern across the raw device, read it
+# back, and count mismatches. (Windows has no `badblocks`.)
+function Test-DriveBadBlocks {
+    param([int]$DiskNumber, [double]$DiskSizeBytes = 0, [string]$Model = '',
+          [switch]$SkipConfirm, [string]$CliProgressFile = '', $LogBox = $null)
+    function WL([string]$m) { if ($CliProgressFile) { $m | Out-File -Append $CliProgressFile } elseif ($LogBox) { $LogBox.AppendText("$m`r`n") } else { Write-Host $m } }
+    if (-not (Test-DriveSafe -DiskNumber $DiskNumber -DiskSizeBytes $DiskSizeBytes -LogBox $LogBox)) { return }
+    if (-not $SkipConfirm) {
+        if ($LogBox) {
+            $c = [System.Windows.Forms.MessageBox]::Show("WARNING: a bad-blocks check is DESTRUCTIVE - ALL DATA on \\.\PhysicalDrive$DiskNumber ($Model) WILL BE ERASED.`n`nProceed?", "Confirm Check", "YesNo", "Warning")
+            if ($c -ne "Yes") { WL "Aborted."; return }
+        } else { WL "WARNING: destructive check on disk $DiskNumber. Aborted (use -SkipConfirm)."; return }
+    }
+    $pf = if ($CliProgressFile) { $CliProgressFile } else { [System.IO.Path]::GetTempFileName() }
+    $pfEsc = $pf -replace "'", "''"
+    $body = @"
+`$prog = '$pfEsc'
+function P([string]`$m){ `$m | Out-File -Append `$prog }
+try {
+    Set-Disk -Number __N__ -IsReadOnly `$false -ErrorAction SilentlyContinue
+    Set-Disk -Number __N__ -IsOffline `$true -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 1
+    "select disk __N__`r`nclean" | diskpart | Out-Null
+    Set-Disk -Number __N__ -IsOffline `$true -ErrorAction SilentlyContinue
+    `$dev = "\\.\PhysicalDrive__N__"
+    `$total = [int64](Get-Disk -Number __N__).Size
+    `$chunk = 4MB
+    `$pat = New-Object byte[] `$chunk
+    for (`$i=0; `$i -lt `$chunk; `$i++){ `$pat[`$i] = 0xA5 }
+    P "Bad-blocks check: writing pattern over `$total bytes..."
+    `$w = [System.IO.FileStream]::new(`$dev,[System.IO.FileMode]::Open,[System.IO.FileAccess]::Write,[System.IO.FileShare]::ReadWrite)
+    [int64]`$done = 0; `$lp = -1
+    while (`$done -lt `$total) {
+        `$n = [Math]::Min([int64]`$chunk, `$total - `$done)
+        `$w.Write(`$pat, 0, [int]`$n); `$done += `$n
+        `$pct = [int]((`$done*100)/`$total); if (`$pct -ne `$lp -and (`$pct % 25) -eq 0){ P "  write `$pct%"; `$lp=`$pct }
+    }
+    `$w.Flush(); `$w.Close()
+    P "Verifying..."
+    `$r = [System.IO.FileStream]::new(`$dev,[System.IO.FileMode]::Open,[System.IO.FileAccess]::Read,[System.IO.FileShare]::ReadWrite)
+    `$buf = New-Object byte[] `$chunk; [int64]`$rd = 0; `$bad = 0; `$lp = -1
+    while (`$rd -lt `$total) {
+        `$want = [Math]::Min([int64]`$chunk, `$total - `$rd)
+        `$got = `$r.Read(`$buf, 0, [int]`$want); if (`$got -le 0){ break }
+        for (`$j=0; `$j -lt `$got; `$j++){ if (`$buf[`$j] -ne 0xA5){ `$bad++ } }
+        `$rd += `$got
+        `$pct = [int]((`$rd*100)/`$total); if (`$pct -ne `$lp -and (`$pct % 25) -eq 0){ P "  verify `$pct%"; `$lp=`$pct }
+    }
+    `$r.Close()
+    Set-Disk -Number __N__ -IsOffline `$false -ErrorAction SilentlyContinue
+    if (`$bad -eq 0){ P "OK:0 bad bytes" } else { P "OK:`$bad bad bytes" }
+} catch {
+    "ERROR: `$_" | Out-File -Append `$prog
+    Set-Disk -Number __N__ -IsOffline `$false -ErrorAction SilentlyContinue
+}
+"@.Replace('__N__', "$DiskNumber")
+    $final = Invoke-ElevatedWorker -Body $body -ProgressFile $pf -LogBox $LogBox
+    if (-not $CliProgressFile) { Remove-Item $pf -ErrorAction SilentlyContinue }
+    if ($final -match '^OK:(\d+)') {
+        if ([int]$Matches[1] -eq 0) { WL "[OK] No bad blocks found on disk $DiskNumber." }
+        else { WL "[WARN] $($Matches[1]) bad bytes on disk $DiskNumber." }
+    } elseif ($final -match '^ERROR:') { WL "[ERROR] $final" }
+}
+
+# List an image's partition table (MBR/GPT) or report ISO 9660. Read-only.
+function Get-ImageInfo {
+    param([string]$ImagePath, [string]$CliProgressFile = '', $LogBox = $null)
+    function WL([string]$m) { if ($CliProgressFile) { $m | Out-File -Append $CliProgressFile } elseif ($LogBox) { $LogBox.AppendText("$m`r`n") } else { Write-Host $m } }
+    if (-not (Test-Path $ImagePath -PathType Leaf)) { WL "[ERROR] Image not found: $ImagePath"; return }
+    try {
+        $f = [System.IO.File]::OpenRead($ImagePath)
+        $size = $f.Length
+        WL "Image: $ImagePath ($([math]::Round($size/1MB))MB)"
+        $s0 = New-Object byte[] 512; [void]$f.Read($s0, 0, 512)
+        if ($s0[510] -eq 0x55 -and $s0[511] -eq 0xAA -and $s0[450] -eq 0xEE) {
+            WL "Partition table: GPT"
+            $f.Seek(512, 0) | Out-Null; $hdr = New-Object byte[] 512; [void]$f.Read($hdr, 0, 512)
+            $partLba = [BitConverter]::ToUInt64($hdr, 72)
+            $num = [BitConverter]::ToUInt32($hdr, 80)
+            $esz = [BitConverter]::ToUInt32($hdr, 84)
+            $f.Seek([long]$partLba * 512, 0) | Out-Null
+            $shown = 0
+            for ($i = 0; $i -lt [Math]::Min($num, 128); $i++) {
+                $e = New-Object byte[] $esz; [void]$f.Read($e, 0, $esz)
+                if ((($e[0..15] | Measure-Object -Sum).Sum) -eq 0) { continue }
+                $first = [BitConverter]::ToUInt64($e, 32); $last = [BitConverter]::ToUInt64($e, 40)
+                $szMB = [math]::Round((($last - $first + 1) * 512) / 1MB)
+                $guid = [Guid]::new([byte[]]($e[0..15])).ToString()
+                $nm = [System.Text.Encoding]::Unicode.GetString($e, 56, 72).Trim([char]0)
+                $kind = if ($guid -eq 'c12a7328-f81f-11d2-ba4b-00a0c93ec93b') { 'EFI System' } else { 'data' }
+                WL ("  Partition {0}: {1}MB  {2}  {3}" -f (++$shown), $szMB, $kind, $nm)
+            }
+        } elseif ($s0[510] -eq 0x55 -and $s0[511] -eq 0xAA) {
+            WL "Partition table: MBR"
+            for ($i = 0; $i -lt 4; $i++) {
+                $o = 446 + $i * 16; $t = $s0[$o + 4]
+                if ($t -eq 0) { continue }
+                $lba = [BitConverter]::ToUInt32($s0, $o + 8); $cnt = [BitConverter]::ToUInt32($s0, $o + 12)
+                WL ("  Partition {0}: {1}MB  type=0x{2:X2}  start LBA {3}" -f ($i + 1), [math]::Round(($cnt * 512) / 1MB), $t, $lba)
+            }
+        } else {
+            $f.Seek(0x8001, 0) | Out-Null; $cd = New-Object byte[] 5; [void]$f.Read($cd, 0, 5)
+            if ([System.Text.Encoding]::ASCII.GetString($cd) -eq 'CD001') { WL "Format: ISO 9660" }
+            else { WL "Format: raw / no partition table" }
+        }
+        $f.Close()
+        WL "[OK] Listed image contents"
+    } catch { WL "[ERROR] $_" }
 }
 
 # Create an ISO image using oscdimg.exe (Windows ADK) or a staging directory.
@@ -1432,8 +1633,7 @@ function Show-MainForm {
     [void]$form.Controls.Add($tabs)
 
     # Placeholders for tabs filled in by later parity phases.
-    foreach ($pair in @(@($tabTools, 'Drive tools'),
-                        @($tabHelp, 'Help & shortcuts'))) {
+    foreach ($pair in @(, @($tabHelp, 'Help & shortcuts'))) {
         $note = New-Object System.Windows.Forms.Label
         $note.Text = "$($pair[1]) -- coming in a later phase.`r`nSee docs/Native-GUI-Parity-Plan.md"
         $note.AutoSize = $true
@@ -1441,6 +1641,148 @@ function Show-MainForm {
         $note.Location = New-Object System.Drawing.Point(18, 18)
         [void]$pair[0].Controls.Add($note)
     }
+
+    # --- Tools tab: shared drive selector + Format / Wipe / Check / List -----
+    $script:toolDrives = @()
+    $lblToolDrive = New-Object System.Windows.Forms.Label
+    $lblToolDrive.Text = "Drive:"
+    $lblToolDrive.Location = New-Object System.Drawing.Point(12, 16)
+    $lblToolDrive.AutoSize = $true
+    $lblToolDrive.ForeColor = $clrAccentDk
+    $lblToolDrive.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 9, [System.Drawing.FontStyle]::Bold)
+    $tabTools.Controls.Add($lblToolDrive)
+
+    $cmbToolDrive = New-Object System.Windows.Forms.ComboBox
+    $cmbToolDrive.Location = New-Object System.Drawing.Point(60, 13)
+    $cmbToolDrive.Size = New-Object System.Drawing.Size(420, 23)
+    $cmbToolDrive.DropDownStyle = "DropDownList"
+    $cmbToolDrive.Font = New-Object System.Drawing.Font("Consolas", 9)
+    $tabTools.Controls.Add($cmbToolDrive)
+
+    $btnToolRefresh = New-Object System.Windows.Forms.Button
+    $btnToolRefresh.Text = "Refresh"
+    $btnToolRefresh.Location = New-Object System.Drawing.Point(488, 12)
+    $btnToolRefresh.Size = New-Object System.Drawing.Size(90, 25)
+    $btnToolRefresh.Add_Click({
+        $cmbToolDrive.Items.Clear()
+        $script:toolDrives = Get-UsbDrives
+        if ($script:toolDrives.Count -eq 0) { $cmbToolDrive.Items.Add("(no USB drives found)") }
+        else { foreach ($d in $script:toolDrives) { $cmbToolDrive.Items.Add("$($d.Path)  $($d.Size)  $($d.Model)") } }
+        if ($cmbToolDrive.Items.Count -gt 0) { $cmbToolDrive.SelectedIndex = 0 }
+    })
+    $tabTools.Controls.Add($btnToolRefresh)
+
+    # Helper: resolve the selected tool drive (or $null with a message box).
+    $getToolDrive = {
+        if ($script:toolDrives.Count -eq 0 -or $cmbToolDrive.SelectedIndex -lt 0) {
+            [System.Windows.Forms.MessageBox]::Show("No USB drive selected. Click Refresh.", "Error", "OK", "Error")
+            return $null
+        }
+        return $script:toolDrives[$cmbToolDrive.SelectedIndex]
+    }
+
+    # Format group
+    $grpFmt = New-Object System.Windows.Forms.GroupBox
+    $grpFmt.Text = "Format Drive"
+    $grpFmt.Location = New-Object System.Drawing.Point(12, 46)
+    $grpFmt.Size = New-Object System.Drawing.Size(566, 78)
+    $tabTools.Controls.Add($grpFmt)
+
+    $lblFmtFs = New-Object System.Windows.Forms.Label
+    $lblFmtFs.Text = "Filesystem:"; $lblFmtFs.Location = New-Object System.Drawing.Point(12, 24); $lblFmtFs.AutoSize = $true
+    $grpFmt.Controls.Add($lblFmtFs)
+    $cmbFmtFs = New-Object System.Windows.Forms.ComboBox
+    $cmbFmtFs.DropDownStyle = "DropDownList"; $cmbFmtFs.Items.AddRange(@("FAT32", "NTFS", "exFAT"))
+    $cmbFmtFs.SelectedIndex = 0; $cmbFmtFs.Location = New-Object System.Drawing.Point(85, 21); $cmbFmtFs.Size = New-Object System.Drawing.Size(80, 23)
+    $grpFmt.Controls.Add($cmbFmtFs)
+    $lblFmtLabel = New-Object System.Windows.Forms.Label
+    $lblFmtLabel.Text = "Label:"; $lblFmtLabel.Location = New-Object System.Drawing.Point(180, 24); $lblFmtLabel.AutoSize = $true
+    $grpFmt.Controls.Add($lblFmtLabel)
+    $txtFmtLabel = New-Object System.Windows.Forms.TextBox
+    $txtFmtLabel.Text = "UEFITOOLS"; $txtFmtLabel.Location = New-Object System.Drawing.Point(225, 21); $txtFmtLabel.Size = New-Object System.Drawing.Size(120, 23)
+    $grpFmt.Controls.Add($txtFmtLabel)
+    $chkFmtGpt = New-Object System.Windows.Forms.CheckBox
+    $chkFmtGpt.Text = "GPT"; $chkFmtGpt.Location = New-Object System.Drawing.Point(360, 23); $chkFmtGpt.AutoSize = $true
+    $grpFmt.Controls.Add($chkFmtGpt)
+    $btnFmt = New-Object System.Windows.Forms.Button
+    $btnFmt.Text = "Format"; $btnFmt.Location = New-Object System.Drawing.Point(458, 20); $btnFmt.Size = New-Object System.Drawing.Size(95, 27)
+    $btnFmt.Add_Click({
+        $drv = & $getToolDrive; if (-not $drv) { return }
+        $tabs.SelectedTab = $tabLog
+        $empty = Join-Path $env:TEMP ("mkimage-empty-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
+        New-Item -ItemType Directory -Force -Path $empty | Out-Null
+        $txtLog.AppendText("`r`n--- Format $($drv.Path) ($($cmbFmtFs.SelectedItem)) ---`r`n")
+        Write-UsbDrive -TargetDrive $drv -SourceDir $empty -Label $txtFmtLabel.Text -FileSystem $cmbFmtFs.SelectedItem -UseGpt:$chkFmtGpt.Checked -LogBox $txtLog
+        Remove-Item $empty -Recurse -Force -ErrorAction SilentlyContinue
+    })
+    $grpFmt.Controls.Add($btnFmt)
+
+    # Wipe + Check group
+    $grpWipe = New-Object System.Windows.Forms.GroupBox
+    $grpWipe.Text = "Wipe / Check (destructive)"
+    $grpWipe.Location = New-Object System.Drawing.Point(12, 132)
+    $grpWipe.Size = New-Object System.Drawing.Size(566, 70)
+    $tabTools.Controls.Add($grpWipe)
+    $lblWipe = New-Object System.Windows.Forms.Label
+    $lblWipe.Text = "Wipe removes all partition signatures. Check writes & verifies a test pattern (erases data)."
+    $lblWipe.Location = New-Object System.Drawing.Point(12, 20); $lblWipe.AutoSize = $true
+    $grpWipe.Controls.Add($lblWipe)
+    $btnWipe = New-Object System.Windows.Forms.Button
+    $btnWipe.Text = "Wipe"; $btnWipe.Location = New-Object System.Drawing.Point(348, 38); $btnWipe.Size = New-Object System.Drawing.Size(95, 25)
+    $btnWipe.Add_Click({
+        $drv = & $getToolDrive; if (-not $drv) { return }
+        $tabs.SelectedTab = $tabLog
+        $txtLog.AppendText("`r`n--- Wipe $($drv.Path) ---`r`n")
+        Invoke-WipeDrive -DiskNumber $drv.Number -DiskSizeBytes $drv.SizeBytes -Model $drv.Model -LogBox $txtLog
+    })
+    $grpWipe.Controls.Add($btnWipe)
+    $btnCheck = New-Object System.Windows.Forms.Button
+    $btnCheck.Text = "Check"; $btnCheck.Location = New-Object System.Drawing.Point(458, 38); $btnCheck.Size = New-Object System.Drawing.Size(95, 25)
+    $btnCheck.Add_Click({
+        $drv = & $getToolDrive; if (-not $drv) { return }
+        $tabs.SelectedTab = $tabLog
+        $txtLog.AppendText("`r`n--- Check $($drv.Path) ---`r`n")
+        Test-DriveBadBlocks -DiskNumber $drv.Number -DiskSizeBytes $drv.SizeBytes -Model $drv.Model -LogBox $txtLog
+    })
+    $grpWipe.Controls.Add($btnCheck)
+
+    # List Image group
+    $grpList = New-Object System.Windows.Forms.GroupBox
+    $grpList.Text = "List Image Contents"
+    $grpList.Location = New-Object System.Drawing.Point(12, 210)
+    $grpList.Size = New-Object System.Drawing.Size(566, 66)
+    $tabTools.Controls.Add($grpList)
+    $txtListPath = New-Object System.Windows.Forms.TextBox
+    $txtListPath.Location = New-Object System.Drawing.Point(12, 26); $txtListPath.Size = New-Object System.Drawing.Size(340, 23)
+    $grpList.Controls.Add($txtListPath)
+    $btnListBrowse = New-Object System.Windows.Forms.Button
+    $btnListBrowse.Text = "Browse..."; $btnListBrowse.Location = New-Object System.Drawing.Point(360, 25); $btnListBrowse.Size = New-Object System.Drawing.Size(90, 25)
+    $btnListBrowse.Add_Click({
+        $ofd = New-Object System.Windows.Forms.OpenFileDialog
+        $ofd.Filter = "Disk images (*.img;*.iso)|*.img;*.iso|All Files (*.*)|*.*"
+        if ($ofd.ShowDialog() -eq "OK") { $txtListPath.Text = $ofd.FileName }
+    })
+    $grpList.Controls.Add($btnListBrowse)
+    $btnList = New-Object System.Windows.Forms.Button
+    $btnList.Text = "List"; $btnList.Location = New-Object System.Drawing.Point(458, 25); $btnList.Size = New-Object System.Drawing.Size(95, 25)
+    $btnList.Add_Click({
+        $p = $txtListPath.Text.Trim()
+        if (-not $p) { [System.Windows.Forms.MessageBox]::Show("Select an image file.", "Error", "OK", "Error"); return }
+        $tabs.SelectedTab = $tabLog
+        $txtLog.AppendText("`r`n--- List $p ---`r`n")
+        Get-ImageInfo -ImagePath $p -LogBox $txtLog
+    })
+    $grpList.Controls.Add($btnList)
+
+    # Persistent partition (live Linux, ext4) -- not native on Windows.
+    $chkPersist = New-Object System.Windows.Forms.CheckBox
+    $chkPersist.Text = "Persistent partition (live Linux, ext4) -- not available on Windows"
+    $chkPersist.Location = New-Object System.Drawing.Point(14, 285)
+    $chkPersist.AutoSize = $true
+    $chkPersist.Enabled = $false
+    $tabTools.Controls.Add($chkPersist)
+    $toolTip = New-Object System.Windows.Forms.ToolTip
+    $toolTip.SetToolTip($chkPersist, "ext4 cannot be created natively on Windows. Use the Linux/macOS build, or the cross-platform Python GUI, for persistent live-Linux media.")
 
     # --- Options tab: partition scheme + multi-partition editor --------------
     $lblScheme = New-Object System.Windows.Forms.Label
@@ -2068,7 +2410,9 @@ function Show-MainForm {
 
     # --- Apply the theme to all controls (single DRY pass) --------------------
     # Secondary (neutral) buttons: flat white, hairline border, soft blue hover.
-    foreach ($b in @($btnSrc, $btnSrcRefresh, $btnAddFile, $btnAddDir, $btnClear, $btnOut, $btnRefresh)) {
+    foreach ($b in @($btnSrc, $btnSrcRefresh, $btnAddFile, $btnAddDir, $btnClear, $btnOut, $btnRefresh,
+                     $btnAddPart, $btnRemovePart, $btnToolRefresh, $btnFmt, $btnWipe, $btnCheck,
+                     $btnListBrowse, $btnList)) {
         $b.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
         $b.FlatAppearance.BorderColor = $clrBorder
         $b.FlatAppearance.BorderSize = 1
@@ -2186,6 +2530,40 @@ if ($Action) {
             Copy-DiskImage -SourcePath $SourceDir -SourceDiskNum $SourceDiskNumber -SourceSizeBytes $srcSize `
                 -DestPath $OutputFile -DestDiskNum $DiskNumber -DestSizeBytes $dstSize -DestModel $dstModel `
                 -Verify:$Verify -SkipConfirm:$SkipConfirm -CliProgressFile $ProgressFile
+        }
+        'Wipe' {
+            if ($DiskNumber -lt 0) { Write-Error "DiskNumber required for Wipe"; exit 1 }
+            $d = Get-Disk -Number $DiskNumber -ErrorAction SilentlyContinue
+            if (-not $d) { Write-Error "Disk $DiskNumber not found"; exit 1 }
+            Invoke-WipeDrive -DiskNumber $DiskNumber -DiskSizeBytes ([double]$d.Size) `
+                -Model $d.FriendlyName -SkipConfirm:$SkipConfirm -CliProgressFile $ProgressFile
+        }
+        'Check' {
+            if ($DiskNumber -lt 0) { Write-Error "DiskNumber required for Check"; exit 1 }
+            $d = Get-Disk -Number $DiskNumber -ErrorAction SilentlyContinue
+            if (-not $d) { Write-Error "Disk $DiskNumber not found"; exit 1 }
+            Test-DriveBadBlocks -DiskNumber $DiskNumber -DiskSizeBytes ([double]$d.Size) `
+                -Model $d.FriendlyName -SkipConfirm:$SkipConfirm -CliProgressFile $ProgressFile
+        }
+        'Format' {
+            if ($DiskNumber -lt 0) { Write-Error "DiskNumber required for Format"; exit 1 }
+            $d = Get-Disk -Number $DiskNumber -ErrorAction SilentlyContinue
+            if (-not $d) { Write-Error "Disk $DiskNumber not found"; exit 1 }
+            # Format = write an empty source to the drive (clean + partition + format, no files).
+            $empty = Join-Path $env:TEMP ("mkimage-empty-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
+            New-Item -ItemType Directory -Force -Path $empty | Out-Null
+            $gb = [math]::Round($d.Size / 1GB, 1)
+            $drive = [PSCustomObject]@{
+                Number = $DiskNumber; Name = "Disk $DiskNumber"; Size = "${gb}GB"
+                SizeBytes = $d.Size; Model = $d.FriendlyName; Path = "\\.\PhysicalDrive$DiskNumber"
+            }
+            Write-UsbDrive -TargetDrive $drive -SourceDir $empty -Label $Label -FileSystem $FileSystem `
+                -UseGpt:$UseGpt -Verbose:$Verbose -SkipConfirm:$SkipConfirm -CliProgressFile $ProgressFile
+            Remove-Item $empty -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        'ListImage' {
+            if (-not $SourceDir) { Write-Error "SourceDir (image path) required for ListImage"; exit 1 }
+            Get-ImageInfo -ImagePath $SourceDir -CliProgressFile $ProgressFile
         }
         default {
             Write-Error "Unknown action: $Action"
