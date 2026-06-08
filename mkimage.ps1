@@ -914,7 +914,7 @@ function Show-MainForm {
 
     $form = New-Object System.Windows.Forms.Form
     $form.Text = "mkimage - Bootable Media Creator"
-    $form.ClientSize = New-Object System.Drawing.Size(612, 548)
+    $form.ClientSize = New-Object System.Drawing.Size(612, 526)
     $form.StartPosition = "CenterScreen"
     $form.FormBorderStyle = "FixedSingle"
     $form.MaximizeBox = $false
@@ -985,20 +985,20 @@ function Show-MainForm {
         [void]$pair[0].Controls.Add($note)
     }
 
-    # --- Footer status bar (below the tabs, shared by all tabs) --------------
-    $progress = New-Object System.Windows.Forms.ProgressBar
-    $progress.Location = New-Object System.Drawing.Point(12, 514)
-    $progress.Size = New-Object System.Drawing.Size(360, 18)
+    # --- Native status bar (docked bottom): status text left, progress right --
+    $statusStrip = New-Object System.Windows.Forms.StatusStrip
+    $statusStrip.SizingGrip = $false
+    $lblStatus = New-Object System.Windows.Forms.ToolStripStatusLabel
+    $lblStatus.Text = "Ready"
+    $lblStatus.Spring = $true
+    $lblStatus.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
+    $progress = New-Object System.Windows.Forms.ToolStripProgressBar
     $progress.Style = [System.Windows.Forms.ProgressBarStyle]::Marquee
     $progress.MarqueeAnimationSpeed = 0
-    [void]$form.Controls.Add($progress)
-
-    $lblStatus = New-Object System.Windows.Forms.Label
-    $lblStatus.Text = "Ready"
-    $lblStatus.AutoSize = $true
-    $lblStatus.ForeColor = $clrText
-    $lblStatus.Location = New-Object System.Drawing.Point(382, 516)
-    [void]$form.Controls.Add($lblStatus)
+    $progress.Visible = $false
+    [void]$statusStrip.Items.Add($lblStatus)
+    [void]$statusStrip.Items.Add($progress)
+    [void]$form.Controls.Add($statusStrip)
 
     $y = 12
 
@@ -1305,6 +1305,7 @@ function Show-MainForm {
         $sizeMB = if ($txtSize.Text -match '^\d+$') { [int]$txtSize.Text } else { 32 }
 
         $btnCreate.Enabled = $false
+        $progress.Visible = $true
         $progress.MarqueeAnimationSpeed = 30
         $lblStatus.Text = "Working..."
         $txtLog.AppendText("`r`n--- $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') ---`r`n")
@@ -1338,6 +1339,7 @@ function Show-MainForm {
         }
 
         $progress.MarqueeAnimationSpeed = 0
+        $progress.Visible = $false
         $lblStatus.Text = "Done"
         $btnCreate.Enabled = $true
     })
