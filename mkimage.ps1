@@ -14,6 +14,8 @@ param(
     [switch]$SkipConfirm,
     [switch]$Verbose,
     [switch]$Verify,
+    [switch]$Udf,
+    [switch]$Hybrid,
     [string]$ProgressFile = '',
     [string]$BootImage = ''
 )
@@ -499,6 +501,39 @@ function New-DiskImage {
     }
 }
 
+# ---------------------------------------------------------------------------
+# Gzip-compress a file (produces standard .gz, readable by gzip/gunzip/zcat).
+# ---------------------------------------------------------------------------
+function Compress-FileGzip {
+    param(
+        [string]$InputFile,
+        [string]$OutputFile,
+        [string]$ProgressFile = "",
+        $LogBox = $null
+    )
+    function Write-Log([string]$Message) {
+        if ($ProgressFile) { $Message | Out-File -Append $ProgressFile }
+        elseif ($LogBox) { $LogBox.AppendText("$Message`r`n") }
+        else { Write-Host $Message }
+    }
+    try {
+        Write-Log "Compressing to $([System.IO.Path]::GetFileName($OutputFile)) (gzip)..."
+        $in = [System.IO.File]::OpenRead($InputFile)
+        $outFs = [System.IO.File]::Create($OutputFile)
+        $gz = New-Object System.IO.Compression.GZipStream($outFs, [System.IO.Compression.CompressionMode]::Compress)
+        $buf = New-Object byte[] (4 * 1MB)
+        while (($n = $in.Read($buf, 0, $buf.Length)) -gt 0) { $gz.Write($buf, 0, $n) }
+        $gz.Close(); $outFs.Close(); $in.Close()
+        $orig = (Get-Item $InputFile).Length
+        $comp = (Get-Item $OutputFile).Length
+        Write-Log "[OK] Compressed $([math]::Round($orig/1MB))MB -> $([math]::Round($comp/1MB))MB"
+        return $true
+    } catch {
+        Write-Log "[ERROR] gzip compression failed: $_"
+        return $false
+    }
+}
+
 # Create an ISO image using oscdimg.exe (Windows ADK) or a staging directory.
 # Falls back to a simple copy-to-directory if no ISO tool is found.
 # Compile the IStream interop helper: CopyToFile (drain a COM IStream to a
@@ -553,6 +588,8 @@ function New-IsoImage {
         [string]$OutputFile,
         [string]$Label,
         [string]$BootImage = '',
+        [switch]$Udf,
+        [switch]$Hybrid,
         [switch]$Verbose,
         $LogBox = $null
     )
@@ -608,10 +645,20 @@ function New-IsoImage {
             Write-Log "Creating ISO with oscdimg.exe..."
             Refresh-Log
             $args = "-l$isoLabel", "-o", "-m"
+            if ($Udf) {
+                # UDF 2.x bridge (ISO 9660 + UDF) — supports files larger than 4GB.
+                $args += "-u2"
+                Write-Log "  (UDF bridge: ISO 9660 + UDF 2.x, >4GB files)"
+            }
             if ($BootImage -and (Test-Path $BootImage)) {
                 # UEFI El Torito: no-emulation EFI boot from the FAT boot image
                 $args += "-bootdata:1#pEF,e,b$BootImage"
                 Write-Log "  (UEFI bootable: EFI El Torito)"
+                if ($Hybrid) {
+                    # The EFI El Torito ISO is already dd-writable to USB for UEFI
+                    # boot; oscdimg has no BIOS isohybrid MBR option.
+                    Write-Log "  (Hybrid: dd-writable to USB for UEFI boot)"
+                }
             }
             $args += $staging, $OutputFile
             $proc = Start-Process -FilePath $oscdimg -ArgumentList $args `
@@ -626,9 +673,13 @@ function New-IsoImage {
             Write-Log "Creating ISO with built-in writer..."
             Refresh-Log
 
-            # Use IMAPI2 COM object (available on Windows 7+)
+            # Use IMAPI2 COM object (available on Windows 7+).
+            # FsiFileSystem flags: ISO9660=1, Joliet=2, UDF=4. The default (4 =
+            # UDF) is already UEFI-bootable; -Udf adds ISO9660+Joliet to make a
+            # proper bridge (broad compatibility + UDF for >4GB files).
             $fsi = New-Object -ComObject IMAPI2FS.MsftFileSystemImage
-            $fsi.FileSystemsToCreate = 4  # FsiFileSystemISO9660 | FsiFileSystemJoliet
+            $fsi.FileSystemsToCreate = if ($Udf) { 7 } else { 4 }
+            if ($Udf) { Write-Log "  (UDF bridge: ISO 9660 + Joliet + UDF)" }
             $fsi.VolumeName = $isoLabel
 
             # Add all staged files
@@ -1427,7 +1478,7 @@ function Show-MainForm {
 
     $grid = New-Object System.Windows.Forms.DataGridView
     $grid.Location = New-Object System.Drawing.Point(15, 72)
-    $grid.Size = New-Object System.Drawing.Size(566, 250)
+    $grid.Size = New-Object System.Drawing.Size(566, 188)
     $grid.AllowUserToAddRows = $false
     $grid.AllowUserToResizeRows = $false
     $grid.RowHeadersVisible = $false
@@ -1454,7 +1505,7 @@ function Show-MainForm {
 
     $btnAddPart = New-Object System.Windows.Forms.Button
     $btnAddPart.Text = "Add Partition"
-    $btnAddPart.Location = New-Object System.Drawing.Point(15, 330)
+    $btnAddPart.Location = New-Object System.Drawing.Point(15, 268)
     $btnAddPart.Size = New-Object System.Drawing.Size(110, 26)
     $btnAddPart.Add_Click({
         $r = $grid.Rows.Add()
@@ -1465,12 +1516,33 @@ function Show-MainForm {
 
     $btnRemovePart = New-Object System.Windows.Forms.Button
     $btnRemovePart.Text = "Remove Last"
-    $btnRemovePart.Location = New-Object System.Drawing.Point(135, 330)
+    $btnRemovePart.Location = New-Object System.Drawing.Point(135, 268)
     $btnRemovePart.Size = New-Object System.Drawing.Size(110, 26)
     $btnRemovePart.Add_Click({
         if ($grid.Rows.Count -gt 0) { $grid.Rows.RemoveAt($grid.Rows.Count - 1) }
     })
     $tabOptions.Controls.Add($btnRemovePart)
+
+    # ISO options (apply when Output Format is ISO on the Build tab).
+    $lblIso = New-Object System.Windows.Forms.Label
+    $lblIso.Text = "ISO options:"
+    $lblIso.Location = New-Object System.Drawing.Point(15, 305)
+    $lblIso.AutoSize = $true
+    $lblIso.ForeColor = $clrAccentDk
+    $lblIso.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 9, [System.Drawing.FontStyle]::Bold)
+    $tabOptions.Controls.Add($lblIso)
+
+    $chkHybrid = New-Object System.Windows.Forms.CheckBox
+    $chkHybrid.Text = "Hybrid ISO (dd-writable to USB)"
+    $chkHybrid.Location = New-Object System.Drawing.Point(15, 327)
+    $chkHybrid.AutoSize = $true
+    $tabOptions.Controls.Add($chkHybrid)
+
+    $chkUdf = New-Object System.Windows.Forms.CheckBox
+    $chkUdf.Text = "UDF bridge (ISO 9660 + UDF, supports files >4GB)"
+    $chkUdf.Location = New-Object System.Drawing.Point(15, 351)
+    $chkUdf.AutoSize = $true
+    $tabOptions.Controls.Add($chkUdf)
 
     # Selecting MBR/GPT seeds a sensible default partition row; None clears.
     $schemeChanged = {
@@ -1933,10 +2005,19 @@ function Show-MainForm {
             Write-UsbDrive -TargetDrive $targetDrive -SourceDir $src `
                 -Includes $includes -Label $label -FileSystem $fs `
                 -LogBox $txtLog @optSwitches
+        } elseif ($rbIso.Checked) {
+            # --- Build an ISO (with optional UDF bridge / hybrid) -----------
+            New-IsoImage -SourceDir $src -Includes $includes -OutputFile $out `
+                -Label $label -Udf:$chkUdf.Checked -Hybrid:$chkHybrid.Checked `
+                -Verbose:$chkVerbose.Checked -LogBox $txtLog
         } else {
-            # --- Build an image file: multi-partition (Options scheme) or
-            #     the simple single-FAT32 path ------------------------------
+            # --- Build an image file: multi-partition (Options scheme) or the
+            #     simple single-FAT32 path; gzip-compress if the target is .gz.
+            $gz = ($out -match '\.gz$')
+            $buildOut = if ($gz) { $out -replace '\.gz$', '' } else { $out }
+
             $scheme = if ($rbSchemeGpt.Checked) { 'GPT' } elseif ($rbSchemeMbr.Checked) { 'MBR' } else { 'None' }
+            $ok = $true
             if ($scheme -ne 'None' -and $grid.Rows.Count -gt 0) {
                 $parts = @()
                 foreach ($row in $grid.Rows) {
@@ -1952,12 +2033,16 @@ function Show-MainForm {
                         Source  = $srcv
                     }
                 }
-                New-DiskImage -OutputFile $out -PartStyle $scheme -Partitions $parts `
+                $ok = New-DiskImage -OutputFile $buildOut -PartStyle $scheme -Partitions $parts `
                     -Verbose:$chkVerbose.Checked -LogBox $txtLog
             } else {
                 $verboseSwitch = if ($chkVerbose.Checked) { @{Verbose=$true} } else { @{} }
-                New-UefiImage -SourceDir $src -Includes $includes -OutputFile $out `
+                $ok = New-UefiImage -SourceDir $src -Includes $includes -OutputFile $buildOut `
                     -Label $label -SizeMB $sizeMB -LogBox $txtLog @verboseSwitch
+            }
+            if ($gz -and $ok) {
+                Compress-FileGzip -InputFile $buildOut -OutputFile $out -LogBox $txtLog | Out-Null
+                Remove-Item $buildOut -ErrorAction SilentlyContinue
             }
         }
 
@@ -2051,17 +2136,25 @@ if ($Action) {
         'CreateImg' {
             if (-not $OutputFile) { Write-Error "OutputFile required for CreateImg"; exit 1 }
             if (-not $SourceDir) { Write-Error "SourceDir required for CreateImg"; exit 1 }
+            # gzip-compress when the target ends in .gz (build to a temp first).
+            $gz = ($OutputFile -match '\.gz$')
+            $buildOut = if ($gz) { $OutputFile -replace '\.gz$', '' } else { $OutputFile }
             $result = New-UefiImage -SourceDir $SourceDir -Includes $Includes `
-                -OutputFile $OutputFile -Label $Label -SizeMB $SizeMB `
+                -OutputFile $buildOut -Label $Label -SizeMB $SizeMB `
                 -Verbose:$Verbose -ProgressFile $ProgressFile
             if (-not $result) { exit 1 }
+            if ($gz) {
+                $cok = Compress-FileGzip -InputFile $buildOut -OutputFile $OutputFile -ProgressFile $ProgressFile
+                Remove-Item $buildOut -ErrorAction SilentlyContinue
+                if (-not $cok) { exit 1 }
+            }
         }
         'CreateIso' {
             if (-not $OutputFile) { Write-Error "OutputFile required for CreateIso"; exit 1 }
             if (-not $SourceDir) { Write-Error "SourceDir required for CreateIso"; exit 1 }
             $result = New-IsoImage -SourceDir $SourceDir -Includes $Includes `
                 -OutputFile $OutputFile -Label $Label -BootImage $BootImage `
-                -Verbose:$Verbose
+                -Udf:$Udf -Hybrid:$Hybrid -Verbose:$Verbose
             if (-not $result) { exit 1 }
         }
         'CreateDisk' {

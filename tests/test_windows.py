@@ -660,6 +660,47 @@ class TestPyzWindowsBuilds:
         finally:
             os.unlink(local)
 
+    def test_createimg_gzip_compression(self) -> None:
+        """CreateImg to a .img.gz target produces a valid gzip that
+        decompresses to the raw (MBR-partitioned FAT) image."""
+        out = winvm_ssh(
+            "powershell -NoProfile -ExecutionPolicy Bypass -Command "
+            f"\"& '{VM_MKIMAGE_PS1}' -Action CreateImg -SourceDir '{self.VM_SRC}' "
+            "-OutputFile C:/test/r_c.img.gz -Label GZ -SizeMB 16 2>&1 | Out-String\"",
+            timeout=200,
+        ).stdout
+        assert "[OK]" in out, out
+        local = self._fetch("C:/test/r_c.img.gz")
+        try:
+            with open(local, "rb") as f:
+                assert f.read(2) == b"\x1f\x8b", "not a gzip file"
+            import gzip
+            with gzip.open(local, "rb") as g:
+                raw = g.read()
+            assert len(raw) >= 16 * 1024 * 1024, f"decompressed too small: {len(raw)}"
+            assert raw[510:512] == b"\x55\xAA", "no MBR signature in decompressed image"
+        finally:
+            os.unlink(local)
+
+    def test_createiso_udf_bridge(self) -> None:
+        """CreateIso -Udf produces an ISO 9660 + UDF bridge (both descriptor
+        sets present), so it can hold files larger than 4GB."""
+        out = winvm_ssh(
+            "powershell -NoProfile -ExecutionPolicy Bypass -Command "
+            f"\"& '{VM_MKIMAGE_PS1}' -Action CreateIso -SourceDir '{self.VM_SRC}' "
+            "-OutputFile C:/test/r_udf.iso -Label UDF -Udf 2>&1 | Out-String\"",
+            timeout=200,
+        ).stdout
+        assert "[OK]" in out, out
+        local = self._fetch("C:/test/r_udf.iso")
+        try:
+            with open(local, "rb") as f:
+                data = f.read(80 * 1024)
+            assert b"CD001" in data, "no ISO 9660 descriptor"
+            assert b"BEA01" in data and (b"NSR02" in data or b"NSR03" in data), "no UDF descriptors"
+        finally:
+            os.unlink(local)
+
     def test_iso_has_el_torito_efi_boot(self) -> None:
         """An ISO built from a tree with EFI/BOOT/BOOTX64.EFI must carry an El
         Torito boot record (i.e. be UEFI-bootable), not be data-only."""
