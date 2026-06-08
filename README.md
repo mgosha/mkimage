@@ -17,8 +17,10 @@ Runs on **Linux, macOS, and Windows** from a single self-contained file
 - **Modify** existing images (add/remove files) and **verify** writes (SHA256)
 - **Tools**: format, wipe partition signatures, bad-block check, list contents
 - exFAT / NTFS / ext4 / UDF partitions where the platform supports them
-- **GUI** (Dear PyGui, auto-installed; Tkinter fallback) with full keyboard
-  navigation, plus the CLI
+- **GUI** with full keyboard navigation, plus the CLI. On Windows the
+  native PowerShell WinForms GUI is the default; elsewhere it's Dear PyGui
+  (auto-installed, Tkinter fallback). Override with `--native-gui` /
+  `--python-gui`.
 
 ## Requirements
 
@@ -76,7 +78,9 @@ mkimage.pyz --check-usb /dev/sdb   # bad-block check (destructive)
 mkimage.pyz --check                # show available tools/filesystems
 
 # Launch the GUI (also the default with no arguments)
-mkimage.pyz --gui
+mkimage.pyz --gui                  # native on Windows, Dear PyGui elsewhere
+mkimage.pyz --native-gui           # force the native PowerShell GUI (Windows)
+mkimage.pyz --python-gui           # force the Dear PyGui interface
 ```
 
 Run `mkimage.pyz --help` for the full option list.

@@ -46,28 +46,33 @@ def _parse_partition_spec(spec: str) -> PartitionSpec:
 
 
 def _powershell_available() -> bool:
-    """True if a PowerShell interpreter is on PATH (Windows native GUI host)."""
-    from mkimage.platform import _which
-    return bool(_which("powershell") or _which("pwsh"))
+    """True if a PowerShell interpreter is on PATH (Windows native GUI host).
+
+    Uses shutil.which directly, NOT platform._which — the latter wraps probes
+    in `wsl bash -c "which ..."` on Windows and would never find powershell.exe.
+    Only consulted on Windows (callers gate on _is_windows()).
+    """
+    import shutil
+    return bool(shutil.which("powershell") or shutil.which("pwsh"))
 
 
 def _resolve_gui_choice(args: argparse.Namespace) -> str:
     """Decide which GUI to launch: 'native' (PowerShell WinForms) or 'python'
     (Dear PyGui / Tkinter).
 
-    Explicit flags always win. The default is 'python' on every platform for
-    now; Phase 7 of the native-GUI parity plan will flip the default to
-    'native' on Windows when PowerShell is available (the hook is already
-    here, intentionally disabled to avoid regressing to a not-yet-at-parity
-    GUI).
+    Explicit flags always win (--native-gui / --python-gui). Otherwise the
+    default is 'native' on Windows when a PowerShell interpreter is present,
+    and 'python' everywhere else.
     """
     if args.native_gui:
         return "native"
     if args.python_gui:
         return "python"
-    # Default selection (Phase 7 will enable the native default on Windows):
-    #   if _is_windows() and _powershell_available():
-    #       return "native"
+    # On Windows the native PowerShell WinForms GUI is the default (when a
+    # PowerShell interpreter is present); --python-gui overrides it. Other
+    # platforms always use the cross-platform Dear PyGui interface.
+    if _is_windows() and _powershell_available():
+        return "native"
     return "python"
 
 
@@ -317,7 +322,8 @@ tips:
     )
     gen_group.add_argument(
         "--gui", action="store_true",
-        help="Launch graphical interface (Dear PyGui or Tkinter)",
+        help="Launch the graphical interface (native PowerShell GUI on "
+             "Windows, Dear PyGui/Tkinter elsewhere)",
     )
     gen_group.add_argument(
         "--native-gui", action="store_true",

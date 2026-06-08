@@ -27,7 +27,10 @@ mkimage is a Python package (~3200 lines) distributed as a 57KB zipapp.
 - Bad block detection: --check-usb destructive write/read test
 - Persistent storage: --persistent adds ext4 casper-rw for live USBs
 - UEFI:NTFS: auto-download GPL-2.0 driver for NTFS boot partitions
-- GUIs: Dear PyGui (modern, auto-installed) + Tkinter (stdlib fallback)
+- GUIs: native PowerShell WinForms GUI is the default on Windows; Dear
+  PyGui (modern, auto-installed) + Tkinter fallback elsewhere. Both share
+  the same tabbed layout/widget names; --native-gui / --python-gui override.
+  See docs/Native-GUI-Parity-Plan.md.
 - Native file dialogs: AppleScript (macOS), tkinter (Win/Linux), zenity/kdialog
 - Windows: all operations via native PowerShell (mkimage.ps1), no WSL
 - macOS: native tools (hdiutil, diskutil, newfs_msdos, newfs_exfat, newfs_udf)

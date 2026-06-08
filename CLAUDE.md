@@ -155,7 +155,11 @@ mkimage.py <dir> -o output.img
 - Windows operations use native PowerShell (mkimage.ps1) — no WSL needed
 - USB write requires safety checks on all platforms
 - No external Python packages — stdlib only
-- GUI: Dear PyGui primary (auto-installed), Tkinter fallback (stdlib)
+- GUI default: native PowerShell WinForms GUI (mkimage.ps1) on Windows
+  when PowerShell is present; Dear PyGui (auto-installed, Tkinter fallback)
+  on Linux/macOS. Override with --native-gui / --python-gui. Both GUIs
+  share the same tabbed layout and widget names (native is vertical,
+  Dear PyGui horizontal).
 - File dialogs: native OS dialogs via subprocess (AppleScript on macOS,
   tkinter.filedialog on Windows/Linux, zenity/kdialog fallback)
 - Supported filesystems: FAT32, exFAT, NTFS, ext4, UDF

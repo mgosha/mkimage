@@ -1654,9 +1654,10 @@ function Show-MainForm {
     }
     $helpSections = @(
         @{ H = "Keyboard Shortcuts"; B = @(
-            "F1-F5   Build / Options / Tools / Log / Help tabs",
-            "F6      Refresh the USB drive list (when shown)",
-            "F12     Run the current action (Create / Write / Clone)") }
+            "F1-F5         Build / Options / Tools / Log / Help tabs",
+            "F6            Refresh the USB drive list (in view)",
+            "F7 / F8 / F9  Tools: Format / Wipe / Check drive",
+            "F12           Run the current action (Create / Write / Clone)") }
         @{ H = "Quick Start"; B = @(
             "1. Build tab: pick a Source (a folder/image file, or a USB to clone).",
             "2. Choose Output Format (Image .img or ISO) and a Volume Label.",
@@ -1681,6 +1682,9 @@ function Show-MainForm {
             "- All native Windows (diskpart / robocopy / IMAPI / oscdimg); no WSL.",
             "- FAT32 volume labels are limited to 11 characters.",
             "- USB writes and clones require Administrator (you'll be prompted).") }
+        @{ H = "About"; B = @(
+            "mkimage - Bootable Media Creator",
+            "Cross-platform tool for UEFI boot images, ISOs, and USB drives.") }
     )
     foreach ($sec in $helpSections) {
         & $appendHelp ($sec.H + "`r`n") $hHead $clrAccentDk
@@ -2457,7 +2461,16 @@ function Show-MainForm {
             ([System.Windows.Forms.Keys]::F3)  { $tabs.SelectedTab = $tabTools;   $e.Handled = $true }
             ([System.Windows.Forms.Keys]::F4)  { $tabs.SelectedTab = $tabLog;     $e.Handled = $true }
             ([System.Windows.Forms.Keys]::F5)  { $tabs.SelectedTab = $tabHelp;    $e.Handled = $true }
-            ([System.Windows.Forms.Keys]::F6)  { if ($btnRefresh.Visible) { $btnRefresh.PerformClick() }; $e.Handled = $true }
+            ([System.Windows.Forms.Keys]::F6)  {
+                # Refresh whichever USB list is in view.
+                if ($tabs.SelectedTab -eq $tabTools) { $btnToolRefresh.PerformClick() }
+                elseif ($btnRefresh.Visible) { $btnRefresh.PerformClick() }
+                elseif ($btnSrcRefresh.Visible) { $btnSrcRefresh.PerformClick() }
+                $e.Handled = $true
+            }
+            ([System.Windows.Forms.Keys]::F7)  { $tabs.SelectedTab = $tabTools; $btnFmt.PerformClick();   $e.Handled = $true }
+            ([System.Windows.Forms.Keys]::F8)  { $tabs.SelectedTab = $tabTools; $btnWipe.PerformClick();  $e.Handled = $true }
+            ([System.Windows.Forms.Keys]::F9)  { $tabs.SelectedTab = $tabTools; $btnCheck.PerformClick(); $e.Handled = $true }
             ([System.Windows.Forms.Keys]::F12) { if ($btnCreate.Enabled) { $btnCreate.PerformClick() }; $e.Handled = $true }
         }
     })
