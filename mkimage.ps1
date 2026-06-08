@@ -1,8 +1,10 @@
 param(
-    [ValidateSet('', 'WriteUsb', 'CreateImg', 'CreateIso', 'Clone')]
+    [ValidateSet('', 'WriteUsb', 'CreateImg', 'CreateIso', 'CreateDisk', 'Clone')]
     [string]$Action = '',
     [int]$DiskNumber = -1,
     [int]$SourceDiskNumber = -1,
+    [string]$PartStyle = 'GPT',
+    [string]$PartitionsJson = '',
     [string]$SourceDir = '',
     [string[]]$Includes = @(),
     [string]$Label = 'UEFITOOLS',
@@ -315,6 +317,184 @@ detach vdisk
         }
         return $false
     } finally {
+        Remove-Item $vhdPath -ErrorAction SilentlyContinue
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Multi-partition disk image (MBR or GPT) via a diskpart-driven fixed VHD.
+# Each partition gets its own filesystem / size / label / cluster / source.
+# Produces a raw .img by stripping the 512-byte VHD footer. diskpart can make
+# fat32/ntfs/exfat (and a GPT ESP); udf/ext4 are not natively supported here.
+# ---------------------------------------------------------------------------
+function New-DiskImage {
+    param(
+        [string]$OutputFile,
+        [string]$PartStyle = 'GPT',   # 'MBR' or 'GPT'
+        [object[]]$Partitions,        # @{ Fs; SizeMB; Label; Cluster; Source }
+        [switch]$Verbose,
+        [string]$ProgressFile = "",
+        $LogBox = $null
+    )
+
+    function Write-Log([string]$Message) {
+        if ($ProgressFile) { $Message | Out-File -Append $ProgressFile }
+        elseif ($LogBox) { $LogBox.AppendText("$Message`r`n") }
+        else { Write-Host $Message }
+    }
+    function Refresh-Log() { if ($LogBox -and $LogBox.Parent) { $LogBox.Parent.Refresh() } }
+
+    if (-not $Partitions -or $Partitions.Count -eq 0) {
+        Write-Log "[ERROR] No partitions specified."; return $false
+    }
+    $gpt = ($PartStyle -eq 'GPT')
+
+    # Normalize inputs (GUI hashtables or CLI JSON objects) into working
+    # records; resolve filesystem + size (auto -> content + slack).
+    $norm = @()
+    foreach ($p in $Partitions) {
+        $fs = "$($p.Fs)".ToLower()
+        if ($fs -in @('udf', 'ext4', 'ext2', 'ext3')) {
+            Write-Log "[ERROR] Filesystem '$fs' is not supported natively on Windows."; return $false
+        }
+        $isEsp = ($fs -eq 'esp')
+        $effFs = if ($isEsp) { 'fat32' } else { $fs }
+        $minMB = if ($effFs -eq 'fat32') { 34 } else { 16 }  # FAT32 needs ~33MB min
+        $sizeMB = if ($p.SizeMB) { [int]$p.SizeMB } else { 0 }
+        if ($sizeMB -le 0) {
+            $bytes = 0
+            if ($p.Source -and (Test-Path "$($p.Source)")) {
+                $bytes = (Get-ChildItem -LiteralPath "$($p.Source)" -Recurse -File -ErrorAction SilentlyContinue |
+                          Measure-Object -Property Length -Sum).Sum
+            }
+            $sizeMB = [Math]::Max($minMB, [int][Math]::Ceiling(($bytes / 1MB)) + 16)
+        } elseif ($sizeMB -lt $minMB) {
+            $sizeMB = $minMB
+        }
+        $norm += [PSCustomObject]@{
+            Fs      = $effFs
+            Esp     = $isEsp
+            SizeMB  = $sizeMB
+            Label   = "$($p.Label)"
+            Cluster = if ($p.Cluster) { [int]$p.Cluster } else { 0 }
+            Source  = "$($p.Source)"
+        }
+    }
+    $Partitions = $norm
+
+    $totalMB = (($Partitions | Measure-Object -Property SizeMB -Sum).Sum) + 4 + $Partitions.Count
+
+    $vhdPath = [System.IO.Path]::GetTempFileName() -replace '\.tmp$', '.vhd'
+    $dpScript = [System.IO.Path]::GetTempFileName() -replace '\.tmp$', '.txt'
+
+    try {
+        Write-Log "Creating $PartStyle image ($($Partitions.Count) partition(s), ~$totalMB MB)..."
+        Refresh-Log
+
+        $lines = @(
+            "create vdisk file=`"$vhdPath`" maximum=$totalMB type=fixed"
+            "select vdisk file=`"$vhdPath`""
+            "attach vdisk"
+        )
+        if ($gpt) { $lines += "convert gpt" }
+        for ($i = 0; $i -lt $Partitions.Count; $i++) {
+            $p = $Partitions[$i]
+            $lbl = "$($p.Label)"
+            $lblMax = if ($p.Fs -eq 'fat32') { 11 } else { 32 }
+            $lbl = $lbl.Substring(0, [Math]::Min($lbl.Length, $lblMax))
+            # diskpart label is unquoted (matches New-Fat32Image); drop spaces.
+            $lbl = $lbl -replace '\s', '_'
+            $fmt = "format fs=$($p.Fs) quick label=$lbl"
+            if ($p.Cluster -and [int]$p.Cluster -gt 0) { $fmt += " unit=$([int]$p.Cluster)" }
+            if ($gpt -and $p.Esp) {
+                $lines += "create partition efi size=$([int]$p.SizeMB)"
+            } else {
+                $lines += "create partition primary size=$([int]$p.SizeMB)"
+                if (-not $gpt -and $i -eq 0) { $lines += "active" }
+            }
+            $lines += $fmt
+            $lines += "assign"   # auto-pick a free letter (avoids stale-pick collisions)
+        }
+        ($lines -join "`r`n") | Set-Content -Path $dpScript -Encoding ASCII
+
+        Write-Log "  diskpart: create + attach + partition + format..."
+        Refresh-Log
+        $dpOut = (diskpart /s $dpScript 2>&1) | Out-String
+        if (($dpOut -split 'successfully formatted').Count - 1 -lt $Partitions.Count) {
+            throw "diskpart did not format all partitions: $($dpOut.Trim() -replace '[\r\n]+', ' | ')"
+        }
+        Start-Sleep -Seconds 2
+
+        # Read back the letters diskpart assigned, in partition order. The
+        # attached VHD is the Msft Virtual Disk whose Location is our file.
+        $vd = Get-Disk | Where-Object { $_.Location -eq $vhdPath } | Select-Object -First 1
+        if (-not $vd) { throw "Could not locate the attached VHD disk" }
+        $vparts = @(Get-Partition -DiskNumber $vd.Number -ErrorAction SilentlyContinue |
+                    Sort-Object PartitionNumber)
+        $letters = @()
+        foreach ($vp in $vparts) {
+            if ($vp.DriveLetter -and $vp.DriveLetter -ne "`0") {
+                $letters += "$($vp.DriveLetter)"
+            } else {
+                # An ESP/efi partition may not auto-assign; force one.
+                try { $vp | Add-PartitionAccessPath -AssignDriveLetter -ErrorAction Stop
+                      $vp2 = Get-Partition -DiskNumber $vd.Number -PartitionNumber $vp.PartitionNumber
+                      $letters += "$($vp2.DriveLetter)" } catch { $letters += "" }
+            }
+        }
+        if ($letters.Count -lt $Partitions.Count) {
+            throw "Expected $($Partitions.Count) partitions but found $($letters.Count) on the VHD"
+        }
+        Start-Sleep -Seconds 1
+
+        # Copy each partition's source onto its drive letter.
+        for ($i = 0; $i -lt $Partitions.Count; $i++) {
+            $p = $Partitions[$i]
+            $dest = "$($letters[$i]):\"
+            if (-not (Test-Path $dest)) { throw "Partition $($i+1) ($dest) not accessible after format" }
+            if ($p.Source -and (Test-Path $p.Source -PathType Container)) {
+                $srcNorm = "$($p.Source)".TrimEnd('\', '/')
+                Write-Log "  Partition $($i+1) [$($p.Fs)]: copying $srcNorm -> $dest"
+                Refresh-Log
+                if ($Verbose) {
+                    robocopy $srcNorm $dest /S /E /NP /NJH /NJS 2>&1 | ForEach-Object { $t = "$_".Trim(); if ($t) { Write-Log "    $t" } }
+                } else {
+                    robocopy $srcNorm $dest /S /E /NP /NFL /NDL /NJH /NJS 2>&1 | Out-Null
+                }
+            } else {
+                Write-Log "  Partition $($i+1) [$($p.Fs)]: (empty)"
+            }
+        }
+
+        # Detach, then strip the 512-byte fixed-VHD footer to a raw image.
+        Write-Log "Detaching VHD..."
+        "select vdisk file=`"$vhdPath`"`r`ndetach vdisk" | Set-Content -Path $dpScript -Encoding ASCII
+        (diskpart /s $dpScript 2>&1) | Out-Null
+        Start-Sleep -Seconds 1
+
+        Write-Log "Converting to raw image..."
+        $rawSize = (Get-Item $vhdPath).Length - 512
+        $in = [System.IO.File]::OpenRead($vhdPath)
+        $out = [System.IO.File]::Create($OutputFile)
+        $buf = New-Object byte[] (4 * 1MB); $remaining = $rawSize
+        while ($remaining -gt 0) {
+            $toRead = [Math]::Min([int64]$buf.Length, $remaining)
+            $read = $in.Read($buf, 0, [int]$toRead)
+            if ($read -le 0) { break }
+            $out.Write($buf, 0, $read); $remaining -= $read
+        }
+        $in.Close(); $out.Close()
+
+        $size = (Get-Item $OutputFile).Length
+        Write-Log "[OK] Created $OutputFile ($([math]::Round($size/1MB))MB, $PartStyle, $($Partitions.Count) partition(s))"
+        return $true
+    } catch {
+        Write-Log "[ERROR] $_"
+        "select vdisk file=`"$vhdPath`"`r`ndetach vdisk" | Set-Content -Path $dpScript -Encoding ASCII
+        (diskpart /s $dpScript 2>&1) | Out-Null
+        return $false
+    } finally {
+        Remove-Item $dpScript -ErrorAction SilentlyContinue
         Remove-Item $vhdPath -ErrorAction SilentlyContinue
     }
 }
@@ -1762,6 +1942,17 @@ if ($Action) {
             $result = New-IsoImage -SourceDir $SourceDir -Includes $Includes `
                 -OutputFile $OutputFile -Label $Label -BootImage $BootImage `
                 -Verbose:$Verbose
+            if (-not $result) { exit 1 }
+        }
+        'CreateDisk' {
+            if (-not $OutputFile) { Write-Error "OutputFile required for CreateDisk"; exit 1 }
+            if (-not $PartitionsJson) { Write-Error "PartitionsJson required for CreateDisk"; exit 1 }
+            # ConvertFrom-Json emits a top-level array as ONE object, so don't
+            # wrap with @() (that nests it); coerce a lone object to an array.
+            $parts = $PartitionsJson | ConvertFrom-Json
+            if ($parts -isnot [array]) { $parts = @($parts) }
+            $result = New-DiskImage -OutputFile $OutputFile -PartStyle $PartStyle `
+                -Partitions $parts -Verbose:$Verbose -ProgressFile $ProgressFile
             if (-not $result) { exit 1 }
         }
         'Clone' {
