@@ -45,6 +45,32 @@ def _parse_partition_spec(spec: str) -> PartitionSpec:
     )
 
 
+def _powershell_available() -> bool:
+    """True if a PowerShell interpreter is on PATH (Windows native GUI host)."""
+    from mkimage.platform import _which
+    return bool(_which("powershell") or _which("pwsh"))
+
+
+def _resolve_gui_choice(args: argparse.Namespace) -> str:
+    """Decide which GUI to launch: 'native' (PowerShell WinForms) or 'python'
+    (Dear PyGui / Tkinter).
+
+    Explicit flags always win. The default is 'python' on every platform for
+    now; Phase 7 of the native-GUI parity plan will flip the default to
+    'native' on Windows when PowerShell is available (the hook is already
+    here, intentionally disabled to avoid regressing to a not-yet-at-parity
+    GUI).
+    """
+    if args.native_gui:
+        return "native"
+    if args.python_gui:
+        return "python"
+    # Default selection (Phase 7 will enable the native default on Windows):
+    #   if _is_windows() and _powershell_available():
+    #       return "native"
+    return "python"
+
+
 def _launch_native_gui() -> bool:
     """Launch the native PowerShell WinForms GUI (mkimage.ps1, no -Action).
 
@@ -299,18 +325,22 @@ tips:
              "of the cross-platform Dear PyGui interface",
     )
     gen_group.add_argument(
+        "--python-gui", action="store_true",
+        help="Force the cross-platform Dear PyGui interface (overrides the "
+             "native GUI where it is the default)",
+    )
+    gen_group.add_argument(
         "--check", action="store_true",
         help="Check tool availability and exit",
     )
 
     args = parser.parse_args()
 
-    if args.native_gui:
-        if _launch_native_gui():
-            return
-        print("Native GUI unavailable; falling back to the Python GUI.")
-
-    if args.gui or args.native_gui or len(sys.argv) == 1:
+    if args.gui or args.native_gui or args.python_gui or len(sys.argv) == 1:
+        if _resolve_gui_choice(args) == "native":
+            if _launch_native_gui():
+                return
+            print("Native GUI unavailable; falling back to the Python GUI.")
         try:
             from mkimage.gui_dpg import gui_main
         except ImportError:

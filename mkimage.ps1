@@ -914,17 +914,18 @@ function Show-MainForm {
 
     $form = New-Object System.Windows.Forms.Form
     $form.Text = "mkimage - Bootable Media Creator"
-    $form.Size = New-Object System.Drawing.Size(620, 648)
+    $form.ClientSize = New-Object System.Drawing.Size(612, 548)
     $form.StartPosition = "CenterScreen"
     $form.FormBorderStyle = "FixedSingle"
     $form.MaximizeBox = $false
     $form.Font = New-Object System.Drawing.Font("Segoe UI", 9)
     $form.BackColor = $clrBg
+    $form.KeyPreview = $true
 
     # --- Header banner (gradient) --------------------------------------------
     $header = New-Object System.Windows.Forms.Panel
     $header.Location = New-Object System.Drawing.Point(0, 0)
-    $header.Size = New-Object System.Drawing.Size(604, 66)
+    $header.Size = New-Object System.Drawing.Size(612, 66)
     $header.Add_Paint({
         param($s, $e)
         $rect = $s.ClientRectangle
@@ -936,7 +937,7 @@ function Show-MainForm {
         $e.Graphics.FillRectangle($brush, $rect)
         $brush.Dispose()
     })
-    $form.Controls.Add($header)
+    [void]$form.Controls.Add($header)
 
     $lblTitle = New-Object System.Windows.Forms.Label
     $lblTitle.Text = "mkimage"
@@ -956,20 +957,63 @@ function Show-MainForm {
     $lblSub.Location = New-Object System.Drawing.Point(21, 40)
     $header.Controls.Add($lblSub)
 
-    $y = 82
+    # --- Tab control (mirrors the Dear PyGui layout) -------------------------
+    $tabs = New-Object System.Windows.Forms.TabControl
+    $tabs.Location = New-Object System.Drawing.Point(6, 72)
+    $tabs.Size = New-Object System.Drawing.Size(600, 432)
+    $tabBuild   = New-Object System.Windows.Forms.TabPage "Build"
+    $tabOptions = New-Object System.Windows.Forms.TabPage "Options"
+    $tabTools   = New-Object System.Windows.Forms.TabPage "Tools"
+    $tabLog     = New-Object System.Windows.Forms.TabPage "Log"
+    $tabHelp    = New-Object System.Windows.Forms.TabPage "Help"
+    foreach ($tp in @($tabBuild, $tabOptions, $tabTools, $tabLog, $tabHelp)) {
+        $tp.UseVisualStyleBackColor = $false
+        $tp.BackColor = $clrBg
+        [void]$tabs.TabPages.Add($tp)
+    }
+    [void]$form.Controls.Add($tabs)
+
+    # Placeholders for tabs filled in by later parity phases.
+    foreach ($pair in @(@($tabOptions, 'Advanced options'),
+                        @($tabTools, 'Drive tools'),
+                        @($tabHelp, 'Help & shortcuts'))) {
+        $note = New-Object System.Windows.Forms.Label
+        $note.Text = "$($pair[1]) -- coming in a later phase.`r`nSee docs/Native-GUI-Parity-Plan.md"
+        $note.AutoSize = $true
+        $note.ForeColor = [System.Drawing.Color]::FromArgb(120, 128, 140)
+        $note.Location = New-Object System.Drawing.Point(18, 18)
+        [void]$pair[0].Controls.Add($note)
+    }
+
+    # --- Footer status bar (below the tabs, shared by all tabs) --------------
+    $progress = New-Object System.Windows.Forms.ProgressBar
+    $progress.Location = New-Object System.Drawing.Point(12, 514)
+    $progress.Size = New-Object System.Drawing.Size(360, 18)
+    $progress.Style = [System.Windows.Forms.ProgressBarStyle]::Marquee
+    $progress.MarqueeAnimationSpeed = 0
+    [void]$form.Controls.Add($progress)
+
+    $lblStatus = New-Object System.Windows.Forms.Label
+    $lblStatus.Text = "Ready"
+    $lblStatus.AutoSize = $true
+    $lblStatus.ForeColor = $clrText
+    $lblStatus.Location = New-Object System.Drawing.Point(382, 516)
+    [void]$form.Controls.Add($lblStatus)
+
+    $y = 12
 
     # Source directory
     $lblSrc = New-Object System.Windows.Forms.Label
     $lblSrc.Text = "Source Directory:"
     $lblSrc.Location = New-Object System.Drawing.Point(15, $y)
     $lblSrc.AutoSize = $true
-    $form.Controls.Add($lblSrc)
+    $tabBuild.Controls.Add($lblSrc)
 
     $y += 22
     $txtSrc = New-Object System.Windows.Forms.TextBox
     $txtSrc.Location = New-Object System.Drawing.Point(15, $y)
     $txtSrc.Size = New-Object System.Drawing.Size(470, 23)
-    $form.Controls.Add($txtSrc)
+    $tabBuild.Controls.Add($txtSrc)
 
     $btnSrc = New-Object System.Windows.Forms.Button
     $btnSrc.Text = "Browse..."
@@ -980,7 +1024,7 @@ function Show-MainForm {
         $fbd.Description = "Select Source Directory"
         if ($fbd.ShowDialog() -eq "OK") { $txtSrc.Text = $fbd.SelectedPath }
     })
-    $form.Controls.Add($btnSrc)
+    $tabBuild.Controls.Add($btnSrc)
 
     # Extra includes
     $y += 35
@@ -988,32 +1032,32 @@ function Show-MainForm {
     $lblInc.Text = "Extra Includes:"
     $lblInc.Location = New-Object System.Drawing.Point(15, $y)
     $lblInc.AutoSize = $true
-    $form.Controls.Add($lblInc)
+    $tabBuild.Controls.Add($lblInc)
 
     $btnAddFile = New-Object System.Windows.Forms.Button
     $btnAddFile.Text = "Add File"
     $btnAddFile.Location = New-Object System.Drawing.Point(120, ($y - 3))
     $btnAddFile.Size = New-Object System.Drawing.Size(70, 23)
-    $form.Controls.Add($btnAddFile)
+    $tabBuild.Controls.Add($btnAddFile)
 
     $btnAddDir = New-Object System.Windows.Forms.Button
     $btnAddDir.Text = "Add Dir"
     $btnAddDir.Location = New-Object System.Drawing.Point(195, ($y - 3))
     $btnAddDir.Size = New-Object System.Drawing.Size(70, 23)
-    $form.Controls.Add($btnAddDir)
+    $tabBuild.Controls.Add($btnAddDir)
 
     $btnClear = New-Object System.Windows.Forms.Button
     $btnClear.Text = "Clear"
     $btnClear.Location = New-Object System.Drawing.Point(270, ($y - 3))
     $btnClear.Size = New-Object System.Drawing.Size(60, 23)
-    $form.Controls.Add($btnClear)
+    $tabBuild.Controls.Add($btnClear)
 
     $y += 25
     $lstInc = New-Object System.Windows.Forms.ListBox
     $lstInc.Location = New-Object System.Drawing.Point(15, $y)
     $lstInc.Size = New-Object System.Drawing.Size(570, 65)
     $lstInc.Font = New-Object System.Drawing.Font("Consolas", 8)
-    $form.Controls.Add($lstInc)
+    $tabBuild.Controls.Add($lstInc)
 
     $btnAddFile.Add_Click({
         $ofd = New-Object System.Windows.Forms.OpenFileDialog
@@ -1033,20 +1077,20 @@ function Show-MainForm {
     $lblFmt.Text = "Output Format:"
     $lblFmt.Location = New-Object System.Drawing.Point(15, $y)
     $lblFmt.AutoSize = $true
-    $form.Controls.Add($lblFmt)
+    $tabBuild.Controls.Add($lblFmt)
 
     $rbImg = New-Object System.Windows.Forms.RadioButton
     $rbImg.Text = "FAT32 (.img)"
     $rbImg.Location = New-Object System.Drawing.Point(120, ($y - 2))
     $rbImg.AutoSize = $true
     $rbImg.Checked = $true
-    $form.Controls.Add($rbImg)
+    $tabBuild.Controls.Add($rbImg)
 
     $rbIso = New-Object System.Windows.Forms.RadioButton
     $rbIso.Text = "ISO (.iso)"
     $rbIso.Location = New-Object System.Drawing.Point(250, ($y - 2))
     $rbIso.AutoSize = $true
-    $form.Controls.Add($rbIso)
+    $tabBuild.Controls.Add($rbIso)
 
     # Volume label
     $y += 30
@@ -1054,20 +1098,20 @@ function Show-MainForm {
     $lblLabel.Text = "Volume Label:"
     $lblLabel.Location = New-Object System.Drawing.Point(15, $y)
     $lblLabel.AutoSize = $true
-    $form.Controls.Add($lblLabel)
+    $tabBuild.Controls.Add($lblLabel)
 
     $txtLabel = New-Object System.Windows.Forms.TextBox
     $txtLabel.Text = "UEFITOOLS"
     $txtLabel.Location = New-Object System.Drawing.Point(120, ($y - 2))
     $txtLabel.Size = New-Object System.Drawing.Size(150, 23)
-    $form.Controls.Add($txtLabel)
+    $tabBuild.Controls.Add($txtLabel)
 
     # Filesystem
     $lblFs = New-Object System.Windows.Forms.Label
     $lblFs.Text = "Filesystem:"
     $lblFs.Location = New-Object System.Drawing.Point(290, $y)
     $lblFs.AutoSize = $true
-    $form.Controls.Add($lblFs)
+    $tabBuild.Controls.Add($lblFs)
 
     $cmbFs = New-Object System.Windows.Forms.ComboBox
     $cmbFs.DropDownStyle = "DropDownList"
@@ -1075,7 +1119,7 @@ function Show-MainForm {
     $cmbFs.SelectedIndex = 0
     $cmbFs.Location = New-Object System.Drawing.Point(370, ($y - 2))
     $cmbFs.Size = New-Object System.Drawing.Size(80, 23)
-    $form.Controls.Add($cmbFs)
+    $tabBuild.Controls.Add($cmbFs)
 
     # Image size
     $y += 30
@@ -1083,13 +1127,13 @@ function Show-MainForm {
     $lblSize.Text = "Extra Space (MB):"
     $lblSize.Location = New-Object System.Drawing.Point(15, $y)
     $lblSize.AutoSize = $true
-    $form.Controls.Add($lblSize)
+    $tabBuild.Controls.Add($lblSize)
 
     $txtSize = New-Object System.Windows.Forms.TextBox
     $txtSize.Text = "32"
     $txtSize.Location = New-Object System.Drawing.Point(120, ($y - 2))
     $txtSize.Size = New-Object System.Drawing.Size(60, 23)
-    $form.Controls.Add($txtSize)
+    $tabBuild.Controls.Add($txtSize)
 
     $rbIso.Add_CheckedChanged({ $txtSize.Enabled = -not $rbIso.Checked })
 
@@ -1098,25 +1142,25 @@ function Show-MainForm {
     $chkVerbose.Text = "Verbose"
     $chkVerbose.Location = New-Object System.Drawing.Point(200, ($y - 2))
     $chkVerbose.AutoSize = $true
-    $form.Controls.Add($chkVerbose)
+    $tabBuild.Controls.Add($chkVerbose)
 
     $chkVerify = New-Object System.Windows.Forms.CheckBox
     $chkVerify.Text = "Verify"
     $chkVerify.Location = New-Object System.Drawing.Point(280, ($y - 2))
     $chkVerify.AutoSize = $true
-    $form.Controls.Add($chkVerify)
+    $tabBuild.Controls.Add($chkVerify)
 
     $chkGpt = New-Object System.Windows.Forms.CheckBox
     $chkGpt.Text = "GPT"
     $chkGpt.Location = New-Object System.Drawing.Point(345, ($y - 2))
     $chkGpt.AutoSize = $true
-    $form.Controls.Add($chkGpt)
+    $tabBuild.Controls.Add($chkGpt)
 
     $chkUsb = New-Object System.Windows.Forms.CheckBox
     $chkUsb.Text = "Write to USB"
     $chkUsb.Location = New-Object System.Drawing.Point(405, ($y - 2))
     $chkUsb.AutoSize = $true
-    $form.Controls.Add($chkUsb)
+    $tabBuild.Controls.Add($chkUsb)
 
     # Output target
     $y += 30
@@ -1124,14 +1168,14 @@ function Show-MainForm {
     $lblOut.Text = "Output Target:"
     $lblOut.Location = New-Object System.Drawing.Point(15, $y)
     $lblOut.AutoSize = $true
-    $form.Controls.Add($lblOut)
+    $tabBuild.Controls.Add($lblOut)
 
     $y += 22
     # File mode widgets
     $txtOut = New-Object System.Windows.Forms.TextBox
     $txtOut.Location = New-Object System.Drawing.Point(15, $y)
     $txtOut.Size = New-Object System.Drawing.Size(470, 23)
-    $form.Controls.Add($txtOut)
+    $tabBuild.Controls.Add($txtOut)
 
     $btnOut = New-Object System.Windows.Forms.Button
     $btnOut.Text = "Browse..."
@@ -1149,7 +1193,7 @@ function Show-MainForm {
         }
         if ($sfd.ShowDialog() -eq "OK") { $txtOut.Text = $sfd.FileName }
     })
-    $form.Controls.Add($btnOut)
+    $tabBuild.Controls.Add($btnOut)
 
     # USB mode widgets (hidden by default)
     $cmbDrive = New-Object System.Windows.Forms.ComboBox
@@ -1158,7 +1202,7 @@ function Show-MainForm {
     $cmbDrive.DropDownStyle = "DropDownList"
     $cmbDrive.Font = New-Object System.Drawing.Font("Consolas", 9)
     $cmbDrive.Visible = $false
-    $form.Controls.Add($cmbDrive)
+    $tabBuild.Controls.Add($cmbDrive)
 
     $btnRefresh = New-Object System.Windows.Forms.Button
     $btnRefresh.Text = "Refresh"
@@ -1177,7 +1221,7 @@ function Show-MainForm {
         }
         if ($cmbDrive.Items.Count -gt 0) { $cmbDrive.SelectedIndex = 0 }
     })
-    $form.Controls.Add($btnRefresh)
+    $tabBuild.Controls.Add($btnRefresh)
 
     $script:usbDrives = @()
 
@@ -1206,26 +1250,24 @@ function Show-MainForm {
     $btnCreate.Text = "Create Image"
     $btnCreate.Location = New-Object System.Drawing.Point(220, $y)
     $btnCreate.Size = New-Object System.Drawing.Size(160, 30)
-    $form.Controls.Add($btnCreate)
+    $tabBuild.Controls.Add($btnCreate)
 
-    # Log
-    $y += 40
+    # Log tab content (fills the Log tab page)
     $lblLog = New-Object System.Windows.Forms.Label
     $lblLog.Text = "Log:"
-    $lblLog.Location = New-Object System.Drawing.Point(15, $y)
+    $lblLog.Location = New-Object System.Drawing.Point(12, 10)
     $lblLog.AutoSize = $true
-    $form.Controls.Add($lblLog)
+    $tabLog.Controls.Add($lblLog)
 
-    $y += 20
     $txtLog = New-Object System.Windows.Forms.TextBox
-    $txtLog.Location = New-Object System.Drawing.Point(15, $y)
-    $txtLog.Size = New-Object System.Drawing.Size(570, 120)
+    $txtLog.Location = New-Object System.Drawing.Point(12, 32)
+    $txtLog.Size = New-Object System.Drawing.Size(568, 362)
     $txtLog.Multiline = $true
     $txtLog.ReadOnly = $true
     $txtLog.ScrollBars = "Vertical"
     $txtLog.Font = New-Object System.Drawing.Font("Consolas", 8)
     $txtLog.Text = "Ready.`r`n"
-    $form.Controls.Add($txtLog)
+    $tabLog.Controls.Add($txtLog)
 
     # No external dependencies — all native Windows
 
@@ -1263,6 +1305,8 @@ function Show-MainForm {
         $sizeMB = if ($txtSize.Text -match '^\d+$') { [int]$txtSize.Text } else { 32 }
 
         $btnCreate.Enabled = $false
+        $progress.MarqueeAnimationSpeed = 30
+        $lblStatus.Text = "Working..."
         $txtLog.AppendText("`r`n--- $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') ---`r`n")
         $txtLog.AppendText("Source: $src`r`n")
         if ($includes.Count -gt 0) { $txtLog.AppendText("Includes: $($includes -join ', ')`r`n") }
@@ -1293,7 +1337,23 @@ function Show-MainForm {
                 -Label $label -SizeMB $sizeMB -LogBox $txtLog @verboseSwitch
         }
 
+        $progress.MarqueeAnimationSpeed = 0
+        $lblStatus.Text = "Done"
         $btnCreate.Enabled = $true
+    })
+
+    # --- Keyboard navigation (F-keys), mirroring the Python GUI ---------------
+    $form.Add_KeyDown({
+        param($s, $e)
+        switch ($e.KeyCode) {
+            ([System.Windows.Forms.Keys]::F1)  { $tabs.SelectedTab = $tabBuild;   $e.Handled = $true }
+            ([System.Windows.Forms.Keys]::F2)  { $tabs.SelectedTab = $tabOptions; $e.Handled = $true }
+            ([System.Windows.Forms.Keys]::F3)  { $tabs.SelectedTab = $tabTools;   $e.Handled = $true }
+            ([System.Windows.Forms.Keys]::F4)  { $tabs.SelectedTab = $tabLog;     $e.Handled = $true }
+            ([System.Windows.Forms.Keys]::F5)  { $tabs.SelectedTab = $tabHelp;    $e.Handled = $true }
+            ([System.Windows.Forms.Keys]::F6)  { if ($btnRefresh.Visible) { $btnRefresh.PerformClick() }; $e.Handled = $true }
+            ([System.Windows.Forms.Keys]::F12) { if ($btnCreate.Enabled) { $btnCreate.PerformClick() }; $e.Handled = $true }
+        }
     })
 
     # --- Apply the theme to all controls (single DRY pass) --------------------
