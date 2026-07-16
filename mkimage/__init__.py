@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable
 
-__version__ = "1.1.2"
+__version__ = "1.1.3"
 
 
 # ---------------------------------------------------------------------------

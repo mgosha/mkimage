@@ -4,7 +4,7 @@ from __future__ import annotations
 import platform
 import subprocess
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     from mkimage import Config
@@ -28,13 +28,15 @@ def _wsl_path(win_path: str) -> str:
 
 def _run(cfg: Config, cmd: list[str], check: bool = True,
          verbose: bool = False,
-         as_root: bool = False) -> subprocess.CompletedProcess[str]:
+         as_root: bool = False,
+         input: Optional[str] = None) -> subprocess.CompletedProcess[str]:
     """Run a command, routing through WSL on Windows.
 
     Args:
         cfg: Runtime configuration (used for logging).
         verbose: Log this specific command's invocation and output.
         as_root: Run as root. On Windows uses 'wsl -u root'. On Linux uses 'sudo'.
+        input: Text written to the command's stdin (e.g. sfdisk scripts).
     """
     # On macOS, resolve tool paths (Homebrew sbin may not be in PATH)
     if _is_macos() and cmd and not cmd[0].startswith("/"):
@@ -54,7 +56,8 @@ def _run(cfg: Config, cmd: list[str], check: bool = True,
     if verbose:
         prefix = "(root) " if as_root else ""
         cfg.log(f"  > {prefix}{' '.join(cmd)}")
-    result = subprocess.run(actual, check=check, capture_output=True, text=True)
+    result = subprocess.run(actual, check=check, capture_output=True, text=True,
+                            input=input)
     if verbose and result.stdout.strip():
         for line in result.stdout.strip().splitlines():
             cfg.log(f"  {line}")

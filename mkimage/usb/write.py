@@ -17,7 +17,7 @@ from mkimage.files import (
 from mkimage.partition import _check_root, _format_partition, _populate_partition
 from mkimage.platform import (_find_ps1, _is_macos, _is_windows, _resolve,
                               _run, _which)
-from mkimage.tools import ensure_tools
+from mkimage.tools import _suggest_install, ensure_tools
 from mkimage.usb.detect import MAX_USB_SIZE_GB, _list_removable_drives
 from mkimage.usb.safety import (
     _cli_confirm_write,
@@ -359,20 +359,59 @@ def _write_usb_from_dir(cfg: Config, files: dict[str, str],
         cfg.log(f"Writing GPT layout to {device}...")
         _write_gpt_to_device(cfg, files, device)
     else:
-        # Build temp FAT32 image, then dd
-        with tempfile.NamedTemporaryFile(suffix=".img", delete=False) as tmp:
-            tmp_path = tmp.name
-        try:
-            cfg.log("Building FAT32 image...")
-            build_img(cfg, files, tmp_path)
-            img_size = os.path.getsize(tmp_path)
-            img_resolved = _resolve(tmp_path)
-            _write_usb_linux(cfg, tmp_path, img_size, img_resolved, drive)
-        finally:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
+        # Partition + format across the full drive, then copy files in.
+        # Building a content-sized image and dd'ing it here would strand
+        # the rest of the drive and leave no partition table.
+        _write_fat32_to_device(cfg, files, device)
+
+
+def _write_fat32_to_device(cfg: Config, files: dict[str, str],
+                           device: str) -> None:
+    """Partition a USB device as a single full-capacity FAT32 volume.
+
+    Creates an MBR partition spanning the whole drive and copies files
+    into it, matching what the Windows diskpart path produces. Uses
+    mcopy rather than mount+rsync so no root is needed for the copy and
+    macOS (which lacks a compatible mount/rsync) works the same way.
+    """
+    import time
+
+    from mkimage import PartitionSpec
+    from mkimage.builders.img import _populate_img_mcopy
+
+    ensure_tools(cfg, "img")
+    part = cfg.partitions[0] if cfg.partitions else PartitionSpec(
+        "fat32", "0", cfg.label)
+    label = (part.label or cfg.label)[:11]
+
+    if not _which("mcopy"):
+        raise RuntimeError(
+            "mcopy is required to write files to a USB device. Install mtools:\n"
+            f"    {_suggest_install('mcopy')}"
+        )
+
+    if _is_macos():
+        cfg.log(f"  Formatting {device} as FAT32 (MBR, full capacity)...")
+        _run(cfg, ["diskutil", "eraseDisk", "FAT32", label, "MBRFormat",
+                   device], verbose=True, as_root=True)
+    else:
+        _check_root(cfg, "USB write")
+        cfg.log(f"  Creating MBR partition table on {device}...")
+        _run(cfg, ["sfdisk", device], verbose=cfg.verbose, as_root=True,
+             input="label: dos\ntype=0c, bootable\n")
+        _run(cfg, ["partprobe", device], check=False, as_root=True)
+        time.sleep(1)
+        part_dev = _partition_device_fmt(device).format(1)
+        cfg.log(f"  Formatting {part_dev} as FAT32 ({label})...")
+        _format_partition(cfg, part_dev, "fat32", label, part.cluster_size)
+
+    part_dev = _partition_device_fmt(device).format(1)
+    # mcopy writes the partition directly; a mounted volume would race it.
+    _unmount_device(cfg, device)
+    cfg.log(f"  Copying {len(files)} files to {part_dev}...")
+    _populate_img_mcopy(cfg, files, part_dev)
+    _run(cfg, ["sync"], check=False)
+    cfg.log(f"  [OK] Wrote {len(files)} files to {part_dev} (FAT32, {label}).")
 
 
 def _write_usb_from_image(cfg: Config, image_path: str,
